@@ -163,35 +163,7 @@ struct LauncherDiffTests {
         #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
     }
 
-    @Test("changedNoteFiles returns each changed .md with correct M/A status + live content")
-    func changedNoteFilesContent() throws {
-        let (wt, launcher) = try makeNotesWorktree()
-        // Keyed by path so the assertion doesn't depend on git's enumeration order.
-        let byPath = Dictionary(uniqueKeysWithValues:
-            launcher.changedNoteFiles(worktree: wt, parentRef: nil).map { ($0.path, $0) })
 
-        #expect(Set(byPath.keys) == ["notes/keep.md", "notes/added.md", "docs/superpowers/spec.md"])
-
-        // committed modify → M, content is the branch (live) version.
-        #expect(byPath["notes/keep.md"]?.status == .modified)
-        #expect(byPath["notes/keep.md"]?.content == "feature\n")
-        // untracked adds → A, with their live content.
-        #expect(byPath["notes/added.md"]?.status == .added)
-        #expect(byPath["notes/added.md"]?.content == "new\n")
-        #expect(byPath["docs/superpowers/spec.md"]?.status == .added)
-        #expect(byPath["docs/superpowers/spec.md"]?.content == "spec\n")
-
-        // gone.md was deleted (nothing to show); main.swift is not markdown — both excluded.
-        #expect(byPath["docs/gone.md"] == nil)
-        #expect(byPath["main.swift"] == nil)
-    }
-
-    @Test("changedNoteFiles is empty for a non-git directory (no base)")
-    func changedNoteFilesNonGit() throws {
-        let dir = IntegrationSupport.tempDir("lnf0")
-        let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
-        #expect(launcher.changedNoteFiles(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
-    }
 
     /// A repo whose worktree is a CHILD branch stacked on a `parent` branch: main(base) →
     /// parent(+docs/parent.md) → child=worktree(+docs/child.md). With a parent ref the diff/notes
@@ -289,11 +261,11 @@ struct LauncherDiffTests {
         #expect(notes.contains("spec.md"))                              // tracked git change still included
         #expect(!notes.contains("notes/.obsidian/app.md"))              // dot component skipped
 
-        // The phone's content path sees the gitignored notes too (read off the daemon host's disk).
+        // The status decoration the document list uses sees the gitignored notes too — an off-disk
+        // scan, since git's diff never reports them.
         let byPath = Dictionary(uniqueKeysWithValues:
-            launcher.changedNoteFiles(worktree: cwt, parentRef: nil).map { ($0.path, $0) })
-        #expect(byPath["notes/plans/p1.md"]?.status == .added)
-        #expect(byPath["notes/plans/p1.md"]?.content == "p\n")
+            launcher.changedMarkdown(worktree: cwt, parentRef: nil).map { ($0.path, $0) })
+        #expect(byPath["notes/plans/p1.md"]?.added == true)
     }
 
     @Test("seedWorkspaceTabs writes a valid Obsidian layout: one leaf tab per note, in order")

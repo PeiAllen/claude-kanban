@@ -12,7 +12,7 @@ import Foundation
 /// instruction like "address this in the document" forces one response mode, and for a question comment
 /// it makes the document messy.
 public struct NoteComment: Equatable, Sendable {
-    /// Worktree-relative, exactly as `NoteFile.path` gives it.
+    /// Relative to the card's working directory, exactly as `DocRef.path` gives it.
     public let path: String
     /// 1-based and inclusive. `nil` omits the `:a-b` suffix.
     public let startLine: Int?

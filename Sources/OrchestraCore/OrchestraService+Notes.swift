@@ -1,23 +1,13 @@
 import Foundation
 
-/// The phone's Notes page (M6): the markdown notes a card's branch changed/added, WITH content, so the
-/// phone can render them in-app. The desktop's `openNotes` opens the same file set as Obsidian tabs on
-/// the daemon host; the phone has no Obsidian, so it reads the content over the wire. Reuses the exact
-/// changed-notes computation `openNotes` uses (`Launcher.changedNoteFiles`). Read-only, app-only — cf.
-/// `diffText`, this is NOT a registry Command (an agent reads notes off disk itself).
+/// The reader's daemon side: document discovery, content, live-watch reconciliation, and the image
+/// endpoint. Read-only and app-only — like `diffText`, none of these are registry Commands, so they
+/// never surface as MCP tools (an agent reads its own working directory off disk).
+///
+/// Documents are a property of the WORKING DIRECTORY, not of the card: two cards on one directory list
+/// the same documents, the same way they show the same diff. So there is no card-kind gate anywhere in
+/// here — a freeform or scratch card has documents exactly like a worktree card does.
 extension OrchestraService {
-
-    /// The changed/new markdown notes on a card's branch, each with its current content. Non-`.worktree`
-    /// cards (no git baseline) resolve to `[]`. Unknown card → throws `unknownTask`.
-    public func changedNotes(_ id: UUID) async throws -> [NoteFile] {
-        let t = try await require(id)
-        guard t.origin == .worktree else { return [] }
-        try resolver.assertAllowed(t.cwd)
-        // PR5 actor-hygiene (Task 5.1.4 fold-back): `resolvedParentRef` is `nonisolated`, so it moves
-        // INSIDE the hop alongside `changedNoteFiles` — full purity, no residual on-actor git call.
-        let l = launcher, cwd = t.cwd
-        return try await offActor { l.changedNoteFiles(worktree: cwd, parentRef: self.resolvedParentRef(t)) }
-    }
 
     /// Every document in the card's working directory — path + whatever git can say, NO CONTENT.
     ///

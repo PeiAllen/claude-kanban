@@ -325,12 +325,6 @@ public final class ControlClient: @unchecked Sendable {
         ]), as: TranscriptImagePayload.self)
     }
 
-    /// Typed convenience over the `changedNotes` verb — the markdown notes a card's branch changed/added,
-    /// each with content, for the phone's Notes page (M6). Empty for a non-worktree card.
-    public func changedNotes(_ ref: String) async throws -> [NoteFile] {
-        try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
-    }
-
     /// Every document in the card's working directory — path + optional git status, NO content.
     /// Discovery is a git-independent filesystem walk, so a gitignored `notes/` lists exactly like a
     /// tracked `docs/`, and most results carry no status because git has nothing to say about them.

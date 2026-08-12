@@ -11,9 +11,9 @@ public struct Launcher: Sendable {
     /// the vault tree.
     static let openNotesTabCap = 15
 
-    /// Per-note byte cap for the phone's `changedNoteFiles` RPC — a pathological note is truncated with
-    /// a sentinel so the wire payload stays bounded, mirroring `diffText`'s cap. Notes are markdown, so
-    /// this virtually never fires.
+    /// Per-document byte cap for `readDocument` — a pathological file is truncated with a sentinel so
+    /// the wire payload stays bounded, mirroring `diffText`'s cap. Documents are markdown, so this
+    /// virtually never fires.
     static let noteContentCap = 256 * 1024
 
     /// "Open notes" — open the card's WORKTREE as an Obsidian vault, laid out with its notes each in its
@@ -100,7 +100,7 @@ public struct Launcher: Sendable {
 
     /// A changed markdown note: its worktree-relative path + whether it's modified vs base or newly
     /// added. The primitive shared by `changedNotes` (paths only, for Obsidian tabs) and the phone's
-    /// `changedNoteFiles` RPC (which also reads each file's content). Deletions are excluded.
+    /// document list's git decoration. Deletions are excluded.
     struct ChangedNote { let path: String; let added: Bool }
 
     /// The changed/new markdown notes with their M/A status — the "which notes does this card have" set
@@ -163,22 +163,6 @@ public struct Launcher: Sendable {
         guard let r = try? Proc.run(["git", "ls-files", "-z", "--", dir], cwd: worktree), r.ok
         else { return [] }
         return Set(r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty })
-    }
-
-    /// The changed/new markdown notes WITH their current worktree content — what the phone's Notes page
-    /// (M6) renders in-app (it has no Obsidian). Same branch-vs-base set as `changedNotes`, each note's
-    /// live file content attached (UTF-8, capped for a pathological note). A note whose file can't be
-    /// read is skipped. Not `#if os(macOS)`-gated — the git/file work runs on the Linux daemon too.
-    func changedNoteFiles(worktree: String, parentRef: String?) -> [NoteFile] {
-        changedMarkdown(worktree: worktree, parentRef: parentRef).compactMap { note in
-            let abs = (worktree as NSString).appendingPathComponent(note.path)
-            guard let data = FileManager.default.contents(atPath: abs) else { return nil }
-            var content = String(decoding: data, as: UTF8.self)
-            if content.utf8.count > Self.noteContentCap {
-                content = String(content.prefix(Self.noteContentCap)) + "\n… (note truncated)\n"
-            }
-            return NoteFile(path: note.path, status: note.added ? .added : .modified, content: content)
-        }
     }
 
     public func openInZed(_ worktree: String, parentRef: String?) throws {

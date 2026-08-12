@@ -3,7 +3,6 @@ import UIKit
 @testable import OrchestraiOS   // internal access to the app target's conformers
 import OrchestraUI
 import OrchestraKit
-import MarkdownUI
 
 @MainActor
 final class IOSAppTests: XCTestCase {

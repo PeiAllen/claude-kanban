@@ -228,8 +228,8 @@ struct ControlRoundTripTests {
         #expect(try !textRes.decode(String.self).isEmpty)
     }
 
-    @Test("changedNotes endpoint routes over the socket via the typed client method")
-    func changedNotesRoundTrip() async throws {
+    @Test("listDocuments/readDocument route over the socket via the typed client methods")
+    func documentEndpointsRoundTrip() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let path = Self.sock()
@@ -258,14 +258,15 @@ struct ControlRoundTripTests {
         try "edited\n".write(toFile: dir + "/notes/keep.md", atomically: true, encoding: .utf8)
         try "new\n".write(toFile: dir + "/notes/new.md", atomically: true, encoding: .utf8)
 
-        // Typed client method → decoded [NoteFile] over the socket.
-        let notes = try await client.changedNotes(task.shortId)
-        let byPath = Dictionary(uniqueKeysWithValues: notes.map { ($0.path, $0) })
+        // Typed client methods → decoded [DocRef], then one body, over the socket.
+        let docs = try await client.listDocuments(task.shortId)
+        let byPath = Dictionary(uniqueKeysWithValues: docs.map { ($0.path, $0) })
         #expect(Set(byPath.keys) == ["notes/keep.md", "notes/new.md"])
         #expect(byPath["notes/keep.md"]?.status == .modified)
-        #expect(byPath["notes/keep.md"]?.content == "edited\n")
+        // The list carries NO content; the body is a separate call.
+        #expect(try await client.readDocument(task.shortId, path: "notes/keep.md") == "edited\n")
         #expect(byPath["notes/new.md"]?.status == .added)
-        #expect(byPath["notes/new.md"]?.content == "new\n")
+        #expect(try await client.readDocument(task.shortId, path: "notes/new.md") == "new\n")
     }
 
     @Test("ping / version / getConfig over the socket")

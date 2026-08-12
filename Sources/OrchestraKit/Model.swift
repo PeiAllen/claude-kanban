@@ -473,19 +473,6 @@ public struct TreeStat: Codable, Sendable, Equatable {
 /// appear — a deleted note has nothing to render. Wire form is the bare git status letter.
 public enum NoteStatus: String, Codable, Sendable { case modified = "M", added = "A" }
 
-/// One markdown note a card's branch changed/added vs its base, WITH its current content — the payload
-/// of the `changedNotes` RPC. The phone's Notes page renders these in-app (it has no Obsidian, which is
-/// what the desktop's "Open notes" opens the same file set in). `path` is worktree-relative. Mirrors the
-/// desktop changed-notes computation; see mobile spec §3 "Notes page".
-public struct NoteFile: Codable, Sendable, Equatable {
-    public let path: String        // worktree-relative, e.g. "notes/designs/foo.md"
-    public let status: NoteStatus  // M = modified vs base, A = added
-    public let content: String     // full file content (UTF-8), size-capped by the daemon
-    public init(path: String, status: NoteStatus, content: String) {
-        self.path = path; self.status = status; self.content = content
-    }
-}
-
 /// WHICH tree a document was discovered in.
 ///
 /// There is exactly one root today — the card's working directory — and this enum exists so there can
@@ -526,7 +513,7 @@ public struct DocRef: Codable, Sendable, Equatable, Identifiable {
 /// re-fetches through the shipped `changedNotes` RPC, so a large note can never blow the wire.
 public struct NoteChange: Codable, Sendable, Equatable {
     public let cardId: UUID
-    public let path: String          // worktree-relative, matching NoteFile.path
+    public let path: String          // relative to the card's working directory
     /// The note's new content hash, or `nil` when the file was DELETED. Deletion has to be reportable:
     /// dropping it would leave the reader displaying a note that no longer exists.
     public let contentHash: String?
