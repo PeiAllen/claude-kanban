@@ -1275,6 +1275,12 @@ public class BoardStore: ObservableObject {
     public func changedNotes(_ id: UUID) async -> [NoteFile] {
         (try? await client.changedNotes(id.uuidString)) ?? []
     }
+    /// Bytes for an image the note at `note` references, read by the daemon and scoped to that note's
+    /// own references. `nil` on any failure — a missing image renders as a broken image, which is
+    /// strictly better than failing the whole page.
+    public func noteAsset(_ id: UUID, note: String, asset: String) async -> NoteAsset? {
+        try? await client.noteAsset(id.uuidString, note: note, asset: asset)
+    }
     public func openInZed(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {
