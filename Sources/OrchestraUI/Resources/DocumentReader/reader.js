@@ -238,7 +238,14 @@
       const raw = blocks[lo].raw;
       const first = raw.indexOf(text);
       const unique = first >= 0 && raw.indexOf(text, first + 1) === -1;
-      if (unique && text.trim()) {
+      // Refine only over PLAIN markdown. Uniqueness proves the match is the only one in the SOURCE, not
+      // that it is the text the user picked, and raw HTML or entities break that premise outright: in
+      // `<span title="foo">` + `&#102;oo`, selecting the visible word yields "foo", whose sole raw
+      // occurrence is the ATTRIBUTE on the line above. The match is unique and wrong. `<` and `&` are
+      // the only two ways source and rendered text can diverge like that, so their absence is the
+      // guard — and their presence costs a coarse whole-block anchor, which is the fallback anyway.
+      const plain = raw.indexOf("<") === -1 && raw.indexOf("&") === -1;
+      if (plain && unique && text.trim()) {
         const before = (raw.slice(0, first).match(/\n/g) || []).length;
         const within = (text.match(/\n/g) || []).length;
         startLine = blocks[lo].start + before;

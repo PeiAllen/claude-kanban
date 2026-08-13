@@ -81,6 +81,37 @@ import Testing
         #expect(refs("```\n![x](secret.png)\n```\n").isEmpty)
     }
 
+    @Test("an ESCAPED bang is a link, not an image")
+    func escapedBangIsNotAnImage() {
+        // `\![alt](x)` renders as a literal `!` followed by a link. The page never requests it, so
+        // allowlisting it widened the daemon's read surface for a file nothing on screen points at.
+        #expect(refs(#"\![literal](secret.png)"#).isEmpty)
+        #expect(refs("\\![literal][b]\n\n[b]: secret.png").isEmpty)
+    }
+
+    @Test("an INLINE code span is not scanned")
+    func inlineCodeIsNotScanned() {
+        // Same rule as a fenced block, one scale down: a document explaining the syntax renders a
+        // literal string, not an image.
+        #expect(refs("write `![x](secret.png)` to embed one").isEmpty)
+        #expect(refs("``a ` tick and ![x](secret.png)``").isEmpty)
+        // An UNTERMINATED span is kept verbatim rather than swallowing the rest of the document.
+        #expect(refs("` stray tick\n\n![a](i/a.png)") == ["docs/i/a.png"])
+    }
+
+    @Test("a commented-out reference is not scanned")
+    func htmlCommentsAreNotScanned() {
+        #expect(refs("<!-- ![x](secret.png) -->").isEmpty)
+        #expect(refs("<!--\n![x](secret.png)\n-->\n\n![a](i/a.png)") == ["docs/i/a.png"])
+    }
+
+    @Test("an UNQUOTED img src is found")
+    func unquotedImgSrcIsFound() {
+        // Valid HTML that the page renders and rewrites. Missing it here made a legitimate image 404;
+        // it keeps nothing out, because the `<img>` is exactly the reference form this scans for.
+        #expect(refs("<img src=images/x.png width=40>") == ["docs/images/x.png"])
+    }
+
     @Test("an empty or malformed reference yields nothing")
     func emptyAndMalformedReferencesAreIgnored() {
         #expect(refs("![alt]()").isEmpty)

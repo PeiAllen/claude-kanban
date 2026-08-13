@@ -62,11 +62,15 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
     //   positive ("it emitted")      -> pollUntil
     //   negative ("it did not emit") -> yieldBriefly, which drains the hop without a wall-clock sleep
 
-    private func makeService(_ w: FakeWatcher, hash: Locked<String?>)
+    /// `discover` is injected — and defaults to "this tree holds nothing" — so the unit tier never
+    /// touches a real filesystem. Only the overflow path consults it.
+    private func makeService(_ w: FakeWatcher, hash: Locked<String?>,
+                             discover: @escaping @Sendable (String) -> [String] = { _ in [] })
         -> (DocumentWatchService, Locked<[DocumentChange]>) {
         let got = Locked<[DocumentChange]>([])
         let svc = DocumentWatchService(watcher: w,
                                    hash: { _ in hash.withLock { $0 } },
+                                   discover: discover,
                                    emit: { c in got.withLock { $0.append(c) } })
         return (svc, got)
     }
@@ -126,6 +130,25 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
         hash.withLock { $0 = "h2" }
         w.fireOverflow(inDirectory: wt)
         try await pollUntil("overflow triggers a re-check", timeout: .seconds(5)) { got.withLock { $0.count } == 2 }
+    }
+
+    @Test("an overflow finds a document CREATED inside the dropped batch")
+    func anOverflowRediscoversNewDocuments() async throws {
+        // The case re-hashing alone can never catch. A file created while events were being dropped was
+        // never hashed, so it is in no cache to re-check — and the reader only reloads its list when a
+        // change arrives, so without a walk the new document stays invisible until some unrelated later
+        // edit. Nothing here has been seeded: the service has seen no path at all when the overflow
+        // arrives, which is exactly the situation.
+        let created = "notes/fresh.md"
+        let w = FakeWatcher(); let hash = Locked<String?>("h1")
+        let wtPath = wt
+        let (svc, got) = makeService(w, hash: hash,
+                                     discover: { $0 == wtPath ? [created] : [] })
+        await svc.sync(cards: [(id: card, worktree: wtInput)])
+        w.fireOverflow(inDirectory: wt)
+        try await pollUntil("the new document is discovered", timeout: .seconds(5)) {
+            got.withLock { $0.contains { $0.path == created } }
+        }
     }
 
     @Test("a deleted note is reported, not suppressed")

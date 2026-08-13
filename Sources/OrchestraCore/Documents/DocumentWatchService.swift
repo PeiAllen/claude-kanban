@@ -36,6 +36,9 @@ actor DocumentWatchService {
 
     private let watcher: any FileWatching
     private let hash: @Sendable (String) -> String?
+    /// Documents currently in a tree, relative to it. Only used on OVERFLOW, and injected so the unit
+    /// tier can drive that path without a real filesystem.
+    private let discover: @Sendable (String) -> [String]
     private let emit: @Sendable (DocumentChange) -> Void
 
     private var streams: [String: Stream] = [:]        // canonical root -> its watch
@@ -43,8 +46,9 @@ actor DocumentWatchService {
 
     init(watcher: any FileWatching,
          hash: @escaping @Sendable (String) -> String?,
+         discover: @escaping @Sendable (String) -> [String] = { DocumentDiscovery.walk(root: $0) },
          emit: @escaping @Sendable (DocumentChange) -> Void) {
-        self.watcher = watcher; self.hash = hash; self.emit = emit
+        self.watcher = watcher; self.hash = hash; self.discover = discover; self.emit = emit
     }
 
     var activeStreamCount: Int { streams.count }
@@ -90,9 +94,19 @@ actor DocumentWatchService {
                 // document the list never shows.
                 let docs = event.paths.filter { DocumentDiscovery.isDocument($0) }
                 guard !docs.isEmpty || event.needsRescan else { return }
-                let changed = Set(docs.map { PathResolver.canonical($0) })
+                var changed = Set(docs.map { PathResolver.canonical($0) })
+                // OVERFLOW — the OS dropped events, so `paths` is incomplete and may name only the root.
+                // Re-derive the document set from the TREE. Re-hashing what is already known is not
+                // enough: a document CREATED inside the dropped batch was never hashed, so it is in no
+                // cache to re-check and would stay invisible until some unrelated later event.
+                //
+                // The walk runs here, on the watcher's own queue, so the actor never blocks on it.
+                if event.needsRescan {
+                    for rel in self.discover(root) { changed.insert(root + "/" + rel) }
+                }
+                let final = changed
                 _Concurrency.Task {
-                    await self.observe(root: root, changed: changed, rescan: event.needsRescan)
+                    await self.observe(root: root, changed: final, rescan: event.needsRescan)
                 }
             }
             streams[root] = Stream(token: token, cards: cardIds)
@@ -102,8 +116,9 @@ actor DocumentWatchService {
     /// The actor-side step. Hashing is blocking file I/O, so it runs only for the handful of markdown
     /// paths that survived the suffix gate — never for a raw event batch.
     ///
-    /// On overflow the reported paths are INCOMPLETE (the batch can name only `/`), so every path this
-    /// service already knows about under the tree is re-checked instead of trusting `changed`.
+    /// On overflow `changed` has already been widened to the tree's whole document set by the caller;
+    /// this additionally re-checks every path the service has SEEN, which is what notices a deletion —
+    /// a deleted file is in no walk, so only the cache remembers it.
     private func observe(root: String, changed: Set<String>, rescan: Bool) {
         guard let cards = streams[root]?.cards, !cards.isEmpty else { return }
         let prefix = root + "/"

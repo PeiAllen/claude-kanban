@@ -412,6 +412,12 @@ The quote freezes when you select, not when you send. Live refresh also pauses w
 so the text cannot move under you mid-sentence. The frozen quote stays a valid anchor after the line
 numbers shift.
 
+A Mac drag anchors to the whole block, then narrows to the exact lines only when it can prove which
+lines you picked: the selected text must appear exactly once in the block's markdown, and the block must
+be plain markdown with no raw HTML and no entities. Rendered text and source differ — `**bold**` renders
+as `bold` — so falling back to the block is common and expected. It is also the right failure. A coarse
+quote is visibly coarse; a confidently wrong line is not.
+
 **How it stays fresh.** The daemon watches each working directory and pushes a small notification when
 a document changes. The reader re-reads that document and flashes the blocks whose content moved, for
 about a second. The flash is a change cue, not a diff.

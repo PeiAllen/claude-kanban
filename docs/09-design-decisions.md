@@ -1378,8 +1378,16 @@ Three behaviors survive that simplification. They are not subscription tax:
 
 - A change emits only when the content hash moves, so a touch wakes nobody.
 - A deletion is reported, because suppressing it leaves a deleted document on screen.
-- An FSEvents overflow re-checks every known path. A dropped batch can name only `/`, and trusting its
-  paths would strand a document permanently and silently.
+- An FSEvents overflow re-walks the tree AND re-checks every known path. A dropped batch can name only
+  `/`, so trusting its paths would strand a document silently. Re-checking known paths alone is not
+  enough either: a document CREATED inside the dropped batch was never hashed, so no cache remembers it.
+  The walk finds what was created; the cache remembers what was deleted.
+
+Two windows stay open on the daemon side, and the client closes both. FSEvents streams start at "now",
+so an edit between the daemon accepting requests and its first watch sync reaches nobody — the sync runs
+early in boot to keep that window small, but it cannot be zero. Events broadcast while a client's link is
+down are not replayed either, by design. So the reader re-reads its open document, not just its list,
+whenever it reconnects. That one repair covers both.
 
 ### The reader's bridge reports a selection and nothing else
 
@@ -1397,8 +1405,36 @@ catches anything sanitization misses — script gets no inline or eval grant. Th
 `'self'` meaningless, and `file://` origins carry inconsistent CORS behavior.
 
 The image endpoint is scoped the same way. It serves only images the document being read actually
-references, resolved by realpath inside the working directory. Without that reference check it becomes an arbitrary read of any image-extension file under any card's
+references, and only from inside the working directory. Without that reference check it becomes an arbitrary read of any image-extension file under any card's
 directory. That is wider than anything else the daemon ships.
+
+### Containment is proved from a descriptor, never from a pathname
+
+Every file the reader returns — a document or an image — goes through one reader, `ContainedFile`. It
+opens the file once and proves everything from that descriptor: where the file really lives, that it is
+a regular file, and how big it is.
+
+The obvious alternative is to canonicalize the pathname, compare it against the working directory, and
+then read that pathname. It does not hold. Between the check and the read, the name can be replaced by a
+symlink pointing at any file the daemon can read, and the second open follows it. The check describes a
+name; the bytes come from a file. A descriptor cannot be swapped underneath its holder, so it is the
+only thing worth checking.
+
+One open answers three questions that were three separate defects:
+
+- **Escape.** The descriptor reports its own real location, symlinks already followed. That is what the
+  containment test uses.
+- **Blocking.** A FIFO named `stall.md` makes a plain open wait forever for a writer. That would park
+  the caller, and on the shared watch actor every other workspace behind it. The open is non-blocking,
+  and the regular-file test then rejects it.
+- **Size.** Reading a file to find out how big it is defeats the cap. `fstat` answers first, so a
+  document is truncated and an oversized image is refused before either is read.
+
+The reference scan that builds the image allowlist is deliberately NOT part of this boundary. It is
+recognition over markdown, not a parser, so it approximates what the page renders — it skips fenced and
+inline code, HTML comments, and escaped bangs, but it will never match a real parser exactly. That is
+acceptable only because it is not what holds the line: a wrong answer there widens the surface by
+in-tree image files, and the descriptor checks hold regardless of what it says.
 
 ### A comment is one inbox message, and it carries no instruction
 

@@ -74,20 +74,18 @@ extension OrchestraService {
         return try await offActor {
             guard DocumentDiscovery.isDocument(path), !DocumentDiscovery.isPruned(relativePath: path)
             else { throw OrchestraError.invalidParams("\(path) is not a readable document") }
-            // REALPATH containment, same rule as the asset endpoint: `standardizingPath` would leave a
-            // symlink intact and let `notes/x -> /` escape a textual prefix check.
-            let abs = PathResolver.canonical((cwd as NSString).appendingPathComponent(path))
-            let root = PathResolver.canonical(cwd)
-            guard abs.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
-                throw OrchestraError.pathNotAllowed(path)
-            }
-            guard let data = FileManager.default.contents(atPath: abs) else {
-                throw OrchestraError.io("cannot read \(path)")
-            }
+            // Containment, the regular-file test, and the size cap all come from ONE open descriptor.
+            // Validating the pathname and then re-opening it is a TOCTOU: the name can become a symlink
+            // between the two calls. `ContainedFile` explains the rest.
+            let (data, size) = try ContainedFile.read(
+                (cwd as NSString).appendingPathComponent(path),
+                containedIn: PathResolver.canonical(cwd),
+                limit: Launcher.documentContentCap)
             var content = String(decoding: data, as: UTF8.self)
-            if content.utf8.count > Launcher.documentContentCap {
-                content = String(content.prefix(Launcher.documentContentCap)) + "\n… (document truncated)\n"
-            }
+            // The cut is on a BYTE boundary, so a split multi-byte character decodes to U+FFFD. That is
+            // the right trade: capping by characters means reading the whole file first, which is the
+            // thing the cap exists to prevent.
+            if size > Launcher.documentContentCap { content += "\n… (document truncated)\n" }
             return content
         }
     }
@@ -106,22 +104,26 @@ extension OrchestraService {
 
     /// Bytes for an image THE NOTE REFERENCES.
     ///
-    /// Five gates, in order: the document is one this card changed; the asset appears as an image
-    /// reference IN that note; the resolved path sits inside the worktree by REALPATH; it carries an
-    /// image extension; and it is a regular file within the size cap.
+    /// Five gates, in order: the document is one this workspace actually has, read under the SAME
+    /// containment rule as `readDocument`; the asset appears as an image reference in that document; the
+    /// file finally opened lives inside the worktree; it carries an image extension; and it is a regular
+    /// file within the size cap.
     ///
     /// Gate 2 is what keeps this from being an arbitrary worktree file read. Without it the endpoint
     /// serves any image-extension file anywhere under any card's worktree — a wider capability than
     /// anything the daemon ships today, and wider than `listDir` (names only) or `readDocument`
     /// (one document the workspace actually has).
+    ///
+    /// Gate 2 is RECOGNITION, not a markdown parser, so it approximates what the page renders. That is
+    /// tolerable precisely because it is not the containment boundary: an over-broad allowlist widens
+    /// the surface by in-tree IMAGE files, and gates 3-5 hold regardless of what it says.
     public func documentAsset(_ id: UUID, documentPath: String, assetPath: String) async throws -> DocumentAsset {
         let t = try await require(id)
-        // No card-kind gate and no cwd allowlist check — see `listDocuments` for why. Containment
-        // comes from the realpath check in `readDocumentAsset`, not from `allowedRoots`.
+        // No card-kind gate and no cwd allowlist check — see `listDocuments` for why. Containment comes
+        // from the descriptor-based check in `ContainedFile`, not from `allowedRoots`.
         // Capture everything the hop needs BEFORE it: `offActor` takes a Sendable closure, so reaching
         // back for an actor-isolated property inside it is a compile error.
-        let l = launcher, cwd = t.cwd
-        let parentRef = resolvedParentRef(t)
+        let cwd = t.cwd
         return try await offActor {
             // GATE 1 — the document must be a document this workspace actually has. Discovery, not the
             // git-derived changed set: a gitignored note is a perfectly valid document to read.
@@ -131,10 +133,15 @@ extension OrchestraService {
             }
             // GATE 2 — the asset must be referenced BY that note. The allowlist is derived from the
             // note read off DISK, never from anything a client supplied.
-            let noteAbs = (cwd as NSString).appendingPathComponent(documentPath)
-            guard let noteData = FileManager.default.contents(atPath: noteAbs) else {
-                throw OrchestraError.io("cannot read \(documentPath)")
-            }
+            //
+            // The document is read through the SAME contained reader `readDocument` uses, so it is held
+            // to the same containment rule. Reading it by name alone let a card-local
+            // `docs/foreign.md -> /elsewhere/foreign.md` supply the allowlist from outside the
+            // workspace — a document `readDocument` refuses outright.
+            let root = PathResolver.canonical(cwd)
+            let (noteData, _) = try ContainedFile.read(
+                (cwd as NSString).appendingPathComponent(documentPath),
+                containedIn: root, limit: Launcher.documentContentCap)
             let allowed = MarkdownAssets.referencedImages(
                 in: String(decoding: noteData, as: UTF8.self),
                 documentDir: (documentPath as NSString).deletingLastPathComponent)
@@ -142,41 +149,26 @@ extension OrchestraService {
             guard allowed.contains(path) else {
                 throw OrchestraError.invalidParams("\(assetPath) is not referenced by \(documentPath)")
             }
-            return try Self.readDocumentAsset(path, cwd: cwd)
+            return try Self.readDocumentAsset(path, cwd: root)
         }
     }
 
     /// GATES 3-5, split out so the containment/type/size rules live in one place. `path` is already
-    /// normalized and allowlisted by the caller.
+    /// normalized and allowlisted by the caller, and `cwd` is already canonical.
     static func readDocumentAsset(_ path: String, cwd: String) throws -> DocumentAsset {
-        // GATE 3 — REALPATH containment. Do NOT substitute `NSString.standardizingPath`: it collapses
-        // `..` lexically and leaves symlinks intact, so a worktree containing `notes/pics -> /` would
-        // let `notes/pics/etc/hosts` pass a textual prefix check while resolving outside the worktree.
-        let abs = PathResolver.canonical((cwd as NSString).appendingPathComponent(path))
-        let root = PathResolver.canonical(cwd)
-        guard abs == root || abs.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
-            throw OrchestraError.pathNotAllowed(path)
-        }
-        // GATE 4 — image types only.
-        let ext = (abs as NSString).pathExtension.lowercased()
+        // GATE 4 — image types only. On the requested name, because the extension is what selects the
+        // MIME type the page will be handed.
+        let ext = (path as NSString).pathExtension.lowercased()
         guard let mime = documentAssetMimeTypes[ext] else {
             throw OrchestraError.invalidParams("\(ext) is not a renderable note asset")
         }
-
-        // GATE 5 — STAT BEFORE READING. `contents(atPath:)` loads the whole file, so checking the cap
-        // afterwards would let a multi-gigabyte `.png` exhaust the daemon before it was rejected. The
-        // regular-file check matters too: a fifo under an allowed extension would block forever.
-        let attrs = try FileManager.default.attributesOfItem(atPath: abs)
-        guard (attrs[.type] as? FileAttributeType) == .typeRegular else {
-            throw OrchestraError.invalidParams("\(path) is not a regular file")
-        }
-        let size = (attrs[.size] as? NSNumber)?.intValue ?? Int.max
-        guard size <= documentAssetCap else {
-            throw OrchestraError.invalidParams("asset is \(size) bytes; the cap is \(documentAssetCap)")
-        }
-        guard let data = FileManager.default.contents(atPath: abs) else {
-            throw OrchestraError.io("cannot read \(path)")
-        }
+        // GATES 3 + 5 — containment, regular-file, and the size cap, all proved from ONE descriptor.
+        // Doing this by pathname was three separate races: the name could become a symlink out of the
+        // worktree after the containment check, a fifo under an allowed extension blocked the open
+        // forever, and `attributesOfItem` described a different file than the one finally read.
+        let (data, _) = try ContainedFile.read((cwd as NSString).appendingPathComponent(path),
+                                               containedIn: cwd,
+                                               limit: documentAssetCap, maxSize: documentAssetCap)
         return DocumentAsset(path: path, mimeType: mime, base64: data.base64EncodedString())
     }
 

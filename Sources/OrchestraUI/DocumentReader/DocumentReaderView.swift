@@ -34,12 +34,19 @@ public struct DocumentReaderView: View {
                     await reader.changed(path: change.path, list: fetchList, read: fetchBody)
                 }
             }
-            // Events broadcast while the link was down are not replayed, so coming back online
-            // reloads once. That is the whole reconnect story — the daemon watches on its own
-            // account, so there is no watch to re-register.
+            // Events broadcast while the link was down are not replayed, so coming back online reloads
+            // once — the LIST and the open document both. Reloading only the list left a document that
+            // was edited during the outage displaying its old text indefinitely, since it is still in
+            // the list and no event is coming for it. This is also what repairs an edit that landed in
+            // the daemon's own start-up window, before its watches existed.
+            //
+            // Routed through `changed` rather than a direct reload so it obeys the same rule as a live
+            // change: text must not move under someone who is mid-sentence.
             .onChange(of: model.connected) { _, online in
                 guard online else { return }
-                _Concurrency.Task { await reader.loadList(fetch: fetchList) }
+                _Concurrency.Task {
+                    await reader.changed(path: nil, list: fetchList, read: fetchBody)
+                }
             }
     }
 

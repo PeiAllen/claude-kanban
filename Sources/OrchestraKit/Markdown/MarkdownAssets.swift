@@ -16,7 +16,7 @@ public enum MarkdownAssets {
     /// `documentDir` and normalized. Remote URLs and `data:` URIs are excluded: the CSP blocks the first,
     /// and the page never asks the daemon for the second.
     public static func referencedImages(in source: String, documentDir: String) -> Set<String> {
-        let text = stripFencedCode(MarkdownOutline.normalized(source))
+        let text = stripNonRendering(stripFencedCode(MarkdownOutline.normalized(source)))
         var out = Set<String>()
 
         // Link reference DEFINITIONS first, so `![a][ref]` resolves whichever order the file uses.
@@ -37,7 +37,7 @@ public enum MarkdownAssets {
         }
         // Raw `<img src=…>`, since the settled format keeps formatting HTML.
         for m in matches(imgTagPattern, in: text) {
-            add(m[1].isEmpty ? m[2] : m[1], to: &out, documentDir: documentDir)
+            add([m[1], m[2], m[3]].first { !$0.isEmpty } ?? "", to: &out, documentDir: documentDir)
         }
         return out
     }
@@ -56,14 +56,18 @@ public enum MarkdownAssets {
 
     // MARK: - internals
 
-    /// `![alt](…)` — the `!` is load-bearing; a bare `[alt](…)` is a link, not an image.
-    private static let inlineImagePattern = #"!\[[^\]]*\]\(([^)]*)\)"#
+    /// `![alt](…)` — the `!` is load-bearing; a bare `[alt](…)` is a link, not an image. The lookbehind
+    /// is load-bearing too: `\![alt](…)` is an ESCAPED bang, which renders as a literal `!` followed by
+    /// a link. Matching it anyway allowlisted a file the page never asks for.
+    private static let inlineImagePattern = #"(?<!\\)!\[[^\]]*\]\(([^)]*)\)"#
     /// `![alt][label]`, including the collapsed `![label][]` form.
-    private static let refImagePattern = #"!\[([^\]]*)\]\[([^\]]*)\]"#
+    private static let refImagePattern = #"(?<!\\)!\[([^\]]*)\]\[([^\]]*)\]"#
     /// `[label]: destination` at the start of a line.
     private static let defPattern = #"(?m)^\ {0,3}\[([^\]]+)\]:\s*<?([^>\s]+)>?"#
-    /// `<img … src="…">` with either quote style.
-    private static let imgTagPattern = #"(?i)<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')"#
+    /// `<img … src=…>`, quoted either way or bare. The unquoted form is valid HTML and the page renders
+    /// it, so omitting it here made a legitimate image 404 rather than keeping anything out.
+    private static let imgTagPattern =
+        #"(?i)<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#
 
     /// Drop fenced code before scanning, so a document that DOCUMENTS markdown syntax cannot widen its own
     /// allowlist by containing an example image reference.
@@ -88,6 +92,48 @@ public enum MarkdownAssets {
             kept.append(line)
         }
         return kept.joined(separator: "\n")
+    }
+
+    /// Drop the two remaining spans that LOOK like markdown but never render as an image: inline code
+    /// and HTML comments.
+    ///
+    /// Both are the same failure as fenced code, one scale down. A document explaining the syntax with
+    /// `` `![x](secret.png)` `` renders a literal string, and a commented-out reference renders nothing
+    /// at all — yet either one would put that file on the allowlist. The endpoint's whole claim is
+    /// "only what this document points at", so a span the reader will never request must not widen it.
+    ///
+    /// This stays RECOGNITION rather than parsing, so it remains an approximation of what marked does.
+    /// That is acceptable only because it errs toward exclusion, and because a wrong answer here widens
+    /// the surface by in-tree IMAGE files, never by arbitrary ones — the containment and type gates
+    /// downstream do not depend on it.
+    private static func stripNonRendering(_ s: String) -> String {
+        var text = s
+        // HTML comments first: one may contain backticks.
+        text = replacing(#"(?s)<!--.*?-->"#, in: text)
+        // Inline code: a run of N backticks closed by the next run of exactly N.
+        var out = ""
+        var rest = Substring(text)
+        while let open = rest.firstIndex(of: "`") {
+            out += rest[rest.startIndex..<open]
+            let run = rest[open...].prefix { $0 == "`" }
+            var search = rest.index(open, offsetBy: run.count)
+            var closed = false
+            while let next = rest[search...].firstIndex(of: "`") {
+                let closing = rest[next...].prefix { $0 == "`" }
+                if closing.count == run.count { search = rest.index(next, offsetBy: closing.count); closed = true; break }
+                search = rest.index(next, offsetBy: closing.count)
+            }
+            if !closed { out += rest[open...]; return out }     // unterminated: keep it verbatim
+            rest = rest[search...]
+        }
+        out += rest
+        return out
+    }
+
+    private static func replacing(_ pattern: String, in text: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return text }
+        return re.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length),
+                                           withTemplate: "")
     }
 
     /// Pull the destination out of an inline target: strip `<…>`, then drop any trailing "title".
