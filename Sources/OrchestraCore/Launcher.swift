@@ -149,6 +149,18 @@ public struct Launcher: Sendable {
         return candidates.filter { !tracked.contains($0) }.sorted()
     }
 
+    /// Every path git tracks in this working directory, or `nil` when it is not a git repo at all.
+    ///
+    /// The nil case is load-bearing for the document list: it distinguishes "git has nothing to say
+    /// about this directory" (a scratch dir — so NO document gets a status, and the reader shows
+    /// everything) from "git tracks this repo, and this file is not in it" (the card created it).
+    /// An empty repo succeeds with an empty set, which is correct — nothing is committed yet, so every
+    /// document is new.
+    func trackedPathSet(worktree: String) -> Set<String>? {
+        guard let r = try? Proc.run(["git", "ls-files", "-z"], cwd: worktree), r.ok else { return nil }
+        return Set(r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty })
+    }
+
     /// The paths git tracks under `dir` (worktree-relative) — subtracted from the notes disk scan so a
     /// repo that tracks `notes/` still shows only *changed* notes (via the diff set), not every file.
     private func trackedPaths(worktree: String, under dir: String) -> Set<String> {

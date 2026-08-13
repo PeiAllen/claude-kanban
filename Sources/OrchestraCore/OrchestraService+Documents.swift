@@ -38,13 +38,24 @@ extension OrchestraService {
         let parentRef = resolvedParentRef(t)
         return try await offActor {
             let discovered = DocumentDiscovery.walk(root: cwd)
-            // Git's opinion, where it has one. A non-repo, or a card with no resolvable base, simply
-            // yields no statuses — the walk already found the files.
+            // Git's opinion, where it has one — the walk already found the files regardless.
             let statuses = Dictionary(
                 l.changedMarkdown(worktree: cwd, parentRef: parentRef)
                     .map { ($0.path, $0.added ? DocumentStatus.added : .modified) },
                 uniquingKeysWith: { a, _ in a })
-            let refs = discovered.map { DocRef(path: $0, status: statuses[$0]) }
+            // A discovered document git does NOT TRACK was created in this workspace. That one rule
+            // covers three cases the diff alone misses: a gitignored document anywhere (not just under
+            // `notes/`), an untracked document when no merge base resolves (the whole diff is skipped
+            // then), and a repo with no commits yet.
+            //
+            // `nil` means "not a git repo", which is different from "tracks nothing": there, NO
+            // document gets a status and the reader falls back to showing everything.
+            let tracked = l.trackedPathSet(worktree: cwd)
+            let refs = discovered.map { path -> DocRef in
+                if let s = statuses[path] { return DocRef(path: path, status: s) }
+                if let tracked, !tracked.contains(path) { return DocRef(path: path, status: .added) }
+                return DocRef(path: path, status: nil)
+            }
             // CHANGED FIRST, then everything else, each alphabetical. What the agent just touched is
             // what the reviewer came for; the rest is browsable below it.
             return refs.sorted {
