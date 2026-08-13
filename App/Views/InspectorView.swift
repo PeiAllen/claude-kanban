@@ -25,7 +25,12 @@ struct InspectorView: View {
                                                          set: { model.inspectorMode = $0 }))
                         switch model.inspectorMode {
                         case .diff:  DiffInspectorView(task: t)
-                        case .documents: DocumentReaderView(task: t)
+                        case .documents:
+                            // .id(t.id) is REQUIRED. Without it SwiftUI reuses the view, so the
+                            // @StateObject model, its selected document, and the webview's already-
+                            // bound assetProvider all survive a card switch — the next card renders
+                            // the previous card's text and resolves images against its worktree.
+                            DocumentReaderView(task: t).id(t.id)
                         case .agent: AgentChrome(task: t)
                         }
                     }

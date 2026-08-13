@@ -45,11 +45,19 @@
   // CSP's `base-uri 'none'`, so rewrite explicitly and keep the CSP intact.
   function resolveAssets(el, documentDir) {
     el.querySelectorAll("img[src]").forEach((img) => {
-      const src = img.getAttribute("src") || "";
+      var src = img.getAttribute("src") || "";
       // Leave `data:` and any explicit scheme alone; the CSP decides whether they may load.
       if (!src || /^[a-z][a-z0-9+.\-]*:/i.test(src) || src.startsWith("//")) return;
-      const joined = src.startsWith("/") ? src.slice(1) : (documentDir ? documentDir + "/" + src : src);
-      img.setAttribute("src", "orchestra-doc://doc/" + normalizePath(joined));
+      // Strip a query or fragment, then decode — WebKit percent-decodes `url.path` before the scheme
+      // handler sees it, so an encoded src would never match the daemon's allowlist. This MUST stay
+      // identical to MarkdownAssets.add in Swift; DocumentPathVectorTests pins the pair.
+      var cut = src.search(/[?#]/);
+      if (cut >= 0) src = src.slice(0, cut);
+      try { src = decodeURIComponent(src); } catch (e) { /* malformed escape: use it as written */ }
+      if (!src) return;
+      var joined = src.startsWith("/") ? src.slice(1) : (documentDir ? documentDir + "/" + src : src);
+      // Re-encode so the URL is well-formed; WebKit decodes it again on the way to the handler.
+      img.setAttribute("src", "orchestra-doc://doc/" + encodeURI(normalizePath(joined)));
     });
   }
 

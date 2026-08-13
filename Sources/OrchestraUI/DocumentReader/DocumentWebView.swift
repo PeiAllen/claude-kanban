@@ -56,21 +56,35 @@ struct DocumentWebView {
         /// The most recent payload, held until the page is ready. `evaluateJavaScript` routinely races
         /// the initial load — `window.orchestra` does not exist until reader.js has executed — so the
         /// first render is queued and flushed from `didFinish`.
-        private var pending: [String: Any]?
+        private var pending: String?
         private var loaded = false
+        /// The last payload actually handed to the page. SwiftUI re-runs `body` for ANY published
+        /// change — a keystroke in the compose field, a filter edit, or any board tick, since the view
+        /// holds BoardModel as an EnvironmentObject. `render()` rebuilds the DOM and drops every `.sel`
+        /// class, so pushing unconditionally erases the user's selection highlight on the first
+        /// keystroke, and re-lexes the whole document several times a second on a busy board.
+        private var lastSent: String?
 
         init(onSelect: @escaping (DocumentSelection) -> Void) { self.onSelect = onSelect }
 
         func push(_ payload: [String: Any], into web: WKWebView) {
-            guard loaded else { pending = payload; return }
-            evaluate(payload, in: web)
+            guard let json = Self.encode(payload) else { return }
+            guard json != lastSent else { return }        // nothing changed — leave the DOM alone
+            lastSent = json
+            guard loaded else { pending = json; return }
+            evaluate(json, in: web)
         }
 
-        private func evaluate(_ payload: [String: Any], in web: WKWebView) {
-            // JSON-encoded, never string-interpolated: note content is untrusted and would otherwise
-            // be a script-injection vector straight through the bridge.
-            guard let data = try? JSONSerialization.data(withJSONObject: payload),
-                  let json = String(data: data, encoding: .utf8) else { return }
+        private static func encode(_ payload: [String: Any]) -> String? {
+            guard let d = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            else { return nil }
+            return String(data: d, encoding: .utf8)
+        }
+
+        /// `json` is already serialized — the payload is never string-interpolated raw, because
+        /// document content is untrusted and would otherwise be a script-injection vector straight
+        /// through the bridge.
+        private func evaluate(_ json: String, in web: WKWebView) {
             web.evaluateJavaScript("(function(o){window.orchestra.render(o.markdown,o);})(\(json))")
         }
 
@@ -87,6 +101,19 @@ struct DocumentWebView {
                   let end = d["endLine"] as? Int,
                   block >= 0, start >= 1, end >= start else { return }
             onSelect(DocumentSelection(blockIndex: block, startLine: start, endLine: end))
+        }
+
+        /// A jetsammed content process leaves the page blank and every later `evaluateJavaScript` a
+        /// silent no-op. Reload, and let the next `push` re-send (the cache is cleared so it will).
+        func webViewWebContentProcessDidTerminate(_ web: WKWebView) {
+            loaded = false
+            lastSent = nil
+            web.load(URLRequest(url: DocumentSchemeHandler.pageURL))
+        }
+
+        /// A failed FIRST load must not leave the navigation gate open.
+        func webView(_ web: WKWebView, didFailProvisionalNavigation _: WKNavigation!, withError _: Error) {
+            loaded = true
         }
 
         func webView(_ web: WKWebView, decidePolicyFor action: WKNavigationAction,

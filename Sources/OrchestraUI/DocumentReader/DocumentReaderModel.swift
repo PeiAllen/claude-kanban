@@ -106,6 +106,10 @@ public final class DocumentReaderModel: ObservableObject {
         selected = doc
         browsing = false
         cancelComment()                                // an anchor belongs to the document it came from
+        // Clear the body FIRST. Leaving the previous document's text on screen under the new path lets
+        // a selection freeze a comment that cites one file and quotes another — the same "wrong is
+        // worse than coarse" failure the line refinement guards, at document granularity.
+        content = nil
         loadingContent = true
         contentEpoch &+= 1
         let mine = contentEpoch

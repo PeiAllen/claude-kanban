@@ -13,7 +13,9 @@ struct DocumentsPage: View {
     @Environment(\.theme) private var theme: Theme
 
     var body: some View {
+        // .id(task.id): see InspectorView — the reader must not carry state across cards.
         DocumentReaderView(task: task)
+            .id(task.id)
             .background(theme.winBg)
             .navigationTitle("Docs")
             .navigationBarTitleDisplayMode(.inline)

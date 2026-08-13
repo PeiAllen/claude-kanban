@@ -13,11 +13,16 @@ public enum DocumentDiscovery {
     /// formats it cannot lay out would list documents that open blank.
     public static let documentExtensions: Set<String> = ["md", "markdown"]
 
+    /// Dot-directories that DO hold documents a reviewer wants.
+    ///
+    /// Hidden entries are skipped by default, which is right for `.git` and `.build` but wrong for
+    /// these: a card whose only markdown change is `.claude/skills/foo.md` would otherwise show an
+    /// empty reader and seed no Obsidian tabs. The old Obsidian path named `.claude/skills`
+    /// explicitly, so excluding them here was a regression.
+    public static let allowedDotDirectories: Set<String> = [".claude", ".github", ".orchestra"]
+
     /// Directory names pruned wholesale. Pruning at the DIRECTORY level is what makes this cheap:
     /// `node_modules` costs one comparison, not forty thousand stats.
-    ///
-    /// Dot-directories (`.git`, `.build`, `.venv`) are NOT listed here because `.skipsHiddenFiles`
-    /// already removes them for free.
     ///
     /// Shared with the file watcher on purpose. If the watcher did not prune the same set, a `.md`
     /// inside a denied directory would emit change events for a document discovery never lists.
@@ -35,12 +40,19 @@ public enum DocumentDiscovery {
         documentExtensions.contains((path as NSString).pathExtension.lowercased())
     }
 
-    /// True when any component of `relativePath` is a pruned or hidden directory. The watcher sees
-    /// absolute paths from the OS rather than walking, so it needs this component test rather than
-    /// `skipDescendants`.
+    /// True when a DIRECTORY should not be descended into.
+    public static func isPrunedDirectory(_ name: String) -> Bool {
+        if denyDirectories.contains(name) { return true }
+        return name.hasPrefix(".") && !allowedDotDirectories.contains(name)
+    }
+
+    /// True when any component of `relativePath` is pruned, or the file itself is hidden. The watcher
+    /// sees absolute paths from the OS rather than walking, so it needs this component test rather
+    /// than `skipDescendants`. It MUST agree with the walk, or the watcher reports changes for
+    /// documents the list never shows.
     public static func isPruned(relativePath: String) -> Bool {
         for component in relativePath.split(separator: "/").dropLast() {
-            if component.hasPrefix(".") || denyDirectories.contains(String(component)) { return true }
+            if isPrunedDirectory(String(component)) { return true }
         }
         return (relativePath as NSString).lastPathComponent.hasPrefix(".")
     }
@@ -50,12 +62,12 @@ public enum DocumentDiscovery {
     /// Blocking I/O — call it off the actor.
     public static func walk(root: String, cap: Int = resultCap) -> [String] {
         let rootURL = URL(fileURLWithPath: root, isDirectory: true)
-        // `.skipsHiddenFiles` is doing real work: it removes `.git`, `.build`, `.venv`, and every
-        // dotfile in one option instead of a deny list that would have to chase them.
+        // Hidden entries are NOT skipped by the enumerator, because `.claude/skills` and `.github`
+        // legitimately hold documents. Pruning happens per-directory below instead, which keeps the
+        // dot-directory allowlist and the deny list in ONE decision.
         guard let en = FileManager.default.enumerator(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles],
             errorHandler: { _, _ in true })      // an unreadable subtree is skipped, never fatal
         else { return [] }
 
@@ -66,10 +78,11 @@ public enum DocumentDiscovery {
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             if isDir {
                 // PRUNE HERE, not per-file. This is the whole performance story.
-                if denyDirectories.contains(url.lastPathComponent) { en.skipDescendants() }
+                if isPrunedDirectory(url.lastPathComponent) { en.skipDescendants() }
                 continue
             }
-            guard isDocument(url.lastPathComponent) else { continue }
+            guard isDocument(url.lastPathComponent),
+                  !url.lastPathComponent.hasPrefix(".") else { continue }
             let path = url.standardizedFileURL.path
             guard path.hasPrefix(rootPath + "/") else { continue }   // never leave the root
             out.append(String(path.dropFirst(rootPath.count + 1)))

@@ -105,14 +105,27 @@ public enum MarkdownAssets {
         let src = raw.trimmingCharacters(in: .whitespaces)
         guard !src.isEmpty, !src.hasPrefix("//") else { return }
         // Anything carrying a scheme is remote or inline; neither is ours to serve.
+        // Mirrors reader.js's /^[a-z][a-z0-9+.\-]*:/i EXACTLY. It must: a form one side treats as a
+        // scheme and the other treats as a path is a silent 404 (`1x:a.png` was such a case).
         if let colon = src.firstIndex(of: ":") {
             let scheme = src[src.startIndex..<colon]
-            if !scheme.isEmpty, scheme.allSatisfy({ $0.isLetter || $0.isNumber || "+-.".contains($0) }) {
+            if let first = scheme.first, first.isLetter,
+               scheme.allSatisfy({ $0.isLetter || $0.isNumber || "+-.".contains($0) }) {
                 return
             }
         }
-        let joined = src.hasPrefix("/") ? String(src.dropFirst())
-                                        : (documentDir.isEmpty ? src : documentDir + "/" + src)
+        // Strip a query or fragment, then PERCENT-DECODE. WebKit percent-decodes `url.path` before the
+        // scheme handler ever sees it, so an allowlist holding the still-encoded text can never match:
+        // `![x](images/my%20image.png)` is requested as `images/my image.png`. `%20` is the
+        // CommonMark-canonical space and what most editors emit, so this is the common case.
+        var cleaned = src
+        if let cut = cleaned.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            cleaned = String(cleaned[cleaned.startIndex..<cut])
+        }
+        cleaned = cleaned.removingPercentEncoding ?? cleaned
+        guard !cleaned.isEmpty else { return }
+        let joined = cleaned.hasPrefix("/") ? String(cleaned.dropFirst())
+                                            : (documentDir.isEmpty ? cleaned : documentDir + "/" + cleaned)
         let path = normalize(joined)
         guard !path.isEmpty else { return }
         set.insert(path)

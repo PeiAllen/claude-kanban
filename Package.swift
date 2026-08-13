@@ -81,6 +81,7 @@ let package = Package(
         ),
         .executableTarget(name: "orchestrad", dependencies: ["OrchestraCore"]),
         .executableTarget(name: "orchestra", dependencies: ["OrchestraCore"]),
+        .executableTarget(name: "gencomment-scratch", dependencies: ["OrchestraKit"]),
         .executableTarget(
             name: "orchestra-mcp",
             // D4: the MCP bridge references only client-safe types (CommandCatalog/ControlClient/

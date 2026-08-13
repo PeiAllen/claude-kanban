@@ -24,6 +24,8 @@ struct DocumentDiscoveryTests {
         try write("notes/designs/plan.md")         // gitignored in a real repo — must still be found
         try write("Sources/main.swift")            // not a document
         try write(".git/COMMIT_EDITMSG.md")        // hidden dir
+        try write(".claude/skills/foo.md")         // hidden BUT allowlisted — real documents live here
+        try write(".github/PULL_REQUEST_TEMPLATE.md")
         try write(".hidden.md")                    // hidden file
         try write("node_modules/pkg/readme.md")    // denied dir
         try write("build/output.md")               // denied dir
@@ -56,6 +58,19 @@ struct DocumentDiscoveryTests {
         #expect(found.allSatisfy { !$0.hasPrefix("node_modules/") })
         #expect(found.allSatisfy { !$0.hasPrefix("build/") })
         #expect(found.allSatisfy { !$0.hasPrefix("DerivedData/") })
+    }
+
+    @Test("allowlisted dot-directories are still walked")
+    func allowedDotDirectoriesAreFound() throws {
+        // `.claude/skills` and `.github` hold documents a reviewer wants. Skipping every hidden entry
+        // made a card whose only change was `.claude/skills/foo.md` show an empty reader and seed no
+        // Obsidian tabs — a regression against the shipped Obsidian path, which named it explicitly.
+        let root = try tree()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let found = Set(DocumentDiscovery.walk(root: root))
+        #expect(found.contains(".claude/skills/foo.md"))
+        #expect(found.contains(".github/PULL_REQUEST_TEMPLATE.md"))
+        #expect(found.allSatisfy { !$0.hasPrefix(".git/") })   // ...but .git is still pruned
     }
 
     @Test("results are relative, sorted, and capped")

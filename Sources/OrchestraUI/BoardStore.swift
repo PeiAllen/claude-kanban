@@ -1067,15 +1067,21 @@ public class BoardStore: ObservableObject {
             return t
         } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
-    public func send(_ id: UUID, _ message: String) async {
+    @discardableResult
+    public func send(_ id: UUID, _ message: String) async -> Bool {
         // Mint the required message id here (the daemon requires it; this is a client seam like the CLI
         // and MCP bridge). A fresh id per UI send is correct — the phone's reply/compose is a new intent,
         // not a retry.
         let messageId = UUID()
-        do { _ = try await client.call("send", .object(["ref": .string(id.uuidString),
-                                                        "message": .string(message),
-                                                        "id": .string(messageId.uuidString)])) }
-        catch { toast("Couldn't send message", sub: "\(error)", color: .red) }
+        do {
+            _ = try await client.call("send", .object(["ref": .string(id.uuidString),
+                                                       "message": .string(message),
+                                                       "id": .string(messageId.uuidString)]))
+            return true
+        } catch {
+            toast("Couldn't send message", sub: "\(error)", color: .red)
+            return false                    // the caller keeps the user's text so it can be retried
+        }
     }
 
     /// Register this device for push (N1): hand the APNs device token + the current notification-pref

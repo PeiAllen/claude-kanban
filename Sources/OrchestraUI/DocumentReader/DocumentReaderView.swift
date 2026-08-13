@@ -219,10 +219,9 @@ public struct DocumentReaderView: View {
 
                 Button {
                     _Concurrency.Task {
-                        await reader.send { message in
-                            await model.send(task.id, message)
-                            return true
-                        }
+                        // Report the REAL outcome: on failure the model keeps the anchor and the draft,
+                        // so a dropped link costs a retry rather than the user's comment.
+                        await reader.send { message in await model.send(task.id, message) }
                         applyDeferred()
                     }
                 } label: {
