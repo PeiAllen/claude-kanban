@@ -133,7 +133,7 @@ private struct HeaderBar: View {
 
             // Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
             Button {
-                _Concurrency.Task { await model.openNotes(task.id) }
+                _Concurrency.Task { await model.openInObsidian(task.id) }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "note.text").font(F.ui(13, .semibold)).foregroundColor(theme.text)

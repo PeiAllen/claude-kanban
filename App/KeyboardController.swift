@@ -144,7 +144,7 @@ final class KeyboardController {
         case .spawn, .newCard:      model.spawnDefaultColumn = .plan; model.showSpawn = true; return true
         case .archive:              model.requestArchiveSelected(); return true
         case .openInZed:            model.openZedSelected(); return true
-        case .openNotes:            model.openNotesSelected(); return true
+        case .openInObsidian:            model.openInObsidianSelected(); return true
         case .toggleDiff:           model.inspectorMode = model.inspectorMode.next; return true
         case .openInbox:            model.requestInboxOpen = true; return true
         case .copy(let t):          model.copySelected(t); return true

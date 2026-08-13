@@ -18,6 +18,13 @@ extension OrchestraService {
     /// Content is a separate call. Shipping it here is fine for three changed documents and wrong for two
     /// hundred documents — a phone pays for every byte, and the reader opens one file at a time.
     public func listDocuments(_ id: UUID) async throws -> [DocRef] {
+        try await documentRefs(id)
+    }
+
+    /// The ordered document set — the ONE place discovery + git decoration + ordering happen. Both the
+    /// in-app reader and "Open in Obsidian" read from here, so the two surfaces can never disagree
+    /// about what a card's documents are.
+    func documentRefs(_ id: UUID) async throws -> [DocRef] {
         let t = try await require(id)
         // NO card-kind gate and NO `assertAllowed(t.cwd)`. Documents are a property of the WORKING
         // DIRECTORY, so a freeform or scratch card has them exactly like a worktree card does — and
@@ -94,8 +101,8 @@ extension OrchestraService {
     ///
     /// Gate 2 is what keeps this from being an arbitrary worktree file read. Without it the endpoint
     /// serves any image-extension file anywhere under any card's worktree — a wider capability than
-    /// anything the daemon ships today, and wider than `listDir` (names only) or `changedNotes`
-    /// (git-reported `.md` for one card).
+    /// anything the daemon ships today, and wider than `listDir` (names only) or `readDocument`
+    /// (one document the workspace actually has).
     public func documentAsset(_ id: UUID, documentPath: String, assetPath: String) async throws -> DocumentAsset {
         let t = try await require(id)
         // No card-kind gate and no cwd allowlist check — see `listDocuments` for why. Containment

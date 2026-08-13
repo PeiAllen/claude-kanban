@@ -157,7 +157,7 @@ public class BoardStore: ObservableObject {
     @Published public var agentOwners: [UUID: AgentTerminalOwnerState] = [:]
 
     /// The last live change seen for each card's watched documents — a NOTIFICATION cursor, never content.
-    /// The reader observes it and re-fetches through `changedNotes`, so a large document never rides the
+    /// The reader observes it and re-fetches through `readDocument`, so a large document never rides the
     /// event bus. Live-only, so it is deliberately not seeded from a snapshot: the daemon watches on
     /// its own account, so a reconnecting client simply starts receiving these again.
     @Published public private(set) var documentChanges: [UUID: DocumentChange] = [:]
@@ -965,7 +965,7 @@ public class BoardStore: ObservableObject {
             ingestShellsChanged(s)
         case .documentChanged(let change):
             // A note this card's agent edited. Store the cursor ONLY — the reader re-fetches through
-            // the shipped `changedNotes` RPC, so a large document never rides the event bus. Not rev-gated:
+            // the shipped `readDocument` RPC, so a large document never rides the event bus. Not rev-gated:
             // like shells and owner state, this carries its own dedup (the daemon suppresses an
             // unchanged content hash before it ever broadcasts).
             documentChanges[change.cardId] = change
@@ -1293,10 +1293,10 @@ public class BoardStore: ObservableObject {
             toast("Couldn't open in Zed", sub: "\(error)", color: .red)
         }
     }
-    public func openNotes(_ id: UUID) async {
+    public func openInObsidian(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {
-            let r = try await client.call("openNotes", .object(["ref": .string(id.uuidString)]))
+            let r = try await client.call("openInObsidian", .object(["ref": .string(id.uuidString)]))
             let opened = r["opened"]?.intValue ?? 0
             let total = r["total"]?.intValue ?? 0
             let where_ = t.map { ($0.cwd as NSString).lastPathComponent } ?? "worktree"

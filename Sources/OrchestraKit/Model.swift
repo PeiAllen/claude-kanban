@@ -510,7 +510,7 @@ public struct DocRef: Codable, Sendable, Equatable, Identifiable {
 /// One live change to a document the daemon is watching: WHICH note moved, and its new content hash.
 ///
 /// Deliberately a NOTIFICATION, not the content. The event stays a few dozen bytes and the client
-/// re-fetches through the shipped `changedNotes` RPC, so a large document can never blow the wire.
+/// re-fetches through the shipped `readDocument` RPC, so a large document can never blow the wire.
 public struct DocumentChange: Codable, Sendable, Equatable {
     public let cardId: UUID
     public let path: String          // relative to the card's working directory
@@ -1365,7 +1365,7 @@ public enum Event: Codable, Sendable, Equatable {
     case shellsChanged(ShellWindowsState)
     /// A note the daemon watches changed on disk. Live-only — NOT ring-replayed (only `.activity` is),
     /// and NOT durable card state (`Task` is untouched). Carries a hash, never content: the client
-    /// re-fetches through the shipped `changedNotes` RPC, so a large document can never blow the wire.
+    /// re-fetches through the shipped `readDocument` RPC, so a large document can never blow the wire.
     ///
     /// There is nothing to reconcile on reconnect. The daemon watches every live worktree card on its
     /// own account rather than per-client, so a reconnecting client simply starts receiving these

@@ -255,7 +255,7 @@ public final class BoardUX: BoardStore {
     /// A card's title by id (searches board + archived), for confirm-dialog copy. "" if unknown.
     public func cardTitle(_ id: UUID) -> String { (tasks + archived).first { $0.id == id }?.title ?? "" }
     public func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
-    public func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
+    public func openInObsidianSelected() { if let id = selectedId { _Concurrency.Task { await openInObsidian(id) } } }
 
     /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path / card reference).
     public func copySelected(_ target: CopyTarget) {

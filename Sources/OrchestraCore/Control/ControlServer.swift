@@ -145,12 +145,12 @@ public final class ControlServer: @unchecked Sendable {
             let task = try await service.resolveRef(ref)
             try await service.openInZed(task.id)
             return .object(["ok": .bool(true)])
-        case "openNotes":
+        case "openInObsidian":
             guard let p = req.params, let ref = p.optString("ref") else {
-                throw OrchestraError.invalidParams("openNotes needs ref")
+                throw OrchestraError.invalidParams("openInObsidian needs ref")
             }
             let task = try await service.resolveRef(ref)
-            let n = try await service.openNotes(task.id)
+            let n = try await service.openInObsidian(task.id)
             return .object(["ok": .bool(true), "opened": .int(n.opened), "total": .int(n.total)])
         case "hook":
             // The unified hook channel: the `_report` edge sends a TYPED event (already parsed at the
@@ -194,7 +194,7 @@ public final class ControlServer: @unchecked Sendable {
         case "listDocuments":
             // The reader's document list: path + optional git status, NO content. Split from
             // `readDocument` on purpose — shipping content with the list is fine for three changed
-            // notes and wrong for two hundred documents. Internal + app-only, like `changedNotes`.
+            // documents and wrong for two hundred. Internal + app-only, like `diffText`.
             guard let p = req.params, let ref = p.optString("ref") else {
                 throw OrchestraError.invalidParams("listDocuments needs ref")
             }
@@ -209,7 +209,7 @@ public final class ControlServer: @unchecked Sendable {
         case "documentAsset":
             // An image a note references, read by the daemon so the phone — which cannot reach the
             // daemon's disk — renders the same page the desktop does. Internal + app-only, like
-            // `changedNotes`: NOT a registry Command, so it never becomes an MCP tool.
+            // `diffText`: NOT a registry Command, so it never becomes an MCP tool.
             //
             // `note` is REQUIRED and is not decorative: it is the allowlist SCOPE. Without it the
             // endpoint degenerates into an arbitrary worktree image read.

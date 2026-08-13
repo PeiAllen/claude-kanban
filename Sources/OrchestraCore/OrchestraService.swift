@@ -1487,9 +1487,14 @@ public actor OrchestraService {
     /// Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
     /// Returns `(opened:` tabs opened `, total:` changed `.md` count `)`.
     @discardableResult
-    public func openNotes(_ id: UUID) async throws -> (opened: Int, total: Int) {
+    /// Open the card's working directory as an Obsidian vault, with its documents seeded as tabs.
+    /// Tabs come from `documentRefs` — the SAME ordered set the in-app reader lists — so Obsidian and
+    /// the reader always agree about what a card's documents are.
+    public func openInObsidian(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        return try launcher.openNotes(t.cwd, parentRef: resolvedParentRef(t))
+        let tabs = try await documentRefs(id).map(\.path)
+        let l = launcher, cwd = t.cwd
+        return try await offActor { try l.openInObsidian(cwd, tabs: tabs) }
     }
 
     // MARK: - config
