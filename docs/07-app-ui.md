@@ -287,10 +287,11 @@ Selecting a card opens the **inspector**, a resizable right-hand sidebar (defaul
 persisted; drag the left edge to resize). A **live** card shows the agent chrome; a **dead** card shows
 the [Recovery panel](#recovery-panel) instead.
 
-The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
-between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view). Immediately right
+The **header bar** leads with an **Agent | Diff | Docs** segmented toggle (axis 7) that swaps the inspector
+body between the agent terminal, the read-only in-app [Diff view](#the-in-app-diff-view), and the
+[Document reader](#the-document-reader). Immediately right
 of that toggle sits the card's **branch diffstat** (`7f +214 −38`, in the board card's quiet-cluster colors), then
-come **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes** (`note.text`),
+come **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open in Obsidian** (`note.text`),
 an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). The stat stays outside the
 segmented control so its semantic green/red survives the control tint, and it measures the card's *default*
 baseline (parent-relative when stacked, else branch-relative); switching the [Diff view](#the-in-app-diff-view)'s
@@ -314,12 +315,14 @@ ordering. That row degrades the same way — a big stat next to a long model nam
 mode chip onto two lines and push the context gauge's percentage off the trailing edge — so the chip
 sheds its file count first and hides last, leaving its neighbours intact.
 
-**Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
+**Open in Obsidian** opens the card's **working directory** as an **Obsidian vault** — the host's
 `~/.claude/open-obsidian-vault.sh` recipe, wired through the
-[`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
-plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk,
-since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a
-large card doesn't flood Obsidian. It is also bound to the bare
+[`openInObsidian` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
+plumbing. It seeds one tab per document the card **changed or created**, capped at 15. It deliberately
+does not seed every document in the workspace, which would flood Obsidian with every markdown file in
+the repo. The vault is the whole directory, so the rest stays one click away in the file tree. The tab
+set comes from the same list the [Document reader](#the-document-reader) shows, so the two surfaces
+always agree. It is also bound to the bare
 [`o` keyboard shortcut](#keyboard-navigation) on the selected card. The per-card **Inbox** button
 (`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
 Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
@@ -367,6 +370,56 @@ The **agent chrome** stacks, top to bottom:
    target", and a clickable path breadcrumb;
 4. the **agent terminal** (SwiftTerm);
 5. a **shell panel** — either the shell tabs, or a "New terminal" button when none are open.
+### The document reader
+
+The **Docs** tab reads the markdown documents in a card's working directory, and lets you comment on a
+passage without leaving the board.
+
+**What it lists.** A document is any `.md` or `.markdown` file in the card's working directory.
+Discovery is a filesystem walk, not a git query, so a gitignored `notes/` directory lists exactly like a
+tracked `docs/` one. The walk skips hidden entries (`.git`, `.build`) and prunes `node_modules`, `build`,
+`dist`, `target`, `vendor`, `Pods`, and `DerivedData` at the directory level. It stops at 500 documents.
+
+Documents belong to the **working directory**, not to the card — the same rule the diff follows. Two
+cards on one directory list the same documents. A freeform or scratch card has documents like a
+worktree card does.
+
+**What it leads with.** The picker shows the documents this card changed or created, under a
+**Changed by this card** heading. **Show all N documents** reveals the rest. Two rules keep that from
+hiding things:
+
+- The filter always searches every document, touched or not.
+- If no document has a status, the reader lists everything. A directory that is not a git repository
+  has no changed set, so a focus section there would be empty.
+
+A document gets an `A` badge when git does not track it, or when the branch added it. It gets an `M`
+badge when the branch modified it. Most documents carry no badge, because git has nothing to say about
+a file that is committed and unchanged. That is correct, not missing data.
+
+**How you comment.** Select a passage, then type in the native field at the bottom. On the Mac you drag
+through any range. On the phone you tap a block. The comment becomes ONE message in the card's inbox. It
+is addressed to the agent that owns the document:
+
+```
+Comment on `docs/design.md:42-46` § Design › Level contract
+
+> | L1 containers | What actually runs? | processes / artifacts |
+
+Should this say "processes only"? An artifact isn't a running thing.
+```
+
+The quote freezes when you select, not when you send. Live refresh also pauses while the field is open,
+so the text cannot move under you mid-sentence. The frozen quote stays a valid anchor after the line
+numbers shift.
+
+**How it stays fresh.** The daemon watches each working directory and pushes a small notification when
+a document changes. The reader re-reads that document and flashes the blocks whose content moved, for
+about a second. The flash is a change cue, not a diff.
+
+The reader is read-only. The agent edits; you comment. A comment carries no instruction line, because
+the author decides whether to answer, to edit, or both.
+
+
 
 ## Terminals and shell tabs
 
@@ -659,6 +712,12 @@ row's colour and its primary action (Approve/Deny, a quick reply, Recover, or Op
 that single contract, a card that is merely idle between turns no longer sits in the queue — it surfaces
 only once it declares a question, requests a merge a human must grant, or goes quiescent past the stall
 threshold.
+
+**Documents.** The phone's **Docs** tab runs the same
+[document reader](#the-document-reader) the desktop inspector uses — one bundled renderer, one document
+list, one comment format. Only the selection gesture differs: the phone taps a block, because a drag
+gesture cannot pick an arbitrary range on a touch screen without fighting the scroller. The reader
+disables the system text-selection gestures for that reason.
 
 **Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
 client its own current-window *selection* but never an independent per-window *size* — so a narrow phone

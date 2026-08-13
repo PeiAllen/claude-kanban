@@ -1300,6 +1300,137 @@ SwiftTerm's: the built-in performs the copy, but it also answers the *read* form
 in a terminal could exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies
 and never answers a query.
 
+### The document reader renders in a webview, and there is only one
+
+An arbitrary text range is not readable through SwiftUI. `.textSelection(.enabled)` lets the user copy,
+and hands the app nothing. A native renderer therefore cannot support "comment on this passage" at all,
+which is the whole point of the reader. A webview gives `window.getSelection()` for free, and one
+implementation then serves both gestures: a drag range on the Mac, a block tap on the phone.
+
+So the reader is ONE bundled `WKWebView` on both platforms, and the native markdown path was deleted
+rather than kept beside it. Two renderers would need two answers to every later format question. A fence type, a math delimiter,
+and a link behavior are three such questions. The two answers can then silently diverge.
+
+The page is vendored, never fetched: marked, KaTeX, and DOMPurify ship inside the app. Offline rendering
+matters on a phone, and a CDN cannot be trusted to stay available.
+
+### Documents belong to the working directory, not to the card
+
+A document is any markdown file a reviewer might read during a card's life. Orchestra does not care who
+wrote it or where it lives. Documents therefore behave exactly like the diff. Two cards on one working directory list the same
+documents. A freeform or scratch card has documents like a worktree card does.
+
+Discovery is a pruned filesystem walk, deliberately independent of git. A gitignored `notes/` directory
+must list exactly like a tracked `docs/` one, and a git query cannot see the first. Git runs afterwards
+only to decorate what it knows about, so most documents carry no status. The walk skips hidden entries for free with `.skipsHiddenFiles`. It also prunes `node_modules` and its
+peers at the DIRECTORY level. That directory-level pruning is what keeps the walk cheap: one comparison
+instead of forty thousand stats.
+
+Durability is not a goal. A document dies with its workspace, and that is intentional — it removes rot.
+
+### The document list and a document's content are separate calls
+
+One call that returns every document WITH its content is fine for three changed notes and wrong for two
+hundred documents. The phone pays for every byte, and the reader displays one document at a time.
+
+So `listDocuments` returns paths and statuses, and `readDocument` fetches one body on demand. The change
+event carries a path, so the client re-reads only what moved.
+
+`DocRef` carries a `DocRoot` rather than a bare relative path. There is one root today. The enum exists so a second root can arrive without a wire break. A bare string would hardcode "one
+root is the working directory" into the protocol.
+
+### A document git does not track counts as created
+
+The reader leads with what the card changed, and Obsidian seeds a tab only for those. So the definition
+of "changed" decides what both surfaces show.
+
+It is git's diff against the branch base, PLUS every discovered document git does not track. That second half catches three cases the diff alone misses:
+
+- a gitignored document, anywhere in the directory
+- an untracked document, when no merge base resolves
+- every document, in a repository with no commits yet
+
+A directory that is not a git repository yields NO status for any document, which differs from a
+repository that tracks nothing. The reader falls back to listing everything in that case, because a
+focus section there would be empty.
+
+This is an approximation, and it is honest about its edges. It measures the branch, not the card. So a
+file edited before the card started still counts, and two cards on one directory report the same set.
+
+### The document watch is daemon-owned, so there is no subscription to leak
+
+The daemon watches each live card's working directory on its OWN account and broadcasts a change
+notification, exactly as it derives `shellsChanged` from tmux. Nothing registers, so nothing can leak.
+
+The alternative was a watch registered per client, per open view. Orchestra built that, then removed it.
+A daemon that holds an OS resource for one client owes five more mechanisms:
+
+- connection identity that survives file descriptor reuse
+- teardown on two racing death paths
+- a register/teardown rollback
+- replay after reconnect
+- refcounting
+
+That is six mechanisms and two RPCs, and none of them are the feature. The daemon reconciles the watch
+set from the live cards instead, so a missed transition self-heals at the next tick.
+
+Three behaviors survive that simplification. They are not subscription tax:
+
+- A change emits only when the content hash moves, so a touch wakes nobody.
+- A deletion is reported, because suppressing it leaves a deleted document on screen.
+- An FSEvents overflow re-checks every known path. A dropped batch can name only `/`, and trusting its
+  paths would strand a document permanently and silently.
+
+### The reader's bridge reports a selection and nothing else
+
+A document can come from an agent, from git, or from `spawn --base origin/<branch>`, so its content is
+untrusted. A webview runs whatever HTML that content contains, in the app's process, with no prompt and no log.
+That is a different audit path from a shell command, which stays visible in the terminal.
+
+The page therefore reports `{blockIndex, startLine, endLine}` and nothing else. It cannot request
+anything, write anything, or name a path, because the compose field is native and never needs it to. The
+worst a compromised page can do is misreport WHICH lines the user picked. Swift then quotes those lines
+from its own copy of the file, so the message stays internally consistent.
+
+Two layers back that up. DOMPurify sanitizes the rendered HTML, and a strict CSP with no remote loads
+catches anything sanitization misses — script gets no inline or eval grant. The page is served over a private scheme, not `file://` or `loadHTMLString`. An opaque origin makes CSP
+`'self'` meaningless, and `file://` origins carry inconsistent CORS behavior.
+
+The image endpoint is scoped the same way. It serves only images the document being read actually
+references, resolved by realpath inside the working directory. Without that reference check it becomes an arbitrary read of any image-extension file under any card's
+directory. That is wider than anything else the daemon ships.
+
+### A comment is one inbox message, and it carries no instruction
+
+A reader comment becomes ONE message addressed to the card whose document you are reading. That matches
+how a follow-up already routes, and that card holds the context.
+
+The message is human-first. The user reads it, and can edit it in the inbox editor. It must also read
+the same way to every agent:
+
+```
+Comment on `<path>:<start>-<end>` § <heading path>
+
+> <excerpt>
+
+<the user's note, verbatim>
+```
+
+There is deliberately no trailing instruction line. A human reviewer writes a remark, and the author
+decides whether to answer, to edit, or both. An instruction like "address this in the document" forces
+one response mode, and makes a document messy when the comment was a question.
+
+The quote freezes when the user selects, not when they send. Refresh pauses while the compose field is
+open, so text cannot move mid-sentence, and the frozen quote stays a valid anchor after line numbers
+shift.
+
+A comment carries NO dedup key. A deliberate re-send is meaningful and must never be silently
+suppressed. `dedupKey` exists for machine re-drives. The Send button disables while a request is in
+flight, which is the whole double-send guard.
+
+An accepted gap: a question comment has nowhere for its answer to go except the agent's terminal.
+Durable agent-to-human messages close it, and that work is tracked separately.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
