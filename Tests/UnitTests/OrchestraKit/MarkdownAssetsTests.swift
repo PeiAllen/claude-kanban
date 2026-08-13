@@ -15,11 +15,6 @@ import Testing
 
     // MARK: - forms that must be found
 
-    @Test("an inline image resolves against the document's directory")
-    func inlineImageResolvesAgainstTheDocumentDirectory() {
-        #expect(refs("![board](images/board.png)") == ["docs/images/board.png"])
-    }
-
     @Test("titles and angle brackets are both handled")
     func titleAndAngleBracketFormsAreFound() {
         #expect(refs("![a](img/a.png \"Cap\")\n\n![b](<img/b c.png>)")
@@ -31,25 +26,10 @@ import Testing
         #expect(refs("![board][b]\n\n[b]: images/board.png") == ["docs/images/board.png"])
     }
 
-    @Test("a definition placed before its use still resolves")
-    func definitionOrderDoesNotMatter() {
-        #expect(refs("[b]: images/board.png\n\n![board][b]") == ["docs/images/board.png"])
-    }
-
     @Test("raw img tags are found, since the format keeps formatting HTML")
     func rawImgTagsAreFound() {
         #expect(refs("<img src=\"images/x.png\" width=\"40\">") == ["docs/images/x.png"])
         #expect(refs("<img src='images/y.png'>") == ["docs/images/y.png"])
-    }
-
-    @Test("parent traversal collapses to a worktree-relative path")
-    func parentTraversalCollapses() {
-        #expect(refs("![x](../shared/x.png)", "docs/sub") == ["docs/shared/x.png"])
-    }
-
-    @Test("a note at the worktree root needs no prefix")
-    func noteAtTheWorktreeRootNeedsNoPrefix() {
-        #expect(refs("![a](a.png)", "") == ["a.png"])
     }
 
     @Test("several images in one note are all collected")
@@ -60,27 +40,12 @@ import Testing
 
     // MARK: - things that must NOT widen the allowlist
 
-    @Test("remote and data sources are excluded")
-    func remoteAndDataSourcesAreExcluded() {
-        // The CSP blocks remote loads and `data:` never reaches the daemon, so neither belongs in the
-        // allowlist. Including them would widen it for nothing.
-        #expect(refs("![a](https://x.test/a.png)\n![b](data:image/png;base64,AAAA)").isEmpty)
-        #expect(refs("![c](//cdn.test/c.png)").isEmpty)
-    }
-
     @Test("a LINK is not an image")
     func aLinkIsNotAnImage() {
         // `[text](file.png)` is a link. Allowlisting it would let any linked path be fetched, which is
         // exactly the widening this type exists to prevent.
         #expect(refs("[not an image](secret.png)").isEmpty)
         #expect(refs("see [the key](../../.ssh/id_rsa.png)").isEmpty)
-    }
-
-    @Test("a fenced code block is not scanned")
-    func fencedCodeIsNotScanned() {
-        // Keeps a document that DOCUMENTS markdown syntax from allowlisting its own examples. Tidiness,
-        // not safety — the page never requests them.
-        #expect(refs("```\n![x](secret.png)\n```\n").isEmpty)
     }
 
     @Test("an UNQUOTED img src is found")

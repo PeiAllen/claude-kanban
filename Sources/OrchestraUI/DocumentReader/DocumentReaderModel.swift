@@ -120,7 +120,10 @@ public final class DocumentReaderModel: ObservableObject {
     }
 
     /// A live change for this card. Held while composing so the text cannot move mid-sentence.
-    public func changed(path: String?, list: () async -> [DocRef],
+    ///
+    /// Deliberately ignores WHICH document changed: the list can change too, and re-reading both is
+    /// cheap next to deciding whether this particular path is the open one.
+    public func changed(list: () async -> [DocRef],
                         read: @escaping (String) async -> String?) async {
         guard !composing else { pendingRefresh = true; return }
         await refresh(list: list, read: read)

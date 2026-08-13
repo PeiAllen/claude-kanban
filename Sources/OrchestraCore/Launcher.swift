@@ -95,16 +95,14 @@ public struct Launcher: Sendable {
     /// filesystem walk, so this only says what git happens to know. Deletions are excluded.
     struct ChangedNote { let path: String; let added: Bool }
 
-    /// The changed/new markdown documents with their M/A status — the git half of what a card has
-    /// the desktop's Open-notes and the phone's Notes page both use, before dropping status. Two sources,
-    /// unioned (notes-first, deduped): the gitignored `notes/` vault scanned off disk (git can't see it),
-    /// plus every other `.md` the branch changed vs base (docs, specs, skills — tracked, so git-visible).
-    /// Notes come first so a card's plans/designs get first claim on the tab cap. Only empty when the card
-    /// has no `notes/` files AND no resolvable base / changed markdown.
+    /// The changed/new markdown documents with their M/A status, vs the branch base.
+    ///
+    /// GIT ONLY. An earlier version also walked the gitignored `notes/` vault off disk, because git
+    /// cannot report it. `trackedPathSet` below made that redundant: a discovered document git does not
+    /// track is `.added`, in ANY directory, which is the same rule stated generally. The scan was also
+    /// wrong outside a repo, where it marked `notes/*.md` as added while the stated rule is that nothing
+    /// is changed without git.
     func changedMarkdown(worktree: String, parentRef: String?) -> [ChangedNote] {
-        // The git-visible side first: tracked/untracked-non-ignored `.md` changed vs base (docs, specs,
-        // skills — and tracked notes in a repo that doesn't ignore notes/). This is the only source with
-        // real M/A status, so it wins on any overlap with the disk scan below.
         var gitAdded: [String: Bool] = [:]        // path -> is-an-add-vs-base
         var gitOrder: [String] = []
         if let base = mergeBase(worktree: worktree, parentRef: parentRef) {
@@ -114,39 +112,7 @@ public struct Launcher: Sendable {
                 gitAdded[c.newPath] = (c.status == .added)
             }
         }
-        var seen = Set<String>()
-        var out: [ChangedNote] = []
-        // Notes first (they get first claim on the tab cap): the gitignored notes/ vault scanned off disk,
-        // which git's diff/ls-files never reports. Reuse git's M/A status if it happens to know the file
-        // (tracked notes), else it's new-to-base → `.added`.
-        for path in untrackedMarkdownUnderNotes(worktree: worktree) where seen.insert(path).inserted {
-            out.append(ChangedNote(path: path, added: gitAdded[path] ?? true))
-        }
-        // Then the remaining git-changed markdown outside notes/ (docs, specs, skills).
-        for path in gitOrder where seen.insert(path).inserted {
-            out.append(ChangedNote(path: path, added: gitAdded[path]!))
-        }
-        return out
-    }
-
-    /// The UNTRACKED `.md` files under the worktree's `notes/` vault (plans + designs), as worktree-
-    /// relative paths (`notes/…`). `notes/` is gitignored scratch, so git's diff/ls-files never reports
-    /// it — a disk walk is the only way Open-notes / the phone can surface a card's notes. Recursive
-    /// (design vaults nest, `notes/designs/<slug>/…`); skips dot components (`.obsidian`, `.trash`).
-    /// Tracked notes are excluded: the git set already reports the changed ones and rightly omits the
-    /// unchanged ones, so a repo that DOES track `notes/` behaves exactly as before this scan existed.
-    func untrackedMarkdownUnderNotes(worktree: String) -> [String] {
-        let notesRoot = (worktree as NSString).appendingPathComponent("notes")
-        guard let en = FileManager.default.enumerator(atPath: notesRoot) else { return [] }
-        var candidates: [String] = []
-        for case let rel as String in en {
-            guard rel.lowercased().hasSuffix(".md"),
-                  !rel.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { continue }
-            candidates.append("notes/" + rel)
-        }
-        guard !candidates.isEmpty else { return [] }
-        let tracked = trackedPaths(worktree: worktree, under: "notes")
-        return candidates.filter { !tracked.contains($0) }.sorted()
+        return gitOrder.map { ChangedNote(path: $0, added: gitAdded[$0]!) }
     }
 
     /// Every path git tracks in this working directory, or `nil` when it is not a git repo at all.
@@ -158,14 +124,6 @@ public struct Launcher: Sendable {
     /// document is new.
     func trackedPathSet(worktree: String) -> Set<String>? {
         guard let r = try? Proc.run(["git", "ls-files", "-z"], cwd: worktree), r.ok else { return nil }
-        return Set(r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty })
-    }
-
-    /// The paths git tracks under `dir` (worktree-relative) — subtracted from the notes disk scan so a
-    /// repo that tracks `notes/` still shows only *changed* notes (via the diff set), not every file.
-    private func trackedPaths(worktree: String, under dir: String) -> Set<String> {
-        guard let r = try? Proc.run(["git", "ls-files", "-z", "--", dir], cwd: worktree), r.ok
-        else { return [] }
         return Set(r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty })
     }
 

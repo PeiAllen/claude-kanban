@@ -29,10 +29,8 @@ public struct DocumentReaderView: View {
             // A live change for THIS card. The model holds it while composing so text cannot move
             // under the user mid-sentence.
             .onChange(of: model.documentChanges[task.id]) { _, change in
-                guard let change else { return }
-                _Concurrency.Task {
-                    await reader.changed(path: change.path, list: fetchList, read: fetchBody)
-                }
+                guard change != nil else { return }
+                _Concurrency.Task { await reader.changed(list: fetchList, read: fetchBody) }
             }
             // Events broadcast while the link was down are not replayed, so coming back online reloads
             // once — the LIST and the open document both. Reloading only the list left a document that
@@ -44,9 +42,7 @@ public struct DocumentReaderView: View {
             // change: text must not move under someone who is mid-sentence.
             .onChange(of: model.connected) { _, online in
                 guard online else { return }
-                _Concurrency.Task {
-                    await reader.changed(path: nil, list: fetchList, read: fetchBody)
-                }
+                _Concurrency.Task { await reader.changed(list: fetchList, read: fetchBody) }
             }
     }
 

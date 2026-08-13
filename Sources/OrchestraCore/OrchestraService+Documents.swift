@@ -90,18 +90,6 @@ extension OrchestraService {
         }
     }
 
-    /// Reconcile the daemon's note watches against the live worktree cards.
-    ///
-    /// Idempotent and self-healing, so call it freely: at boot after recovery, once a card's worktree
-    /// exists, and when a card is archived or its worktree goes. A missed call costs a late or briefly
-    /// orphaned stream, repaired at the next call — which is why this needs no teardown protocol.
-    public func syncDocumentWatches() async {
-        let cards = await store.snapshot().tasks
-            .filter { !$0.archived && !$0.cwd.isEmpty }
-            .map { (id: $0.id, worktree: $0.cwd) }
-        await documentWatches.sync(cards: cards)
-    }
-
     /// Bytes for an image THE NOTE REFERENCES.
     ///
     /// Five gates, in order: the document is one this workspace actually has, read under the SAME
@@ -109,14 +97,20 @@ extension OrchestraService {
     /// file finally opened lives inside the worktree; it carries an image extension; and it is a regular
     /// file within the size cap.
     ///
-    /// Gate 2 is what keeps this from being an arbitrary worktree file read. Without it the endpoint
-    /// serves any image-extension file anywhere under any card's worktree — a wider capability than
-    /// anything the daemon ships today, and wider than `listDir` (names only) or `readDocument`
-    /// (one document the workspace actually has).
+    /// GATE 2 IS DEFENSE IN DEPTH, and it is worth being exact about who it stops — an earlier version
+    /// of this comment claimed it kept the endpoint from being "a wider capability than anything the
+    /// daemon ships today", which is simply false. `exec` runs `sh -c` in the same working directory and
+    /// returns 256 KB of stdout, on the same socket, to the same clients. Any caller that can reach
+    /// `documentAsset` can already read the file outright.
     ///
-    /// It scopes what a CLIENT may name, and nothing more. It is not a check on the document's author,
-    /// who can reference any in-tree image for real, so its regexes need not agree exactly with what
-    /// the page renders. Containment does not rest on it either — gates 3-5 hold whatever it says.
+    /// The one adversary it does narrow is script that escapes DOMPurify inside the reader's WebView.
+    /// That script cannot call `exec` — the scheme handler is its only route to the daemon — so scoping
+    /// this endpoint to the open document genuinely shrinks what it can reach. The CSP already denies it
+    /// anywhere to send the bytes, which is why this is depth rather than the boundary.
+    ///
+    /// So it scopes what a CLIENT may name, and nothing more. It is not a check on the document's
+    /// author, who can reference any in-tree image for real, and its regexes need not agree exactly with
+    /// what the page renders. Containment does not rest on it — gates 3-5 hold whatever it says.
     public func documentAsset(_ id: UUID, documentPath: String, assetPath: String) async throws -> DocumentAsset {
         let t = try await require(id)
         // No card-kind gate and no cwd allowlist check — see `listDocuments` for why. Containment comes

@@ -61,12 +61,6 @@ _Concurrency.Task {
     await service.sweepOrphanScratch()
     await service.stampMigratedWorktreeMarkersOnce()   // ONE-TIME (sentinel-gated) marker migration
     await service.reconcilePhasesAtBoot()  // re-drive stranded phases; revive .live cards; conservative mode
-    // Document watches, BEFORE the slower sweeps and well before the first reconcile tick. FSEvents
-    // streams start at `SinceNow`, so every second between the server accepting RPCs and the first sync
-    // is a window where an edit reaches nobody. It cannot be closed completely from this side — a client
-    // can always read a file before the stream exists — so the reader also re-reads its open document on
-    // reconnect. This narrows the window; that repairs whatever still falls in it.
-    await service.syncDocumentWatches()
     await service.reconcileTranscriptMediaAtBoot()  // retain only current media for non-archived cards
     await service.sweepOrphanBorrows()     // O3: prune orch-borrow-* worktrees a crashed borrow left behind
     await service.sweepCardFiles()         // reap orphaned per-card launch-config files (backlog + crash residue)

@@ -8,9 +8,12 @@ import AppKit
 import UIKit
 #endif
 
-/// What the page reports back. A block index and a 1-based inclusive source line range — nothing else.
+/// What the page reports back: a 1-based inclusive source line range, and nothing else.
+///
+/// The page also posts a `blockIndex`, which is still validated on arrival — a malformed payload must
+/// not become a selection — but it is not carried here. Swift never needed it: the page highlights the
+/// selected blocks itself, and the quote comes from the line range.
 public struct DocumentSelection: Equatable, Sendable {
-    public let blockIndex: Int
     public let startLine: Int
     public let endLine: Int
 }
@@ -100,7 +103,7 @@ struct DocumentWebView {
                   let start = d["startLine"] as? Int,
                   let end = d["endLine"] as? Int,
                   block >= 0, start >= 1, end >= start else { return }
-            onSelect(DocumentSelection(blockIndex: block, startLine: start, endLine: end))
+            onSelect(DocumentSelection(startLine: start, endLine: end))
         }
 
         /// A jetsammed content process leaves the page blank and every later `evaluateJavaScript` a

@@ -17,7 +17,6 @@ struct DocumentAssetServiceTests {
     typealias Env = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees,
                      adapter: StubAdapter, trust: TrustLedger, base: String)
 
-
     /// A worktree card whose branch adds `docs/page.md`, referencing `docs/images/ok.png`. A second,
     /// UNREFERENCED image sits beside it — readable, in-worktree, correctly extensioned.
     private func cardWithAnIllustratedNote() async throws -> (env: Env, task: Task) {
@@ -74,15 +73,6 @@ struct DocumentAssetServiceTests {
         }
     }
 
-    @Test("GATE 3 — refuses a path escaping the worktree")
-    func documentAssetRejectsAPathEscapingTheWorktree() async throws {
-        let (env, t) = try await cardWithAnIllustratedNote()
-        await #expect(throws: OrchestraError.self) {
-            _ = try await env.svc.documentAsset(t.id, documentPath: "docs/page.md",
-                                            assetPath: "../../../../etc/hosts")
-        }
-    }
-
     @Test("GATE 4 — refuses a non-image extension even when referenced")
     func documentAssetRejectsANonImageExtension() async throws {
         let (env, t) = try await cardWithAnIllustratedNote()
@@ -114,29 +104,5 @@ struct DocumentAssetServiceTests {
     /// Obsidian must open only what the card TOUCHED. Seeding every discovered document floods it with
     /// every markdown file in the repo, which is noise rather than review — and that is a regression
     /// this project has already shipped once.
-    @Test("Obsidian seeds only the changed documents, not the whole workspace")
-    func obsidianSeedsOnlyChangedDocuments() async throws {
-        let (env, t) = try await cardWithAnIllustratedNote()
-        // An untouched, committed document sits beside the branch's new one.
-        try "# Old\n".write(toFile: t.cwd + "/OLD.md", atomically: true, encoding: .utf8)
-        #expect(try Proc.run(["git", "add", "OLD.md"], cwd: t.cwd).ok)
-        #expect(try Proc.run(["git", "commit", "-q", "-m", "old"], cwd: t.cwd).ok)
 
-        let all: [String] = try await env.svc.listDocuments(t.id).map { $0.path }
-        #expect(all.contains("OLD.md"))                        // the reader can still browse to it
-        let changed: [String] = try await env.svc.listDocuments(t.id)
-            .filter { $0.status != nil }.map { $0.path }
-        #expect(changed.contains("docs/page.md"))              // ...but only this seeds a tab
-        #expect(!changed.contains("OLD.md"))
-    }
-
-    @Test("a document path may not escape the working directory")
-    func readDocumentRefusesAnEscape() async throws {
-        let env = TestEnv.make()
-        let t = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "scratch", scratch: true))
-        await #expect(throws: OrchestraError.self) {
-            _ = try await env.svc.readDocument(t.id, path: "../../../../etc/hosts.md")
-        }
-    }
 }

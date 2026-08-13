@@ -148,8 +148,11 @@
       // block flashes just that block instead of everything below it.
       if (prevHashes) {
         const left = counts.get(b.hash) || 0;
+        // No timer to take the class off again: every render rebuilds these elements from scratch, so
+        // the class only ever rides a fresh one, and the animation has no `forwards` fill to leave
+        // behind. Removing it later would have been a no-op on a detached node.
         if (left > 0) counts.set(b.hash, left - 1);
-        else { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1000); }
+        else el.classList.add("flash");
       }
       host.appendChild(el);
     });

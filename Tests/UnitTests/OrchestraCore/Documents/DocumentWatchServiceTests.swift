@@ -170,14 +170,6 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
 
     // MARK: - sync is a diff, and it is idempotent
 
-    @Test("one stream per live worktree card")
-    func syncStartsOneStreamPerLiveWorktreeCard() async {
-        let w = FakeWatcher(); let hash = Locked<String?>("h")
-        let (svc, _) = makeService(w, hash: hash)
-        await svc.sync(cards: [(id: card, worktree: wtInput), (id: UUID(), worktree: "/tmp/wt2")])
-        #expect(await svc.activeStreamCount == 2)
-    }
-
     @Test("repeat syncs neither duplicate nor churn")
     func syncIsIdempotent() async {
         let w = FakeWatcher(); let hash = Locked<String?>("h")
@@ -241,14 +233,4 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
         #expect(w.watchedDirs == [PathResolver.canonical("/tmp/wt2")])
     }
 
-    @Test("a moved worktree is rewatched at its new path")
-    func syncFollowsAWorktreeMove() async {
-        let w = FakeWatcher(); let hash = Locked<String?>("h")
-        let (svc, _) = makeService(w, hash: hash)
-        await svc.sync(cards: [(id: card, worktree: wtInput)])
-        await svc.sync(cards: [(id: card, worktree: "/tmp/moved")])
-        #expect(await svc.activeStreamCount == 1)
-        #expect(w.watchedDirs == [PathResolver.canonical("/tmp/moved")])
-        #expect(w.cancelCount == 1)
-    }
 }

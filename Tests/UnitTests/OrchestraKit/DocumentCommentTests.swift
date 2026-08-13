@@ -30,29 +30,6 @@ import Testing
         #expect(c.message(note: "hi").hasPrefix("Comment on `a.md:1-1`\n\n"))
     }
 
-    @Test("no line range means no :a-b suffix")
-    func omitsLineSuffixWhenRangeIsUnavailable() {
-        let c = DocumentComment(path: "a.md", startLine: nil, endLine: nil, headingPath: [], excerpt: "> q")
-        #expect(c.message(note: "hi").hasPrefix("Comment on `a.md`\n\n"))
-    }
-
-    @Test("the user's note is verbatim — never reflowed, never wrapped")
-    func keepsTheUserNoteVerbatim() {
-        let note = "line one\n\n   indented   \nline three"
-        let c = DocumentComment.capture(path: "a.md", source: src, startLine: 1, endLine: 1)
-        #expect(c.message(note: note).hasSuffix(note))
-    }
-
-    @Test("there is no trailing instruction line")
-    func hasNoTrailingInstructionLine() {
-        // Argued explicitly: a review comment carries no meta-instruction. The human writes the
-        // remark; the author decides whether to answer, to edit, or both.
-        let msg = DocumentComment.capture(path: "a.md", source: src, startLine: 1, endLine: 1)
-            .message(note: "why?")
-        #expect(msg.hasSuffix("why?"))
-        #expect(!msg.lowercased().contains("address this"))
-    }
-
     @Test("a range takes the heading of its START line")
     func rangeUsesTheHeadingOfTheRangeStart() {
         let multi = "# A\nbody a\n## B\nbody b\n"

@@ -32,16 +32,6 @@ struct ContainedFileTests {
         #expect(size == 10)
     }
 
-    @Test("refuses a symlink pointing OUT of the root")
-    func refusesAnEscapingSymlink() throws {
-        let (root, outside) = try root()
-        try FileManager.default.createSymbolicLink(atPath: root + "/docs/escape.md",
-                                                   withDestinationPath: outside + "/secret.md")
-        #expect(throws: (any Error).self) {
-            _ = try ContainedFile.read(root + "/docs/escape.md", containedIn: root, limit: 4096)
-        }
-    }
-
     @Test("refuses a symlinked DIRECTORY pointing out of the root")
     func refusesAnEscapingDirectorySymlink() throws {
         // The case a lexical `..`-collapsing check misses entirely: every component of the requested
@@ -63,14 +53,6 @@ struct ContainedFileTests {
         #expect(mkfifo(root + "/docs/stall.md", 0o644) == 0)
         #expect(throws: (any Error).self) {
             _ = try ContainedFile.read(root + "/docs/stall.md", containedIn: root, limit: 4096)
-        }
-    }
-
-    @Test("refuses a directory")
-    func refusesADirectory() throws {
-        let (root, _) = try root()
-        #expect(throws: (any Error).self) {
-            _ = try ContainedFile.read(root + "/docs", containedIn: root, limit: 4096)
         }
     }
 

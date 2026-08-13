@@ -20,7 +20,11 @@ public enum MarkdownAssets {
     /// `documentDir` and normalized. Remote URLs and `data:` URIs are excluded: the CSP blocks the first,
     /// and the page never asks the daemon for the second.
     public static func referencedImages(in source: String, documentDir: String) -> Set<String> {
-        let text = stripFencedCode(MarkdownOutline.normalized(source))
+        // Scanned WHOLE, fenced code included. Stripping fences kept a document's own syntax examples
+        // off the allowlist, which sounds tidy and defends against nobody: the author of that fence can
+        // write a real image reference just as easily. It cost a hand-rolled fence state machine that
+        // had to track marked's, and its only failure mode was 404ing a live image.
+        let text = MarkdownOutline.normalized(source)
         var out = Set<String>()
 
         // Link reference DEFINITIONS first, so `![a][ref]` resolves whichever order the file uses.
@@ -70,33 +74,6 @@ public enum MarkdownAssets {
     /// it, so omitting it here made a legitimate image 404 rather than keeping anything out.
     private static let imgTagPattern =
         #"(?i)<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#
-
-    /// Drop fenced code before scanning. A document that DOCUMENTS markdown syntax would otherwise
-    /// allowlist its own examples, which is untidy rather than unsafe — the page never requests them,
-    /// and the author could reference them for real anyway. Kept because it is cheap and keeps the
-    /// allowlist describing what the page actually loads.
-    private static func stripFencedCode(_ s: String) -> String {
-        var kept: [Substring] = []
-        var inFence = false
-        var fenceChar: Character = "`"
-        var fenceLen = 0
-        for line in s.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if inFence {
-                let run = trimmed.prefix { $0 == fenceChar }.count
-                if run >= fenceLen, trimmed.dropFirst(run).allSatisfy({ $0 == " " }) {
-                    inFence = false; fenceLen = 0
-                }
-                continue
-            }
-            if let c = trimmed.first, c == "`" || c == "~" {
-                let run = trimmed.prefix { $0 == c }.count
-                if run >= 3 { inFence = true; fenceChar = c; fenceLen = run; continue }
-            }
-            kept.append(line)
-        }
-        return kept.joined(separator: "\n")
-    }
 
     /// Pull the destination out of an inline target: strip `<…>`, then drop any trailing "title".
     private static func target(fromInline raw: String) -> String {

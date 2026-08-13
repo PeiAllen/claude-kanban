@@ -24,18 +24,18 @@ import Testing
     @Test("a change while composing does not move the text")
     func aChangeWhileComposingIsDeferredNotApplied() async {
         let m = await opened("# A\n\nfirst\n")
-        m.select(DocumentSelection(blockIndex: 1, startLine: 3, endLine: 3))
+        m.select(DocumentSelection(startLine: 3, endLine: 3))
         m.draft = "why?"
 
-        await m.changed(path: "docs/a.md", list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
+        await m.changed(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
         #expect(m.content?.contains("first") == true)   // untouched mid-sentence
     }
 
     @Test("closing the compose field applies the deferred change once")
     func closingComposeAppliesTheDeferredRefresh() async {
         let m = await opened("# A\n\nfirst\n")
-        m.select(DocumentSelection(blockIndex: 1, startLine: 3, endLine: 3))
-        await m.changed(path: "docs/a.md", list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
+        m.select(DocumentSelection(startLine: 3, endLine: 3))
+        await m.changed(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
 
         m.cancelComment()
         await m.applyPendingRefresh(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
@@ -52,11 +52,11 @@ import Testing
     @Test("the quote is frozen at SELECTION, not re-derived at send")
     func theQuoteIsFrozenAtSelectionNotAtSend() async {
         let m = await opened("# H\n\noriginal line\n")
-        m.select(DocumentSelection(blockIndex: 1, startLine: 3, endLine: 3))
+        m.select(DocumentSelection(startLine: 3, endLine: 3))
         m.draft = "is this right?"
 
         // The file moves underneath while the user is typing.
-        await m.changed(path: "docs/a.md", list: { [self.doc()] }, read: { _ in "# H\n\ncompletely different\n" })
+        await m.changed(list: { [self.doc()] }, read: { _ in "# H\n\ncompletely different\n" })
 
         var sent: String?
         await m.send { sent = $0; return true }
@@ -68,7 +68,7 @@ import Testing
     @Test("the frozen quote carries its heading path and line range")
     func theQuoteCarriesItsAnchor() async {
         let m = await opened("# Design\n\n## Contract\n\nthe claim\n")
-        m.select(DocumentSelection(blockIndex: 2, startLine: 5, endLine: 5))
+        m.select(DocumentSelection(startLine: 5, endLine: 5))
         m.draft = "source?"
         var sent: String?
         await m.send { sent = $0; return true }
@@ -81,7 +81,7 @@ import Testing
     func sendIsDisabledWithoutAnAnchorOrADraft() async {
         let m = await opened("# A\n\nbody\n")
         #expect(!m.canSend)                                   // no selection
-        m.select(DocumentSelection(blockIndex: 1, startLine: 3, endLine: 3))
+        m.select(DocumentSelection(startLine: 3, endLine: 3))
         #expect(!m.canSend)                                   // no draft
         m.draft = "   "
         #expect(!m.canSend)                                   // whitespace is not a comment
@@ -92,7 +92,7 @@ import Testing
     @Test("a failed send keeps the draft so it can be retried")
     func aFailedSendKeepsTheDraft() async {
         let m = await opened("# A\n\nbody\n")
-        m.select(DocumentSelection(blockIndex: 1, startLine: 3, endLine: 3))
+        m.select(DocumentSelection(startLine: 3, endLine: 3))
         m.draft = "keep me"
         await m.send { _ in false }
         #expect(m.draft == "keep me")
@@ -102,7 +102,7 @@ import Testing
     @Test("a successful send clears the anchor and the draft")
     func aSuccessfulSendClears() async {
         let m = await opened("# A\n\nbody\n")
-        m.select(DocumentSelection(blockIndex: 1, startLine: 3, endLine: 3))
+        m.select(DocumentSelection(startLine: 3, endLine: 3))
         m.draft = "done"
         await m.send { _ in true }
         #expect(m.draft.isEmpty)

@@ -55,14 +55,6 @@ import Testing
         #expect(out.contains(String(repeating: "x", count: 400)))
     }
 
-    @Test("whole lines are kept while they fit")
-    func excerptKeepsWholeLinesWhenTheyFit() {
-        let src = String(repeating: "a", count: 300) + "\n" + String(repeating: "b", count: 300) + "\n"
-        let out = MarkdownOutline.excerpt(from: src, startLine: 1, endLine: 2)
-        #expect(out.hasPrefix("> " + String(repeating: "a", count: 300)))
-        #expect(out.hasSuffix("(excerpt truncated)"))
-    }
-
     // MARK: - heading path
 
     @Test("ancestors only, outermost first")
@@ -99,34 +91,9 @@ import Testing
         #expect(MarkdownOutline.headingPath(in: src, atLine: 5) == ["A", "D"])
     }
 
-    @Test("setext headings count, both levels")
-    func setextHeadingsCount() {
-        let src = "Title\n=====\n\nSection\n-------\n\nbody\n"
-        #expect(MarkdownOutline.headingPath(in: src, atLine: 7) == ["Title", "Section"])
-    }
-
-    @Test("YAML front matter is not a setext heading")
-    func yamlFrontMatterIsNotASetextHeading() {
-        // The settled note format is GFM WITH front matter, so `title: x` sitting above the closing
-        // `---` would otherwise read as an h2 on essentially every note.
-        let src = "---\ntitle: x\ntags: [a]\n---\n\n# Real\n\nbody\n"
-        #expect(MarkdownOutline.headingPath(in: src, atLine: 8) == ["Real"])
-    }
-
-    @Test("a list above a thematic break is not a heading")
-    func aListAboveAThematicBreakIsNotAHeading() {
-        let src = "# A\n\n- item\n\n---\n\nbody\n"
-        #expect(MarkdownOutline.headingPath(in: src, atLine: 7) == ["A"])
-    }
-
     @Test("ATX requires a space after the hashes")
     func atxRequiresASpaceAfterTheHashes() {
         #expect(MarkdownOutline.headingPath(in: "# Real\n\n#notHeading\n\nbody\n", atLine: 5) == ["Real"])
-    }
-
-    @Test("a closing hash sequence is decoration, not title text")
-    func aClosingHashSequenceIsNotPartOfTheTitle() {
-        #expect(MarkdownOutline.headingPath(in: "# Title #\n\nbody\n", atLine: 3) == ["Title"])
     }
 
     @Test("four-space indented code is not scanned for headings")

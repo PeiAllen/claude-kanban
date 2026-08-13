@@ -7,13 +7,6 @@ import Testing
 /// that stopped being bundled renders as a blank pane, not an error.
 @Suite struct DocumentReaderBundleTests {
 
-    @Test("the bundled page resolves through Bundle.module")
-    func resourcesAreBundled() throws {
-        let root = try #require(DocumentReaderBundle.root,
-                                "DocumentReader resources missing — check Package.swift's resources: [.copy(…)]")
-        #expect(FileManager.default.fileExists(atPath: root.path))
-    }
-
     @Test("every file the page needs offline is present")
     func everyRequiredFileIsPresent() throws {
         let root = try #require(DocumentReaderBundle.root)

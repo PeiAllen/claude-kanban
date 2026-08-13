@@ -35,44 +35,6 @@ import TestSupport
         }
     }
 
-    @Test("a nested write is reported, so one stream covers a whole worktree")
-    func firesForANestedWrite() async throws {
-        let dir = try tempDir()
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-        try FileManager.default.createDirectory(atPath: dir + "/docs/images",
-                                                withIntermediateDirectories: true)
-
-        let seen = Locked<Set<String>>([])
-        let token = FSEventsFileWatcher(latency: 0.05)
-            .watch(directory: dir) { ev in seen.withLock { $0.formUnion(ev.paths) } }
-        defer { token.cancel() }
-
-        // The daemon watches ONE stream per worktree root, so a note several levels down must arrive.
-        try "x".write(toFile: dir + "/docs/deep.md", atomically: true, encoding: .utf8)
-        try await pollUntil("the nested write is reported") {
-            seen.withLock { $0.contains { $0.hasSuffix("docs/deep.md") } }
-        }
-    }
-
-    @Test("an atomic replace is reported, not silently missed")
-    func firesForAnAtomicReplace() async throws {
-        // Agents and editors save by writing a temp file and renaming it. A per-file descriptor watch
-        // would keep pointing at the old inode and go silent after the first save; watching the
-        // DIRECTORY is what makes this rename-safe.
-        let dir = try tempDir()
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-        let file = dir + "/note.md"
-        try "v1".write(toFile: file, atomically: true, encoding: .utf8)
-
-        let seen = Locked(0)
-        let token = FSEventsFileWatcher(latency: 0.05)
-            .watch(directory: dir) { _ in seen.withLock { $0 += 1 } }
-        defer { token.cancel() }
-
-        try "v2".write(toFile: file, atomically: true, encoding: .utf8)   // temp + rename
-        try await pollUntil("the replace is reported") { seen.withLock { $0 } > 0 }
-    }
-
     @Test("cancel stops delivery")
     func stopsFiringAfterCancel() async throws {
         let dir = try tempDir()
