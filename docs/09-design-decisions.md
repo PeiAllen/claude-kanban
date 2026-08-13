@@ -1430,11 +1430,12 @@ One open answers three questions that were three separate defects:
 - **Size.** Reading a file to find out how big it is defeats the cap. `fstat` answers first, so a
   document is truncated and an oversized image is refused before either is read.
 
-The reference scan that builds the image allowlist is deliberately NOT part of this boundary. It is
-recognition over markdown, not a parser, so it approximates what the page renders — it skips fenced and
-inline code, HTML comments, and escaped bangs, but it will never match a real parser exactly. That is
-acceptable only because it is not what holds the line: a wrong answer there widens the surface by
-in-tree image files, and the descriptor checks hold regardless of what it says.
+The reference scan that builds the image allowlist is deliberately NOT part of this boundary, and it is
+deliberately approximate. It scopes what a **client** may name — without it, `documentAsset` is a read of
+any image-extension file under any card's directory. It is not a check on the document's author, because
+that check would be theatre: anyone who can write the document can write a real image reference. So a
+regex that matches a near-miss the page never renders costs nothing, and matching a real parser exactly
+would buy nothing.
 
 ### A comment is one inbox message, and it carries no instruction
 

@@ -114,9 +114,9 @@ extension OrchestraService {
     /// anything the daemon ships today, and wider than `listDir` (names only) or `readDocument`
     /// (one document the workspace actually has).
     ///
-    /// Gate 2 is RECOGNITION, not a markdown parser, so it approximates what the page renders. That is
-    /// tolerable precisely because it is not the containment boundary: an over-broad allowlist widens
-    /// the surface by in-tree IMAGE files, and gates 3-5 hold regardless of what it says.
+    /// It scopes what a CLIENT may name, and nothing more. It is not a check on the document's author,
+    /// who can reference any in-tree image for real, so its regexes need not agree exactly with what
+    /// the page renders. Containment does not rest on it either — gates 3-5 hold whatever it says.
     public func documentAsset(_ id: UUID, documentPath: String, assetPath: String) async throws -> DocumentAsset {
         let t = try await require(id)
         // No card-kind gate and no cwd allowlist check — see `listDocuments` for why. Containment comes

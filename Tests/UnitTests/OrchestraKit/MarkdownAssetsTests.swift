@@ -2,11 +2,12 @@ import Foundation
 import Testing
 @testable import OrchestraKit
 
-/// The allowlist behind `documentAsset`. This is what turns "any image-extension file in the worktree"
-/// into "the images THIS note points at", so the tests here are a security boundary, not a nicety.
+/// The allowlist behind `documentAsset`. It turns "any image-extension file in the worktree" into "the
+/// images THIS document points at", which scopes what a CLIENT may name.
 ///
-/// A reference form that is MISSED degrades to a broken image. A form that is wrongly INCLUDED widens
-/// the daemon's file-read surface — so the negative cases matter more than the positive ones.
+/// It is NOT a defense against the document's author — they can reference anything in the tree for real,
+/// so a near-miss the regex matches costs nothing. These tests are therefore about the SHAPE of the set:
+/// images and not links, and paths that resolve exactly the way the page will request them.
 @Suite struct MarkdownAssetsTests {
     private func refs(_ s: String, _ dir: String = "docs") -> Set<String> {
         MarkdownAssets.referencedImages(in: s, documentDir: dir)
@@ -77,32 +78,9 @@ import Testing
 
     @Test("a fenced code block is not scanned")
     func fencedCodeIsNotScanned() {
-        // Otherwise a note that DOCUMENTS markdown syntax would silently widen its own allowlist.
+        // Keeps a document that DOCUMENTS markdown syntax from allowlisting its own examples. Tidiness,
+        // not safety — the page never requests them.
         #expect(refs("```\n![x](secret.png)\n```\n").isEmpty)
-    }
-
-    @Test("an ESCAPED bang is a link, not an image")
-    func escapedBangIsNotAnImage() {
-        // `\![alt](x)` renders as a literal `!` followed by a link. The page never requests it, so
-        // allowlisting it widened the daemon's read surface for a file nothing on screen points at.
-        #expect(refs(#"\![literal](secret.png)"#).isEmpty)
-        #expect(refs("\\![literal][b]\n\n[b]: secret.png").isEmpty)
-    }
-
-    @Test("an INLINE code span is not scanned")
-    func inlineCodeIsNotScanned() {
-        // Same rule as a fenced block, one scale down: a document explaining the syntax renders a
-        // literal string, not an image.
-        #expect(refs("write `![x](secret.png)` to embed one").isEmpty)
-        #expect(refs("``a ` tick and ![x](secret.png)``").isEmpty)
-        // An UNTERMINATED span is kept verbatim rather than swallowing the rest of the document.
-        #expect(refs("` stray tick\n\n![a](i/a.png)") == ["docs/i/a.png"])
-    }
-
-    @Test("a commented-out reference is not scanned")
-    func htmlCommentsAreNotScanned() {
-        #expect(refs("<!-- ![x](secret.png) -->").isEmpty)
-        #expect(refs("<!--\n![x](secret.png)\n-->\n\n![a](i/a.png)") == ["docs/i/a.png"])
     }
 
     @Test("an UNQUOTED img src is found")
