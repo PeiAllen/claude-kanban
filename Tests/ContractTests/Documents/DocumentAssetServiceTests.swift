@@ -111,6 +111,25 @@ struct DocumentAssetServiceTests {
         #expect(try await env.svc.readDocument(t.id, path: "plan.md").contains("body"))
     }
 
+    /// Obsidian must open only what the card TOUCHED. Seeding every discovered document floods it with
+    /// every markdown file in the repo, which is noise rather than review — and that is a regression
+    /// this project has already shipped once.
+    @Test("Obsidian seeds only the changed documents, not the whole workspace")
+    func obsidianSeedsOnlyChangedDocuments() async throws {
+        let (env, t) = try await cardWithAnIllustratedNote()
+        // An untouched, committed document sits beside the branch's new one.
+        try "# Old\n".write(toFile: t.cwd + "/OLD.md", atomically: true, encoding: .utf8)
+        #expect(try Proc.run(["git", "add", "OLD.md"], cwd: t.cwd).ok)
+        #expect(try Proc.run(["git", "commit", "-q", "-m", "old"], cwd: t.cwd).ok)
+
+        let all: [String] = try await env.svc.listDocuments(t.id).map { $0.path }
+        #expect(all.contains("OLD.md"))                        // the reader can still browse to it
+        let changed: [String] = try await env.svc.listDocuments(t.id)
+            .filter { $0.status != nil }.map { $0.path }
+        #expect(changed.contains("docs/page.md"))              // ...but only this seeds a tab
+        #expect(!changed.contains("OLD.md"))
+    }
+
     @Test("a document path may not escape the working directory")
     func readDocumentRefusesAnEscape() async throws {
         let env = TestEnv.make()

@@ -116,7 +116,10 @@ public struct DocumentReaderView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(reader.visibleDocuments) { doc in
+                    if reader.canRevealAll && !reader.showingAll {
+                        sectionHeader("Changed by this card")
+                    }
+                    ForEach(reader.browseList) { doc in
                         Button {
                             _Concurrency.Task { await reader.open(doc, fetch: fetchBody) }
                         } label: {
@@ -142,7 +145,27 @@ public struct DocumentReaderView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if reader.visibleDocuments.isEmpty {
+                    // The untouched majority is one tap away rather than buried above the fold.
+                    if reader.canRevealAll {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.15)) { reader.showingAll.toggle() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: reader.showingAll ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                Text(reader.showingAll
+                                     ? "Hide the rest"
+                                     : "Show all \(reader.documents.count) documents")
+                                    .font(.footnote)
+                                Spacer(minLength: 0)
+                            }
+                            .foregroundStyle(theme.text2)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if reader.browseList.isEmpty {
                         Text("No documents match “\(reader.search)”")
                             .font(.footnote).foregroundStyle(theme.text3)
                             .padding(.horizontal, 12).padding(.vertical, 10)
@@ -246,6 +269,14 @@ public struct DocumentReaderView: View {
             .frame(width: 16, height: 16)
             .background(c.tint)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private func sectionHeader(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(theme.text3)
+            .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Keeps names aligned whether or not git had anything to say about a document.

@@ -29,6 +29,9 @@ public final class DocumentReaderModel: ObservableObject {
 
     /// The document-list filter. Most workspaces have far more documents than a chip bar can show.
     @Published public var search = ""
+    /// Whether the "everything else" section is expanded. The reviewer came for what the card TOUCHED,
+    /// so the untouched majority starts collapsed rather than burying it.
+    @Published public var showingAll = false
     /// Whether the picker is showing. Opens automatically when nothing is selected yet.
     @Published public var browsing = false
 
@@ -44,12 +47,30 @@ public final class DocumentReaderModel: ObservableObject {
 
     public init() {}
 
-    /// The filtered list. Matches on the whole relative path, not just the filename, so `docs/api`
-    /// narrows the way a reader expects.
-    public var visibleDocuments: [DocRef] {
+    /// Documents this card modified or added — what the reviewer actually came for. `status` is git's
+    /// opinion vs the branch base, so it is empty for a workspace git cannot speak about (a scratch
+    /// dir, a non-repo), which is why `browseList` falls back to everything in that case.
+    public var changedDocuments: [DocRef] { documents.filter { $0.status != nil } }
+    /// Everything else in the workspace — present, but not the focus.
+    public var otherDocuments: [DocRef] { documents.filter { $0.status == nil } }
+
+    /// What the picker shows right now.
+    ///
+    /// SEARCH ALWAYS SPANS EVERYTHING: typing a filter means you are looking for a specific document,
+    /// and silently excluding untouched ones would make it look absent. Without a search it shows the
+    /// changed set, plus the rest only when expanded — and falls back to everything when nothing is
+    /// changed, so a scratch card is never an empty screen.
+    public var browseList: [DocRef] {
         let q = search.trimmed.lowercased()
-        guard !q.isEmpty else { return documents }
-        return documents.filter { $0.path.lowercased().contains(q) }
+        if !q.isEmpty { return documents.filter { $0.path.lowercased().contains(q) } }
+        if changedDocuments.isEmpty { return documents }
+        return showingAll ? documents : changedDocuments
+    }
+
+    /// True when there is an untouched remainder worth offering. Hidden while searching (the search
+    /// already spans everything) and when nothing is changed (the list is already everything).
+    public var canRevealAll: Bool {
+        search.trimmed.isEmpty && !changedDocuments.isEmpty && !otherDocuments.isEmpty
     }
 
     /// Send is disabled while a request is in flight. That is the ONLY double-send guard, and it is

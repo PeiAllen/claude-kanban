@@ -128,7 +128,52 @@ import Testing
         #expect(m.content == "NEW")
     }
 
-    @Test("a vanished note falls back to another rather than showing nothing")
+    // MARK: - changed documents are the focus
+
+    @Test("the picker shows what this card changed, not the whole workspace")
+    func browseListFocusesOnChangedDocuments() async {
+        let m = DocumentReaderModel()
+        await m.loadList { [
+            self.doc("docs/edited.md", .modified),
+            self.doc("docs/added.md", .added),
+            self.doc("README.md", nil),
+            self.doc("docs/untouched.md", nil),
+        ] }
+        // Opening a repo must not bury the two files the agent touched under everything else.
+        #expect(m.browseList.map(\.path) == ["docs/edited.md", "docs/added.md"])
+        #expect(m.canRevealAll)
+    }
+
+    @Test("the rest is one tap away")
+    func theRestCanBeRevealed() async {
+        let m = DocumentReaderModel()
+        await m.loadList { [self.doc("a.md", .modified), self.doc("b.md", nil)] }
+        m.showingAll = true
+        #expect(m.browseList.count == 2)
+    }
+
+    @Test("search always spans EVERY document, touched or not")
+    func searchSpansEverything() async {
+        let m = DocumentReaderModel()
+        await m.loadList { [self.doc("docs/edited.md", .modified), self.doc("docs/untouched.md", nil)] }
+        m.search = "untouched"
+        // Excluding untouched documents from search would make a document the user knows exists look
+        // absent — the opposite of what typing a filter means.
+        #expect(m.browseList.map(\.path) == ["docs/untouched.md"])
+        #expect(!m.canRevealAll)                   // the search already spans everything
+    }
+
+    @Test("a workspace git cannot speak about shows everything, not nothing")
+    func noChangedDocumentsFallsBackToAll() async {
+        // A scratch dir is not a repo, so nothing has a status. Showing an empty focus section there
+        // would make the reader look broken.
+        let m = DocumentReaderModel()
+        await m.loadList { [self.doc("plan.md", nil), self.doc("notes.md", nil)] }
+        #expect(m.browseList.count == 2)
+        #expect(!m.canRevealAll)
+    }
+
+    @Test("a vanished document falls back to another rather than showing nothing")
     func aDeletedNoteFallsBack() async {
         let m = await opened("a", path: "docs/a.md")
         await m.loadList { [self.doc("docs/b.md")] }              // a.md was deleted

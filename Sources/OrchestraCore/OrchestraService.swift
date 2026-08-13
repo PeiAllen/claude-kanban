@@ -1487,12 +1487,19 @@ public actor OrchestraService {
     /// Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
     /// Returns `(opened:` tabs opened `, total:` changed `.md` count `)`.
     @discardableResult
-    /// Open the card's working directory as an Obsidian vault, with its documents seeded as tabs.
-    /// Tabs come from `documentRefs` — the SAME ordered set the in-app reader lists — so Obsidian and
-    /// the reader always agree about what a card's documents are.
+    /// Open the card's working directory as an Obsidian vault, seeding a tab per document THIS CARD
+    /// TOUCHED.
+    ///
+    /// Only the changed set is seeded, never every document in the workspace: opening a repo would
+    /// otherwise flood Obsidian with every markdown file it contains, which is noise rather than
+    /// review. The vault is still the whole directory, so everything else stays one click away in the
+    /// file tree — the tabs are a starting point, not the boundary.
+    ///
+    /// The set comes from `documentRefs`, the same ordered list the in-app reader shows, so Obsidian
+    /// and the reader can never disagree about what a card changed.
     public func openInObsidian(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        let tabs = try await documentRefs(id).map(\.path)
+        let tabs = try await documentRefs(id).filter { $0.status != nil }.map(\.path)
         let l = launcher, cwd = t.cwd
         return try await offActor { try l.openInObsidian(cwd, tabs: tabs) }
     }
