@@ -9,7 +9,9 @@
 
 :root { color-scheme: light dark; }
 
-html, body { background: transparent; }
+/* The page paints its OWN ground from the app theme rather than relying on the webview being
+   transparent — so a platform that stops honoring that still renders the right surface. */
+html, body { background: var(--bg, transparent); }
 
 body {
   margin: 0;

@@ -155,9 +155,16 @@ struct DocumentWebView {
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = coordinator
         // Transparent, or the webview paints its own white sheet over the app's dark inspector.
-        #if os(macOS)
-        web.setValue(false, forKey: "drawsBackground")   // no public API for this on macOS
-        #else
+        //
+        // `underPageBackgroundColor` is PUBLIC (macOS 12 / iOS 15, both below our deployment targets).
+        // The older trick is `setValue(false, forKey: "drawsBackground")`, which is KVC against a
+        // private property — and an NSUnknownKeyException from that is not catchable in Swift, so a
+        // future SDK renaming it would crash the app rather than degrade.
+        //
+        // The page ALSO paints its own ground from the theme (see `payload()`), so the reader looks
+        // right even if a platform stops honoring transparency here.
+        web.underPageBackgroundColor = .clear
+        #if os(iOS)
         web.isOpaque = false
         web.backgroundColor = .clear
         web.scrollView.backgroundColor = .clear
@@ -170,6 +177,7 @@ struct DocumentWebView {
         // Map the app's Theme onto the custom properties reader.css consumes. These names must stay in
         // sync with the `var(--…)` fallbacks in the stylesheet.
         let colors: [String: String] = [
+            "bg": theme.card.cssHex,
             "text": theme.text2.cssHex,
             "text2": theme.text3.cssHex,
             "accent": theme.accent.cssHex,
