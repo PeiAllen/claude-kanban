@@ -11,7 +11,7 @@ import Foundation
 /// The **transport** owns only obtaining these bytes (push endpoint / tailer); the **adapter** owns the
 /// agent-dependent conversion to either the legacy `StatusReport` or the replacement `AgentSignal`.
 /// `ptyScrape` has no v1 consumer and is intentionally omitted until a scrape adapter needs it.
-public enum RawTelemetry: Sendable {
+public enum RawTelemetry: Equatable, Sendable {
     case hooksPush(kind: String, payload: JSONValue)
     case fileTail(line: String)
     case rpcNotification(method: String, params: JSONValue)

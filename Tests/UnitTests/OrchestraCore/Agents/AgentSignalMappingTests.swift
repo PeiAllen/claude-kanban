@@ -115,7 +115,7 @@ struct AgentSignalMappingTests {
             == [.init(sessionEpoch: epoch, kind: .turnReconciled(.unavailable))])
     }
 
-    @Test("Codex thread/read response supplies the one-time attach reconciliation")
+    @Test("Codex subscribe/read responses supply one-time attach reconciliation")
     func codexThreadReadReconciliation() {
         let adapter = CodexAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
@@ -126,9 +126,11 @@ struct AgentSignalMappingTests {
             ]),
         ])
 
-        #expect(adapter.agentSignals(
-            from: .rpcResponse(method: "thread/read", result: result), context: context
-        ) == [.init(sessionEpoch: epoch, kind: .turnReconciled(.waiting()))])
+        for method in ["thread/resume", "thread/read"] {
+            #expect(adapter.agentSignals(
+                from: .rpcResponse(method: method, result: result), context: context
+            ) == [.init(sessionEpoch: epoch, kind: .turnReconciled(.waiting()))])
+        }
     }
 
     @Test("Codex requires the observer's exact thread identity")

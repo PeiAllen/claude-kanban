@@ -161,7 +161,7 @@ public struct CodexAdapter: Adapter {
             }
 
         case .rpcResponse(let method, let result):
-            guard method == "thread/read", let thread = result["thread"],
+            guard ["thread/resume", "thread/read"].contains(method), let thread = result["thread"],
                   thread["id"]?.stringValue == expectedThreadId
             else { return [] }
             kind = turnReconciliation(from: thread["status"])
