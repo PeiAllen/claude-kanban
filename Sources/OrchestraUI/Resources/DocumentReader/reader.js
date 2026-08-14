@@ -403,33 +403,84 @@
     // PHONE: tap a block. Native text interaction is disabled from Swift, so a tap is unambiguous.
     // The anchor is the whole block, expressed as ONE segment covering all of its text — the same
     // machinery the Mac's range uses, so there is only one kind of highlight to reason about.
+    //
+    // A tap ARMS the offer, exactly as a drag does on the Mac. A tap is easy to make by accident while
+    // reading, and the phone's rail is a sheet that would rise over the document to greet it.
     if (platform !== "ios") return;
+    if (e.target === commentButton || commentButton.contains(e.target)) return;
     const el = blockElFrom(e.target);
-    if (!el) return;
+    if (!el) { disarm(); return; }
     const i = +el.dataset.block;
-    if (!blocks[i]) return;
+    if (!blocks[i]) { disarm(); return; }
     const len = textNodesIn(el).reduce((n, t) => n + t.data.length, 0);
-    const id = addHighlight([{ index: i, hash: blocks[i].hash, start: 0, end: len }]);
-    post({ kind: "selection", blockIndex: i, highlight: id,
-           startLine: +el.dataset.lineStart, endLine: +el.dataset.lineEnd,
-           text: el.textContent.slice(0, 4000) });
+    arm({ segments: [{ index: i, hash: blocks[i].hash, start: 0, end: len }],
+          blockIndex: i,
+          startLine: +el.dataset.lineStart, endLine: +el.dataset.lineEnd,
+          text: el.textContent },
+        el.getBoundingClientRect());
   });
+
+  // ── selecting, then DECIDING to comment ──────────────────────────────────────────────────────
+  //
+  // Selecting text does NOT create a comment. People drag through text constantly while reading, and a
+  // reader that turned every one of those into a card would be unusable. A selection only ARMS the
+  // offer: a button appears beside it, and the comment exists once you click that button or press its
+  // shortcut. Everything measured at mouseup is held until then, because the DOM must be measured
+  // while the selection is still live.
+  let pending = null;
+
+  const commentButton = document.createElement("button");
+  commentButton.id = "orch-comment-btn";
+  commentButton.type = "button";
+  commentButton.hidden = true;
+  commentButton.append(document.createTextNode("Comment"));
+  const shortcutHint = document.createElement("span");
+  shortcutHint.className = "key";
+  shortcutHint.append(document.createTextNode("⌘⇧M"));
+  commentButton.append(shortcutHint);
+  document.body.appendChild(commentButton);
+
+  function disarm() {
+    pending = null;
+    commentButton.hidden = true;
+  }
+
+  /// Offer the button at the end of the selection, where the cursor already is.
+  function arm(measured, rect) {
+    pending = measured;
+    // Unhide FIRST: the button has no size while hidden, and its size decides where it fits.
+    commentButton.hidden = false;
+    const w = commentButton.offsetWidth, h = commentButton.offsetHeight;
+
+    // ABOVE the selection, not below. Below covers the next line — the text you are about to read on
+    // your way to deciding whether to comment at all. Falls back to below when the selection is close
+    // enough to the top of the document that above would be off the page.
+    let top = rect.top + window.scrollY - h - 6;
+    if (top < window.scrollY + 2) top = rect.bottom + window.scrollY + 6;
+    // Anchor the right edge to the selection's end, then keep it on the page.
+    let left = rect.right + window.scrollX - w;
+    left = Math.max(4, Math.min(left, document.documentElement.clientWidth - w - 4));
+
+    // CSSOM writes, never a `style` attribute: the page's CSP forbids inline styles, and setting the
+    // attribute would be blocked while these property assignments are not. Verified in a real
+    // WKWebView under the shipped CSP — the probe read the values back.
+    commentButton.style.left = Math.round(left) + "px";
+    commentButton.style.top = Math.round(top) + "px";
+  }
 
   // MAC: arbitrary range. Report the START block's first line and the END block's last line, then
   // refine within a single block when the selection can be located UNAMBIGUOUSLY in its source.
   document.addEventListener("mouseup", () => {
     if (platform === "ios") return;
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
-    // Measure the range BEFORE anything mutates the DOM, and against the text as it reads right now —
-    // so a stale highlight from a previous selection cannot shift the offsets under it.
-    unwrapAll();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) { disarm(); return; }
     const range = sel.getRangeAt(0);
     const text = sel.toString();
+    if (!text.trim()) { disarm(); return; }
     const segments = segmentsFromRange(range);
-    if (!segments) return;
+    if (!segments) { disarm(); return; }
     const lo = segments[0].index, hi = segments[segments.length - 1].index;
-    if (!blocks[lo] || !blocks[hi]) return;
+    if (!blocks[lo] || !blocks[hi]) { disarm(); return; }
     let startLine = blocks[lo].start, endLine = blocks[hi].end;
 
     if (lo === hi) {
@@ -461,14 +512,55 @@
     // Paint the anchor. WebKit drops the native selection highlight as soon as focus moves to the
     // native compose field, so without this the user would compose against a passage with nothing on
     // screen showing which one it is.
-    const id = addHighlight(segments);
+    // ARMED, not committed. Nothing is created and nothing is reported until the offer is taken.
+    arm({ segments: segments, blockIndex: lo, startLine: startLine, endLine: endLine, text: text },
+        range.getBoundingClientRect());
+  });
+
+  /// Take the offer: tint the passage and tell Swift about it.
+  function commit() {
+    if (!pending) return;
+    const p = pending;
+    disarm();
+    // Re-anchor from the measurement taken while the selection was live. Wrapping mutates the DOM, so
+    // any older highlight has to come out first or the offsets shift under it.
+    unwrapAll();
+    const id = addHighlight(p.segments);
     // `text` is the rendered text the user picked. Swift does NOT trust it: it accepts the string as a
     // quote only after proving the same words occur in its own copy of these lines. See
     // `DocumentComment.capture`. So the bridge still cannot put words in the user's mouth — it can
     // only choose between quoting the exact selection and quoting the whole block.
-    post({ kind: "selection", blockIndex: lo, highlight: id,
-           startLine: startLine, endLine: endLine, text: text.slice(0, 4000) });
+    post({ kind: "selection", blockIndex: p.blockIndex, highlight: id,
+           startLine: p.startLine, endLine: p.endLine, text: p.text.slice(0, 4000) });
+    const sel = window.getSelection();
+    if (sel) sel.removeAllRanges();                  // the tint replaces it, so two marks never overlap
+  }
+
+  commentButton.addEventListener("mousedown", (e) => {
+    e.preventDefault();                              // do not let the button steal the selection first
+    commit();
   });
+  // The phone never sends `mousedown`, and its tap has to beat the document-level handler that would
+  // otherwise treat the button as a tap outside a block and retire the offer.
+  commentButton.addEventListener("click", (e) => { e.stopPropagation(); commit(); });
+
+  // ⌘⇧M, handled IN THE PAGE. The webview holds first responder while you are selecting in it, so a
+  // native SwiftUI shortcut would not fire — and the page already knows what is selected.
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey && e.shiftKey && (e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      disarm();
+    }
+  });
+
+  // Any new drag, or a scroll, retires a stale offer — the button must never sit somewhere the
+  // selection no longer is.
+  document.addEventListener("mousedown", (e) => {
+    if (e.target !== commentButton && !commentButton.contains(e.target)) disarm();
+  });
+  window.addEventListener("scroll", () => { if (pending) disarm(); }, { passive: true });
 
   // Scroll a passage into view, and flash it. The rail calls this when a comment card is clicked.
   function reveal(id) {

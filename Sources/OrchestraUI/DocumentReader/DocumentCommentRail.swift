@@ -29,8 +29,21 @@ struct DocumentCommentRail: View {
                     // nothing and costs the ScrollViewReader a reliable target for a card that has not
                     // been scrolled into existence yet.
                     VStack(spacing: 8) {
-                        ForEach(reader.comments) { comment in
+                        ForEach(reader.openComments) { comment in
                             card(comment).id(comment.id)
+                        }
+                        // The sent group, collapsed. A long review otherwise ends as a rail of dimmed
+                        // cards you dismiss one at a time, with the ones you are still writing pushed
+                        // off the bottom. Sent comments leave document order to sit here — they are
+                        // finished, so their place in the rail matters less than their being out of
+                        // the way. Their passages stay tinted in the document either way.
+                        if !reader.sentComments.isEmpty {
+                            sentHeader
+                            if reader.showingSent {
+                                ForEach(reader.sentComments) { comment in
+                                    card(comment).id(comment.id)
+                                }
+                            }
                         }
                     }
                     .padding(10)
@@ -67,6 +80,25 @@ struct DocumentCommentRail: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
+    }
+
+    /// The one row that stands in for every sent comment.
+    private var sentHeader: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { reader.showingSent.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: reader.showingSent ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                Text("\(reader.sentComments.count) sent")
+                    .font(.caption.weight(.medium))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(theme.text3)
+            .padding(.horizontal, 4).padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func card(_ comment: PendingComment) -> some View {

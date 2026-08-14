@@ -401,19 +401,32 @@ around it in both appearances. The text column stops at a reading measure and ce
 prose set across a very wide inspector is hard to track from one line to the next. Tables, fenced code,
 and display math are exempt and scroll inside their own box. The page itself never scrolls sideways.
 
-**How you comment.** Select a passage, and a card appears in the rail beside the document, ready to
-type into. On the Mac you drag through any range. On the phone you tap a block, and the rail is a sheet
-you can keep reading behind.
+**How you comment.** Selecting text does NOT create a comment. It offers one: a **Comment** button
+appears beside the selection, and the comment exists once you click it or press **⌘⇧M**. Press Escape,
+scroll, or select something else, and the offer goes away with nothing created. People drag through
+text constantly while reading, so a reader that turned every selection into a card would be unusable.
+
+On the Mac you drag through any range. On the phone you tap a block, which arms the same offer — a tap
+is easy to make by accident, and the phone's rail is a sheet that would otherwise rise over the
+document to greet it.
+
+Take the offer and a card appears in the rail beside the document, ready to type into. On the phone the
+rail is a sheet you can keep reading behind.
 
 A comment belongs to a **reading pass**. Anchor as many passages as you want, write them in any order,
 and then either send one card at a time or send the whole pass as one message. Cards sit in document
 order, so the rail reads top to bottom the way the document does. Clicking a card scrolls to its
 passage, and scrolling the document brings that passage's card into view.
 
-A sent card stays in the rail, dimmed and marked. The pass is a record of what you said, so clearing it
-the moment a comment goes out would lose your place in a long document. The pass ends when you open
-another document — an anchor belongs to the document it came from. It is deliberately not durable,
-the same rule documents themselves follow.
+Sent comments collapse into a single **N sent** row at the bottom of the rail, which expands. They stay
+in the pass rather than disappearing, because the pass is a record of what you said — but a long review
+otherwise ends as a rail of dimmed cards, with the ones you are still writing pushed off the bottom.
+Their passages stay tinted in the document either way. Dismiss one with the `×` on its card.
+
+The pass ends when you open another document — an anchor belongs to the document it came from. It is
+deliberately not durable, the same rule documents themselves follow. On the phone, dismissing the sheet
+only HIDES the pass: a swipe down is far too cheap a gesture to destroy something you have written, and
+a bar at the bottom of the document brings it back.
 
 If the agent rewrites a passage you anchored, its card is marked **text moved**. The comment survives
 and can still be sent, because its quote froze when you selected. Only the tint is gone.

@@ -74,6 +74,23 @@ public final class DocumentReaderModel: ObservableObject {
 
     /// The comments that are written but not sent. This is what "Send all" sends.
     public var unsent: [PendingComment] { comments.filter { !$0.sent && !$0.draft.trimmed.isEmpty } }
+
+    /// Whether the sent group is expanded. Collapsed by default, and the same shape as `showingAll` for
+    /// the document picker: the thing you came for stays on top, and the rest is one row away.
+    @Published public var showingSent = false
+
+    /// Still being written — the top of the rail.
+    public var openComments: [PendingComment] { comments.filter { !$0.sent } }
+    /// Already delivered. These collapse into a single row, because a long review otherwise ends as a
+    /// rail of dimmed cards to dismiss one at a time. Their passages stay tinted either way.
+    public var sentComments: [PendingComment] { comments.filter(\.sent) }
+
+    /// Whether a comment is on screen in the rail right now. The focus-follow consults this, so
+    /// scrolling the document never focuses a card that is collapsed out of view.
+    public func isVisibleInRail(_ id: UUID) -> Bool {
+        guard let c = comments.first(where: { $0.id == id }) else { return false }
+        return !c.sent || showingSent
+    }
     /// The validators. Each is whatever the daemon last answered with, sent back on the next poll so it
     /// can reply "unchanged" instead of resending. Same contract as an HTTP `ETag`.
     private var contentHash: String?
@@ -247,6 +264,7 @@ public final class DocumentReaderModel: ObservableObject {
         comments = []
         activeComment = nil
         revealHighlight = nil
+        showingSent = false
         sending = []
     }
 
@@ -282,6 +300,9 @@ public final class DocumentReaderModel: ObservableObject {
         // Re-find rather than reuse the index: the rail can gain a comment while this was in flight.
         guard ok, let i = comments.firstIndex(where: { $0.id == id }) else { return nil }
         comments[i].sent = true                        // on failure the draft stays, so a retry is free
+        // It has just left the open group. Holding focus on a card that collapsed out of sight would
+        // leave a passage strongly tinted with nothing on screen explaining why.
+        if activeComment == id, !showingSent { activeComment = nil }
         return message
     }
 
@@ -297,6 +318,7 @@ public final class DocumentReaderModel: ObservableObject {
         sending.subtract(ids)
         guard ok else { return nil }
         for i in comments.indices where ids.contains(comments[i].id) { comments[i].sent = true }
+        if let active = activeComment, ids.contains(active), !showingSent { activeComment = nil }
         return message
     }
 }

@@ -328,6 +328,9 @@ struct DocumentWebView {
             // edge would draw a seam at every join.
             "anno": theme.indigo.dot.cssRGBA(0.30),
             "annoIdle": theme.indigo.dot.cssRGBA(0.14),
+            // The same hue at full strength, for the one thing that floats OVER body text and so
+            // cannot be transparent — the "Comment" offer.
+            "annoSolid": theme.indigo.dot.cssColor,
             "flash": theme.amber.dot.cssRGBA(0.38),
             "code": theme.chip.cssColor,
             "hair": theme.hair.cssColor,

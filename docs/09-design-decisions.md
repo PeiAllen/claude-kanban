@@ -1455,6 +1455,28 @@ platforms.
 The poll lives inside the reader's `.task`, so it runs only while the view is on screen and SwiftUI
 cancels it on the way out. There is no timer to invalidate and nothing to leak.
 
+### Selecting text offers a comment; it does not create one
+
+Reading and annotating use the same gesture. People drag through a sentence to hold their place, to
+re-read it, or to copy it, and only sometimes to say something about it. A reader that created a card
+on every selection would spend most of its time being dismissed.
+
+So a selection ARMS an offer. A **Comment** button appears beside it, and the comment exists only when
+you take that offer — by clicking, or by pressing ⌘⇧M. Escape, a scroll, or a new drag retires it, and
+nothing was created. Until then the page has reported nothing to Swift at all, which also keeps the
+bridge quiet during ordinary reading.
+
+The shortcut is handled INSIDE the page, not as a SwiftUI `keyboardShortcut`. The webview holds first
+responder while you are selecting in it, so a native shortcut would not fire — and the page is the side
+that knows what is selected.
+
+The phone arms the same offer from a block tap, for the same reason plus a sharper one: its rail is a
+sheet, so an accidental tap would raise a panel over the document it is about.
+
+The button is positioned through the CSSOM, never a `style` attribute. The page's CSP forbids inline
+styles, and setting the attribute is blocked while assigning `element.style.left` is not. That was
+verified in a real WKWebView under the shipped CSP rather than assumed.
+
 ### A comment is a reading pass, and the rail is ordered rather than floating
 
 A comment used to be one-shot: select, type in a bar at the bottom, send, and nothing remained. That
@@ -1474,10 +1496,22 @@ is one the page's own tint already gives. Instead the page reports which anchore
 of the viewport, throttled and only on a change, and the rail scrolls that card into view. One message
 every second or so replaces one per frame.
 
+Sent comments collapse into one row. They stay in the pass — it is a record of what you said, and their
+passages stay tinted — but a long review otherwise ends as a rail of dimmed cards with the ones you are
+still writing pushed off the bottom. Collapsing costs them their place in document order, which is the
+right trade: a finished comment's position in the rail matters less than its being out of the way. The
+focus-follow skips a card that is collapsed out of view, so scrolling the document never focuses
+something you cannot see.
+
 The phone gets the same rail as a sheet, with background interaction enabled so the document keeps
 scrolling behind it. One comment model, two containers — a margin does not fit a phone, and the rule
 that the two platforms share one renderer and one selection model is worth more than a bespoke phone
 design.
+
+Dismissing that sheet HIDES the pass rather than ending it. A swipe down is far too cheap a gesture to
+destroy writing, and the sheet covers the document being commented on — so wanting it out of the way is
+the common case, not a signal of being finished. A bar at the bottom of the document says how many
+comments are held and how many are unsent, and brings the sheet back.
 
 **The poll's hold narrowed with it.** It used to pause refresh for as long as any anchor existed, which
 was right when an anchor meant a compose field was open. For a pass it would mean sitting with three

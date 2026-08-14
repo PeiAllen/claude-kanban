@@ -70,6 +70,33 @@ body {
    added edge, for the same reason. */
 .hl-active { background: var(--anno, rgba(94, 92, 230, 0.3)); }
 
+/* THE OFFER. Selecting text does not create a comment — it offers to. This button appears at the end
+   of a selection, and the comment exists only once it is taken. Its position is written through the
+   CSSOM rather than a `style` attribute, which the page's CSP forbids. */
+#orch-comment-btn {
+  position: absolute;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: none;
+  border-radius: 7px;
+  /* OPAQUE. It floats over body text, so any transparency lets the words underneath read straight
+     through the label. The anchor hue at full strength, which also previews what the passage is
+     about to be tinted with. */
+  background: var(--annoSolid, #5e5ce6);
+  color: #fff;
+  font: 600 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+#orch-comment-btn .key {
+  font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.72;
+}
+#orch-comment-btn[hidden] { display: none; }
+
 /* ~1s, matching the daemon's coalescing window closely enough that a burst of agent writes reads as
    one change rather than a strobe. */
 .block.flash { animation: orch-flash 1s ease-out; }

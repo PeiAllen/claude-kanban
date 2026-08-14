@@ -12,6 +12,8 @@ public struct DocumentReaderView: View {
     @Environment(\.theme) private var theme: Theme
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var reader = DocumentReaderModel()
+    /// Phone only: whether the comment sheet is raised. The pass outlives it — see `phoneCommentBar`.
+    @State private var phoneSheetUp = false
 
     public init(task: Task) { self.task = task }
 
@@ -115,7 +117,14 @@ public struct DocumentReaderView: View {
         .animation(.easeOut(duration: 0.18), value: reader.comments.isEmpty)
         #else
         documentBody
-            .sheet(isPresented: phoneSheetShown) {
+            // Dismissing the sheet HIDES the pass, it does not end it. A swipe down is far too cheap a
+            // gesture to destroy something the reviewer has written, and the sheet covers the document
+            // they are commenting on — so wanting it out of the way is the common case, not a signal
+            // that they are finished. This bar brings it back.
+            .overlay(alignment: .bottom) {
+                if !phoneSheetUp && !reader.comments.isEmpty { phoneCommentBar }
+            }
+            .sheet(isPresented: $phoneSheetUp) {
                 rail
                     .presentationDetents([.height(280), .large])
                     // The reviewer must be able to keep reading — and keep tapping new passages —
@@ -124,7 +133,33 @@ public struct DocumentReaderView: View {
                     .presentationBackgroundInteraction(.enabled(upThrough: .height(280)))
                     .presentationDragIndicator(.visible)
             }
+            // A NEW anchor raises the sheet, so a tap goes straight to a field you can type in.
+            .onChange(of: reader.comments.count) { old, new in
+                if new > old { phoneSheetUp = true }
+            }
         #endif
+    }
+
+    /// The phone's way back to a hidden pass. Counts the whole pass, and says how much of it is still
+    /// unsent — that is the part that would be lost if the reader walked away.
+    private var phoneCommentBar: some View {
+        Button { phoneSheetUp = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "text.bubble").font(.caption)
+                Text("\(reader.comments.count) comment\(reader.comments.count == 1 ? "" : "s")")
+                    .font(.footnote.weight(.semibold))
+                if !reader.unsent.isEmpty {
+                    Text("· \(reader.unsent.count) unsent")
+                        .font(.caption2).foregroundStyle(theme.amber.text)
+                }
+            }
+            .foregroundStyle(theme.text)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(theme.hair, lineWidth: 0.5))
+            .padding(.bottom, 14)
+        }
+        .buttonStyle(.plain)
     }
 
     /// How wide the rail is. A comment is a sentence or two, so this is sized for that rather than for
@@ -148,12 +183,6 @@ public struct DocumentReaderView: View {
             })
     }
 
-    /// The phone's sheet is open exactly while the pass has something in it. Dismissing it ends the
-    /// pass, which is the only gesture a sheet offers and has to mean something honest.
-    private var phoneSheetShown: Binding<Bool> {
-        Binding(get: { !reader.comments.isEmpty },
-                set: { shown in if !shown { reader.clearComments() } })
-    }
 
     // MARK: - picking a document
 
