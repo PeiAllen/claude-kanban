@@ -75,13 +75,32 @@ import Testing
         #expect(m.content?.contains("SECOND") == true)
     }
 
-    /// The hold is narrow ON PURPOSE. An anchor with nothing written against it must not freeze the
-    /// document: the whole point of the reader is watching the agent work, and the highlight re-anchors
-    /// itself across a refresh anyway.
-    @Test("an anchor with no text written against it does NOT hold the poll")
-    func anEmptyAnchorDoesNotHoldThePoll() async {
+    /// An EMPTY card holds the document too. Anchoring is deliberate — you select, then you take the
+    /// offer — so an open card means someone is working on that passage. Without this there is a window
+    /// between taking the offer and typing the first character in which the agent can rewrite the
+    /// passage and detach a comment the reviewer had not begun.
+    @Test("an anchor with nothing written against it still holds the poll")
+    func anEmptyAnchorHoldsThePoll() async {
         let m = await opened("# A\n\nfirst\n")
-        m.select(sel(3))
+        let id = m.select(sel(3))!
+        #expect(m.composing)
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("first") == true)
+
+        // Discarding it releases the hold — an abandoned card is one click from freeing the document.
+        m.discard(id)
+        #expect(!m.composing)
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("SECOND") == true)
+    }
+
+    /// A SENT comment never holds. Sending is exactly when you want to watch the agent act on it.
+    @Test("a sent comment does not hold the poll")
+    func aSentCommentDoesNotHoldThePoll() async {
+        let m = await opened("# A\n\nfirst\n")
+        let id = m.select(sel(3))!
+        m.draftBinding(id).wrappedValue = "look at this"
+        await m.send(id) { _ in true }
         #expect(!m.composing)
         await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
         #expect(m.content?.contains("SECOND") == true)
@@ -175,10 +194,32 @@ import Testing
         let m = await opened("# A\n\nbody\n")
         let id = m.select(sel(3, "h1"))!
         m.draftBinding(id).wrappedValue = "still true"
-        m.markDetached(["h1"])
+        m.setDetached(["h1"])
         #expect(m.comments[0].detached)
         #expect(m.comments[0].draft == "still true")               // the quote froze; it is not lost
         #expect(m.canSend(id))                                     // and it can still be sent
+    }
+
+    /// The page reports the WHOLE detached set on every change, so an anchor that re-attaches clears
+    /// its badge. It was previously only ever set, which left a card saying "text moved" over a passage
+    /// the reader could plainly see tinted again.
+    @Test("an anchor that re-attaches clears its detached badge")
+    func reattachingClearsTheDetachedBadge() async {
+        let m = await opened("# A\n\none\n\ntwo\n")
+        m.select(sel(3, "h1"))
+        m.select(sel(5, "h2"))
+
+        m.setDetached(["h1", "h2"])
+        #expect(m.comments.allSatisfy { $0.detached })
+
+        // The agent restored one of the two passages.
+        m.setDetached(["h2"])
+        #expect(!m.comments[0].detached)
+        #expect(m.comments[1].detached)
+
+        // ...and then the other. An EMPTY report is the only thing that can say so.
+        m.setDetached([])
+        #expect(m.comments.allSatisfy { !$0.detached })
     }
 
     /// An anchor belongs to the document it came from, so opening another one ends the pass.

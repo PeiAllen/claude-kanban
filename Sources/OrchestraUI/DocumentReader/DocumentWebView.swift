@@ -206,11 +206,11 @@ struct DocumentWebView {
             onSelect(DocumentSelection(startLine: start, endLine: end, text: text, highlightID: highlight))
         }
 
+        /// The WHOLE detached set, empty included — an empty report is how a re-attached anchor clears
+        /// its badge, so it must not be filtered out as "nothing to say".
         private func handleDetached(_ d: [String: Any]) {
             guard let ids = d["ids"] as? [String] else { return }
-            let clean = ids.filter(Self.isHighlightID)
-            guard !clean.isEmpty else { return }
-            onDetached(clean)
+            onDetached(ids.filter(Self.isHighlightID))
         }
 
         private func handleVisible(_ d: [String: Any]) {

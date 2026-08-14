@@ -345,7 +345,11 @@
     const key = ids.join(",");
     if (key === lastDetached) return;
     lastDetached = key;
-    if (ids.length) post({ kind: "detached", ids: ids });
+    // The set is reported WHOLE, empty included. `applyHighlights` re-resolves every anchor on every
+    // render, so a passage the agent rewrote and then restored re-attaches and its tint comes back —
+    // and without an empty report the card would keep saying "text moved" over a passage that is
+    // plainly tinted again.
+    post({ kind: "detached", ids: ids });
   }
 
   // Tell Swift which anchor is at the top of the viewport, so the rail can follow the reading position.

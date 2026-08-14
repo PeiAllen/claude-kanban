@@ -1513,11 +1513,21 @@ destroy writing, and the sheet covers the document being commented on — so wan
 the common case, not a signal of being finished. A bar at the bottom of the document says how many
 comments are held and how many are unsent, and brings the sheet back.
 
-**The poll's hold narrowed with it.** It used to pause refresh for as long as any anchor existed, which
-was right when an anchor meant a compose field was open. For a pass it would mean sitting with three
-anchors and watching a frozen document. It now pauses only while a comment is half-written. That is safe
-because the two things the pause protected are both handled elsewhere: the quote freezes at capture, and
-a highlight re-anchors itself across a refresh.
+**The poll holds while any comment is open**, written into or not. Anchoring is a deliberate act — you
+select, then you take the offer — so an open card means someone is working on that passage and the text
+under it must not move. Covering the empty card matters: without it there is a window between taking the
+offer and typing the first character in which the agent can rewrite the passage and detach a comment the
+reviewer had not begun.
+
+Sent comments never hold. Sending is exactly when you want to watch the agent act on what you said, and
+it is the reason "text moved" is normally something you see on a SENT card rather than a warning about
+work in progress. The residual cost is an abandoned empty card holding the document still, which is
+visible in the rail and one click from being discarded.
+
+**A detached anchor can re-attach.** The page re-resolves every anchor on every render and reports the
+whole detached set, empty included, so a passage the agent rewrote and then restored comes back tinted
+and its card stops saying "text moved". Reporting only the non-empty set left a badge that could be set
+and never cleared, contradicting a highlight the reader could plainly see.
 
 ### The reader's bridge reports a selection and nothing else
 

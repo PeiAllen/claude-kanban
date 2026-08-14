@@ -310,7 +310,7 @@ public struct DocumentReaderView: View {
                             await model.documentAsset(task.id, note: doc.path, asset: asset)
                         },
                         onSelect: { reader.select($0) },
-                        onDetached: { reader.markDetached($0) },
+                        onDetached: { reader.setDetached($0) },
                         // Follow the reading position. Only while nothing is half-written: yanking the
                         // rail around under someone's cursor as they scroll to check a reference is
                         // worse than the cue is worth.

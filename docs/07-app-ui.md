@@ -429,7 +429,9 @@ only HIDES the pass: a swipe down is far too cheap a gesture to destroy somethin
 a bar at the bottom of the document brings it back.
 
 If the agent rewrites a passage you anchored, its card is marked **text moved**. The comment survives
-and can still be sent, because its quote froze when you selected. Only the tint is gone.
+and can still be sent, because its quote froze when you selected. Only the tint is gone. Because an open
+card holds the refresh, this happens to comments you have already SENT — which is usually the agent
+acting on what you said. If it restores the text, the tint comes back and the mark clears.
 
 One comment becomes ONE message in the card's inbox, addressed to the agent that owns the document:
 
@@ -446,9 +448,10 @@ order. So what an agent has to read never changes with the number of comments, a
 one comment is that single message with nothing added.
 
 The quote freezes when you select, not when you send, so it stays a valid anchor after the line numbers
-shift. Live refresh pauses only while a comment is half-written — that is the case where text must not
-move under you mid-sentence. An anchor you have not written against yet does not hold the document
-still, because watching the agent work is the point of the reader.
+shift. Live refresh also pauses while any comment is open, written into or not — an open card means you
+are working on that passage, and the text under it must not move. Sent comments never hold it: sending
+is exactly when you want to watch the agent act on what you said. An open card you abandon holds the
+document still until you discard or send it, and it is sitting right there in the rail.
 
 **What a drag highlights.** Exactly the range you dragged through, tinted in place, and it stays tinted
 for as long as its comment exists. A selection that crosses several blocks tints the tail of the first,

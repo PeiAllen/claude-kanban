@@ -59,14 +59,20 @@ public final class DocumentReaderModel: ObservableObject {
 
     /// Whether the content poll should HOLD.
     ///
-    /// Only while something is half-written. It used to hold for as long as any anchor existed, which
-    /// was fine when a comment was one-shot and wrong for a pass: the reviewer would sit with three
-    /// anchors open and watch a frozen document, which is the opposite of what the reader is for.
-    /// Holding is safe to narrow now, because a highlight re-anchors itself across a refresh and the
-    /// quote was already frozen at capture. What remains is the real case — text must not move under
-    /// someone mid-sentence.
+    /// While ANY comment is open — written into or not. An anchor is a deliberate act now: you select,
+    /// and then you take the offer. So an open card means someone is working on that passage, and the
+    /// text under it must not move.
+    ///
+    /// This deliberately covers the empty card too. Otherwise there is a window between taking the
+    /// offer and typing the first character where the agent can rewrite the passage out from under the
+    /// anchor, which detaches a comment the reviewer had not even started. The window is only seconds
+    /// wide, and it is entirely avoidable.
+    ///
+    /// SENT comments never hold. Sending is exactly when you want to watch the agent act on what you
+    /// said. The residual cost is an abandoned empty card holding the document still — visible in the
+    /// rail, and one click to discard.
     public var composing: Bool {
-        comments.contains { !$0.sent && !$0.draft.trimmed.isEmpty }
+        comments.contains { !$0.sent }
     }
 
     /// The passages the page must keep tinted. Anything else it is holding is stale.
@@ -271,10 +277,13 @@ public final class DocumentReaderModel: ObservableObject {
     /// The page could not re-place these passages after a refresh, so the agent rewrote them. The
     /// comment survives — its quote is frozen and still says what the reviewer read — but the rail
     /// must say the tint is gone rather than leave the reviewer looking for it.
-    public func markDetached(_ highlightIDs: [String]) {
+    /// The page reports the WHOLE set each time, so this ASSIGNS rather than accumulates. An anchor
+    /// re-attaches when the agent restores the text it pointed at, and a badge that could only ever be
+    /// set would then contradict a passage that is visibly tinted again.
+    public func setDetached(_ highlightIDs: [String]) {
         let gone = Set(highlightIDs)
-        for i in comments.indices where gone.contains(comments[i].highlightID) {
-            comments[i].detached = true
+        for i in comments.indices {
+            comments[i].detached = gone.contains(comments[i].highlightID)
         }
     }
 
