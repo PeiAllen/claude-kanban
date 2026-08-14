@@ -98,9 +98,7 @@ public struct ClaudeCodeAdapter: Adapter {
             // subagent, a /loop or scheduled wake) will AUTO-RESUME — the human isn't needed. Leave the
             // card running (return nil) so it neither flips to waiting nor alerts. (background_tasks /
             // session_crons are Claude Code v2.1.145+; absent on older builds → treated as empty.)
-            let hasBg = (p["background_tasks"]?.arrayValue?.isEmpty == false)
-                || (p["session_crons"]?.arrayValue?.isEmpty == false)
-            if hasBg { return nil }
+            if hasAutomaticResume(p) { return nil }
             return StatusReport(run: .waiting(.humanTurn))
         case "sessionend":
             let reason = p["reason"]?.stringValue ?? "other"
@@ -110,6 +108,49 @@ public struct ClaudeCodeAdapter: Adapter {
         default:
             return nil
         }
+    }
+
+    // MARK: replacement agent-state mapping (dark until the Core cutover)
+
+    public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
+        let kind: AgentSignal.Kind?
+        switch raw {
+        case .hooksPush(let hook, let payload):
+            guard belongsToHarnessSession(payload, context: context) else { return [] }
+            switch hook {
+            case "prompt":
+                kind = .turnStarted
+            case "stop":
+                kind = .turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil)
+            default:
+                // Tool, notification, permission, and child-task events are activity/request inputs,
+                // not evidence that the top-level harness turn opened or closed.
+                kind = nil
+            }
+
+        case .traceSpanEnded(let name, let attributes):
+            guard name == "claude_code.interaction",
+                  belongsToHarnessSession(attributes, context: context)
+            else { return [] }
+            // Claude emits this terminal root span on the Ctrl-C path where no Stop hook fires.
+            kind = .turnCompleted()
+
+        case .fileTail, .rpcNotification, .rpcResponse:
+            kind = nil
+        }
+
+        return kind.map { [.init(sessionEpoch: context.sessionEpoch, kind: $0)] } ?? []
+    }
+
+    private func hasAutomaticResume(_ payload: JSONValue) -> Bool {
+        payload["background_tasks"]?.arrayValue?.isEmpty == false
+            || payload["session_crons"]?.arrayValue?.isEmpty == false
+    }
+
+    private func belongsToHarnessSession(_ payload: JSONValue, context: AgentSignalContext) -> Bool {
+        guard let expected = context.harnessSessionId else { return true }
+        let observed = payload["session_id"]?.stringValue ?? payload["session.id"]?.stringValue
+        return observed == nil || observed == expected
     }
 
     /// Receive-direction format: wrap core's neutral `HookResponse` in Claude's hook stdout envelope.

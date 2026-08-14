@@ -99,6 +99,20 @@ struct AgentStateReducerTests {
         #expect(state == original)
     }
 
+    @Test("a duplicate completion may enrich waiting with automatic resume")
+    func duplicateCompletionEnrichesResume() {
+        var state = AgentState(turnStatus: .waiting())
+
+        let changed = AgentStateReducer.apply(
+            .init(sessionEpoch: epoch, kind: .turnCompleted(resume: .init())),
+            to: &state,
+            currentSessionEpoch: epoch
+        )
+
+        #expect(changed)
+        #expect(state == AgentState(turnStatus: .waiting(.init(resume: .init()))))
+    }
+
     @Test("request snapshots never change running or waiting")
     func requestsAreOrthogonal() {
         let question = AgentRequest(id: "question-1", kind: .input, prompt: "Choose A or B")

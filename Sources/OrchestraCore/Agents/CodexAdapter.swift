@@ -140,6 +140,53 @@ public struct CodexAdapter: Adapter {
         return nil
     }
 
+    // MARK: replacement agent-state mapping (dark until the Core cutover)
+
+    public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
+        guard let expectedThreadId = context.harnessSessionId else { return [] }
+
+        let kind: AgentSignal.Kind?
+        switch raw {
+        case .rpcNotification(let method, let params):
+            guard params["threadId"]?.stringValue == expectedThreadId else { return [] }
+            switch method {
+            case "turn/started":
+                kind = .turnStarted
+            case "turn/completed":
+                kind = .turnCompleted()
+            case "thread/status/changed":
+                kind = turnReconciliation(from: params["status"])
+            default:
+                kind = nil
+            }
+
+        case .rpcResponse(let method, let result):
+            guard method == "thread/read", let thread = result["thread"],
+                  thread["id"]?.stringValue == expectedThreadId
+            else { return [] }
+            kind = turnReconciliation(from: thread["status"])
+
+        case .hooksPush, .fileTail, .traceSpanEnded:
+            kind = nil
+        }
+
+        return kind.map { [.init(sessionEpoch: context.sessionEpoch, kind: $0)] } ?? []
+    }
+
+    private func turnReconciliation(from status: JSONValue?) -> AgentSignal.Kind? {
+        switch status?["type"]?.stringValue {
+        case "active":
+            // Approval/input flags describe requests nested inside an open turn; they do not make it wait.
+            return .turnReconciled(.running)
+        case "idle":
+            return .turnReconciled(.waiting())
+        case "notLoaded", "systemError":
+            return .turnReconciled(.unavailable)
+        default:
+            return nil
+        }
+    }
+
     /// Lower-case + drop underscores so `task_complete` / `TaskComplete` / `TurnComplete` normalize alike.
     private static func norm(_ s: String) -> String {
         s.lowercased().replacingOccurrences(of: "_", with: "")

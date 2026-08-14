@@ -55,6 +55,11 @@ public protocol Adapter: Sendable {
     /// result via `OrchestraService.report`. DEFAULTED to `nil` (additive — no conformer breaks) so an
     /// adapter opts in per transport it actually receives.
     func parse(_ raw: RawTelemetry) -> StatusReport?
+    /// Normalize provider observations into the replacement live-agent contract. During migration this
+    /// is a dark path: adapters can map and compare these values, but only the legacy `parse` report may
+    /// mutate a card until the single Core cutover. One raw event may eventually update more than one
+    /// independent field, hence the array result.
+    func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal]
     /// Encode core's agent-neutral `HookResponse` into THIS agent's hook stdout envelope (receive
     /// direction). AGENT-DEPENDENT format. DEFAULTED to `nil` (fail-safe, like `parse`) — so a divergent
     /// future agent that forgets can't silently emit another agent's shape (A1 "no silent inheritance").
@@ -80,6 +85,7 @@ public extension Adapter {
     var cardFile: CardFileSpec? { nil }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
+    func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
     func sessionSource(_ payload: JSONValue) -> SessionSource? {
         payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other
