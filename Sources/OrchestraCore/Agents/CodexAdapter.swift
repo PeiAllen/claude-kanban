@@ -35,6 +35,11 @@ public struct CodexAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
+    public func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint? {
+        .unixSocket(path: (runtimeStateDir as NSString)
+            .appendingPathComponent("codex-\(cardRef).sock"))
+    }
+
     /// Codex's normal default state location, retained only for rollout discovery.
     /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }
@@ -329,27 +334,38 @@ public struct CodexAdapter: Adapter {
     }
 
     public func start(_ ctx: AdapterContext) -> [String] {
-        var argv = [binary]
-        argv += launchConfigurationFlags(ctx)
-        argv += hookTrustFlags
-        argv += accessFlags(ctx.access)
-        argv += modelFlag(ctx.model)
-        if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
-        return argv
+        var arguments = launchConfigurationFlags(ctx)
+        arguments += hookTrustFlags
+        arguments += accessFlags(ctx.access)
+        arguments += modelFlag(ctx.model)
+        let positional = ctx.prompt.flatMap { $0.isEmpty ? nil : $0 }.map { [$0] } ?? []
+        if let launch = CodexLaunchConfiguration.appServerLaunch(
+            binary: binary, context: ctx, agentId: id,
+            clientArguments: arguments, positional: positional
+        ) {
+            return launch.argv
+        }
+        return [binary] + arguments + positional
     }
 
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
-        var argv = [binary, "resume", sid]
-        argv += launchConfigurationFlags(ctx)
-        argv += hookTrustFlags
-        argv += accessFlags(ctx.access)
-        argv += modelFlag(ctx.model)
+        var arguments = ["resume", sid]
+        arguments += launchConfigurationFlags(ctx)
+        arguments += hookTrustFlags
+        arguments += accessFlags(ctx.access)
+        arguments += modelFlag(ctx.model)
         // F1: the folded seed (handoff ctx + pending inbox) rides the resume as its opening positional
         // turn. This is the resume-seed delivery for handoff AND the idle-wake path (`.relaunch`); live
         // turn-end delivery is the Stop hook (`inboxDrain == .stopHook`).
-        if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
-        return argv   // no prompt beyond the optional seed — the rollout holds prior task history
+        let positional = ctx.seed.flatMap { $0.isEmpty ? nil : $0 }.map { [$0] } ?? []
+        if let launch = CodexLaunchConfiguration.appServerLaunch(
+            binary: binary, context: ctx, agentId: id,
+            clientArguments: arguments, positional: positional
+        ) {
+            return launch.argv
+        }
+        return [binary] + arguments + positional
     }
 
     /// Receive-direction format: Codex 0.135+ reads the SAME `hookSpecificOutput.additionalContext`

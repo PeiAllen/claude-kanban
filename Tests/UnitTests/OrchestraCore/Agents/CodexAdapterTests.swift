@@ -135,6 +135,50 @@ struct CodexAdapterArgvTests {
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
     }
 
+    @Test("Codex declares one short per-card Unix endpoint for its app-server observer")
+    func observationEndpoint() {
+        #expect(adapter.observationEndpoint(cardRef: "abc12345", runtimeStateDir: "/runtime") ==
+                .unixSocket(path: "/runtime/codex-abc12345.sock"))
+    }
+
+    @Test("an observation endpoint wraps the stock TUI around a launch-local app-server without inlining guidance")
+    func appServerLaunch() throws {
+        let testAdapter = CodexAdapter(binOverride: "codex", hookTrustBypass: false)
+        let ctx = AdapterContext(
+            cwd: "/wt/with spaces",
+            model: "gpt-5.5",
+            prompt: "go",
+            orchestraBin: "/abs/orchestra",
+            access: .readOnly,
+            trustCwd: false,
+            orchestraMCPBin: "/abs/orchestra-mcp",
+            observationEndpoint: .unixSocket(path: "/runtime/codex-card.sock")
+        )
+        let plan = try #require(CodexLaunchConfiguration.appServerLaunch(
+            binary: "codex",
+            context: ctx,
+            agentId: "codex",
+            clientArguments: CodexLaunchConfiguration.flags(cwd: ctx.cwd)
+                + ["-s", "read-only", "-a", "never", "-m", "gpt-5.5"],
+            positional: ["go"]
+        ))
+
+        #expect(plan.socketPath == "/runtime/codex-card.sock")
+        #expect(plan.serverArgv.starts(with: ["codex", "app-server", "--listen",
+                                               "unix:///runtime/codex-card.sock"]))
+        #expect(plan.serverArgv.contains { $0.contains("hooks.SessionStart=") })
+        #expect(plan.serverArgv.contains { $0.contains("mcp_servers.orchestra.command=") &&
+                                           $0.contains("/abs/orchestra-mcp") })
+        #expect(plan.serverArgv.contains { $0.contains("mcp_servers.orchestra.disabled_tools=") &&
+                                           $0.contains("exec") })
+        #expect(!plan.serverArgv.contains { $0.contains("developer_instructions") })
+        #expect(adjacent(plan.clientArgv, "--remote", "unix:///runtime/codex-card.sock"))
+        #expect(adjacent(plan.clientArgv, "-C", "/wt/with spaces"))
+        #expect(plan.argv.first == "/bin/bash")
+        #expect(plan.argv.joined(separator: " ").count < 4_000)
+        #expect(testAdapter.start(ctx) == plan.argv)
+    }
+
     @Test("start and resume select the same profile file carrying the scoped hooks, trust, and instructions")
     func launchScopedConfigIsSharedByStartAndResume() throws {
         let cwd = "/wt/with \"quote\" and \\ slash"

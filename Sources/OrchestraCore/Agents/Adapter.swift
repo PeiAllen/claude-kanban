@@ -1,5 +1,16 @@
 import Foundation
 
+/// Provider observation endpoint prepared for one card launch. The enum keeps the adapter/core seam
+/// provider-neutral even though the first source (Codex app-server) uses a Unix domain socket.
+public enum AgentObservationEndpoint: Sendable, Equatable {
+    case unixSocket(path: String)
+
+    public var unixSocketPath: String? {
+        guard case .unixSocket(let path) = self else { return nil }
+        return path
+    }
+}
+
 /// Context handed to an adapter when building launch argv.
 public struct AdapterContext: Sendable {
     public let cwd: String          // the worktree
@@ -22,16 +33,19 @@ public struct AdapterContext: Sendable {
     public let since: Date?         // time-scope for discovered-session binding: bind only a rollout newer
                                     // than this durable launch cutoff, so an unbound fallback card never
                                     // adopts a sibling's or its own stale pre-reboot rollout.
+    public let observationEndpoint: AgentObservationEndpoint?
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
                 orchestraBin: String = siblingBinary("orchestra"), access: CardAccess = .readWrite,
                 trustCwd: Bool = false, seed: String? = nil, since: Date? = nil,
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
-                autoInstallMCPGlobally: Bool = false) {
+                autoInstallMCPGlobally: Bool = false,
+                observationEndpoint: AgentObservationEndpoint? = nil) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.orchestraBin = orchestraBin
         self.orchestraMCPBin = orchestraMCPBin; self.access = access; self.trustCwd = trustCwd
         self.autoInstallMCPGlobally = autoInstallMCPGlobally; self.seed = seed; self.since = since
+        self.observationEndpoint = observationEndpoint
     }
 }
 
@@ -60,6 +74,9 @@ public protocol Adapter: Sendable {
     /// mutate a card until the single Core cutover. One raw event may eventually update more than one
     /// independent field, hence the array result.
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal]
+    /// The launch-local endpoint this adapter needs for structured observation, if any. Core only
+    /// allocates and carries the endpoint; provider-specific launch and connection details stay here.
+    func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint?
     /// Encode core's agent-neutral `HookResponse` into THIS agent's hook stdout envelope (receive
     /// direction). AGENT-DEPENDENT format. DEFAULTED to `nil` (fail-safe, like `parse`) — so a divergent
     /// future agent that forgets can't silently emit another agent's shape (A1 "no silent inheritance").
@@ -86,6 +103,7 @@ public extension Adapter {
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }
+    func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint? { nil }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
     func sessionSource(_ payload: JSONValue) -> SessionSource? {
         payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other
