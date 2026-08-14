@@ -40,6 +40,14 @@ public struct CodexAdapter: Adapter {
             .appendingPathComponent("codex-\(cardRef).sock"))
     }
 
+    public func makeObservationSource(
+        endpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> (any AgentObservationSource)? {
+        guard let socketPath = endpoint.unixSocketPath else { return nil }
+        return CodexAppServerObservationSource(socketPath: socketPath, threadId: harnessSessionId)
+    }
+
     /// Codex's normal default state location, retained only for rollout discovery.
     /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }

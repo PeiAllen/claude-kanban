@@ -186,6 +186,10 @@ extension OrchestraService {
         // right here, and the re-seat would relaunch on the model it was trying to leave. `pendingModel` is
         // never touched by report() (it is absent from `applyReportFields`), so it survives that window.
         let launchModel = task.pendingModel ?? task.model.id
+        let observationEndpoint = adapter.observationEndpoint(
+            cardRef: task.shortId,
+            runtimeStateDir: config.runtimeStateDir
+        )
         switch flavor {
         case .blank(_, let prompt):
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
@@ -193,7 +197,8 @@ extension OrchestraService {
                                      orchestraBin: orchestraBin,
                                      access: task.access, trustCwd: trustDecision == .trusted,
                                      orchestraMCPBin: orchestraMCPBin,
-                                     autoInstallMCPGlobally: config.autoInstallMCPGlobally)
+                                     autoInstallMCPGlobally: config.autoInstallMCPGlobally,
+                                     observationEndpoint: observationEndpoint)
             let a = adapter, c = ctx
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = adapter.start(ctx)
@@ -212,7 +217,8 @@ extension OrchestraService {
                                      access: task.access,
                                      trustCwd: trustDecision == .trusted, seed: seed,
                                      orchestraMCPBin: orchestraMCPBin,
-                                     autoInstallMCPGlobally: config.autoInstallMCPGlobally)
+                                     autoInstallMCPGlobally: config.autoInstallMCPGlobally,
+                                     observationEndpoint: observationEndpoint)
             guard let sid = task.agentSessionId else { return .timedOut }
             let a = adapter, c = ctx, priorIds = task.priorSessionIds
             // 5.1.3 pattern: hop the adapter's fs-touching sessionInfo() + the transcript existence check

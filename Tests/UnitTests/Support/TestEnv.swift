@@ -101,6 +101,7 @@ enum TestEnv {
     /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
     /// itself a realistic "fresh daemon" trait.
     static func remake(base: String, capabilities: AgentCapabilities = .stub,
+                       registry: AgentRegistry? = nil,
                        clock: any Clock<Duration> = ContinuousClock(),
                        now: (@Sendable () -> Date)? = nil,
                        proc: (any ProcRunning)? = nil)
@@ -120,7 +121,7 @@ enum TestEnv {
         let inbox = Inbox(path: base + "/inbox.json",
                           leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
         let svc = OrchestraService(config: config, store: store,
-                                   registry: AgentRegistry(adapters: [adapter]),
+                                   registry: registry ?? AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
                                    clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),

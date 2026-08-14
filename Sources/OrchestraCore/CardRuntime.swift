@@ -21,7 +21,7 @@ struct CardRuntime {
 
     // MARK: - The armed-task bag
 
-    /// The five per-card timer/loop slots. `CaseIterable` is load-bearing: the detach iterates
+    /// The per-card timer/loop slots. `CaseIterable` is load-bearing: the detach iterates
     /// `Armed.allCases`-independent `tasks.values`, so a new slot is cancelled at teardown by
     /// construction.
     enum ArmedSlot: Hashable, CaseIterable, Sendable {
@@ -30,6 +30,7 @@ struct CardRuntime {
         case diffStat             // footer diffstat debounce
         case treeStat             // branch-tree stat debounce
         case childFanout          // child tree-stat fan-out debounce
+        case agentObservation     // structured provider event stream + reconnect loop
     }
 
     /// One arming of one slot: the running task plus the **arming token** that fences every delayed
@@ -46,6 +47,21 @@ struct CardRuntime {
     /// The bag. Mutate ONLY via the service helpers (`arm`/`disarm`/`clearSlot(ifToken:)`) so the
     /// cancel-before-replace and token-fenced-clear disciplines hold everywhere.
     var tasks: [ArmedSlot: Armed] = [:]
+
+    // MARK: - Live agent observation (replacement contract, dark until cutover)
+
+    /// Exact subscription identity. The endpoint selects the launch-local provider server; epoch and
+    /// provider session fence callbacks that were already queued when a source was superseded.
+    struct AgentObservationIdentity: Equatable, Sendable {
+        let endpoint: AgentObservationEndpoint
+        let sessionEpoch: Int
+        let harnessSessionId: String
+    }
+
+    var agentObservationIdentity: AgentObservationIdentity?
+    /// Ephemeral replacement state. It exists only while the card is live and is deliberately not emitted
+    /// or persisted until the atomic Phase.live cutover replaces the legacy run-state authority.
+    var shadowAgentState: AgentState?
 
     // MARK: - Readiness
 

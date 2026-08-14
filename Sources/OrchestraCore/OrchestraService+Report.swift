@@ -335,6 +335,12 @@ extension OrchestraService {
                 $0.applyReportFields(from: task, changedFrom: before)
             }
             emit(.taskUpserted(saved), rev: rev)
+            if saved.agentSessionId != before.agentSessionId {
+                // `/clear` can replace the provider session without leaving the live lifecycle phase.
+                // Replace the subscription at the same durable identity write; queued old-source events
+                // are rejected by the source token + harness-session fence.
+                reconcileAgentObservation(saved)
+            }
             didChange = true
         }
 

@@ -1,5 +1,23 @@
 import Foundation
 
+/// Adapter-owned binding of one app-server socket to one Codex thread. Core sees only the generic
+/// blocking source contract and can manufacture a fresh instance for each reconnect attempt.
+final class CodexAppServerObservationSource: AgentObservationSource, @unchecked Sendable {
+    private let threadId: String
+    private let observer: CodexAppServerObserver
+
+    init(socketPath: String, threadId: String) {
+        self.threadId = threadId
+        self.observer = CodexAppServerObserver(socketPath: socketPath)
+    }
+
+    func run(onObservation: @escaping @Sendable (RawTelemetry) -> Void) throws {
+        try observer.run(threadId: threadId, onObservation: onObservation)
+    }
+
+    func shutdown() { observer.shutdown() }
+}
+
 /// One persistent, read-only subscription to a Codex app-server thread. The observer owns provider RPC
 /// choreography but emits only raw provider messages; `CodexAdapter.agentSignals` remains the sole place
 /// that interprets them as turn state.

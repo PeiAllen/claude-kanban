@@ -141,6 +141,11 @@ extension OrchestraService {
         //     claim and returns at once.
         emit(.taskUpserted(updated), rev: rev)
 
+        // Structured observation follows the durable lifecycle edge. Entering/live churn converges to the
+        // exact endpoint + epoch + provider session; leaving live cancels the blocking source and discards
+        // its ephemeral snapshot. This remains dark until the single status-authority cutover.
+        reconcileAgentObservation(updated)
+
         // 7 · Wake-on-live — the single structural release point for a message parked while the card
         //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
         //     relaunchSeed lease is left alone (B3 D5) and a `.live(.running)` entry falls through.

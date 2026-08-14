@@ -11,6 +11,14 @@ public enum AgentObservationEndpoint: Sendable, Equatable {
     }
 }
 
+/// One blocking connection to a provider's structured event stream. Core owns its lifetime and treats it
+/// as a passive source: provider RPC choreography and decoding stay behind the adapter boundary, while
+/// cancellation must synchronously unblock `run` so a superseded card session cannot leak a reader.
+public protocol AgentObservationSource: AnyObject, Sendable {
+    func run(onObservation: @escaping @Sendable (RawTelemetry) -> Void) throws
+    func shutdown()
+}
+
 /// Context handed to an adapter when building launch argv.
 public struct AdapterContext: Sendable {
     public let cwd: String          // the worktree
@@ -77,6 +85,12 @@ public protocol Adapter: Sendable {
     /// The launch-local endpoint this adapter needs for structured observation, if any. Core only
     /// allocates and carries the endpoint; provider-specific launch and connection details stay here.
     func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint?
+    /// Build one fresh connection attempt for an endpoint + provider session. Core may call this again
+    /// after a disconnect; returning nil means this adapter has no structured source for that endpoint.
+    func makeObservationSource(
+        endpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> (any AgentObservationSource)?
     /// Encode core's agent-neutral `HookResponse` into THIS agent's hook stdout envelope (receive
     /// direction). AGENT-DEPENDENT format. DEFAULTED to `nil` (fail-safe, like `parse`) — so a divergent
     /// future agent that forgets can't silently emit another agent's shape (A1 "no silent inheritance").
@@ -104,6 +118,10 @@ public extension Adapter {
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }
     func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint? { nil }
+    func makeObservationSource(
+        endpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> (any AgentObservationSource)? { nil }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
     func sessionSource(_ payload: JSONValue) -> SessionSource? {
         payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other

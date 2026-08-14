@@ -364,6 +364,8 @@ extension OrchestraService {
                 // (older/mismatched) epoch means the session isn't ours → relaunch to reclaim identity.
                 let e = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
                 if (e ?? nil) == t.sessionEpoch {
+                    ensureRuntime(for: t)
+                    reconcileAgentObservation(t)
                     continue                                // adopt — leave `.live`
                 }
                 _ = await transition(t.id, to: .relaunching,
