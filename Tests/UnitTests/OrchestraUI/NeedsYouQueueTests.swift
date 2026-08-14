@@ -45,7 +45,7 @@ final class NeedsYouQueueTests: XCTestCase {
         // A plain running card holds no reason → absent. A permission-blocked card and a dead card each
         // hold one → present, top reason = that reason.
         let m = modelWith([card("run", phase: .live(.running)),
-                           card("perm", phase: .live(.waiting(.permission))),
+                           card("perm", phase: .live(.permissionRequested)),
                            card("dead", phase: .dead(.agentExited), dead: .agentExited)])
         let rows = m.needsYouRows(now: t0)
         XCTAssertEqual(Set(rows.map(\.task.title)), ["perm", "dead"])
@@ -56,7 +56,7 @@ final class NeedsYouQueueTests: XCTestCase {
     /// The membership SHIFT this slice introduces: a bare idle `humanTurn` card no longer qualifies just
     /// for being done — it enters the queue ONLY once it goes quiescent past the stall threshold.
     func testBareIdleHumanTurnEntersOnlyOnStall() {
-        let idle = card("idle", phase: .live(.waiting(.humanTurn)), at: t0)
+        let idle = card("idle", phase: .live(.waiting), at: t0)
         let m = modelWith([idle])
         XCTAssertTrue(m.needsYouRows(now: t0).isEmpty, "a fresh idle card must not be in the queue")
         let late = m.needsYouRows(now: late)
@@ -70,17 +70,18 @@ final class NeedsYouQueueTests: XCTestCase {
     }
 
     func testBackgroundWaitCardNeverAppears() {
-        // A card paused on a background task is reported .running by the adapters — a plain running card
-        // here, holding no reason, so it is excluded by construction.
-        let m = modelWith([card("bg-loop", phase: .live(.running)),
-                           card("blocked", phase: .live(.waiting(.permission)))])
-        XCTAssertEqual(m.needsYouRows(now: t0).map(\.task.title), ["blocked"])
+        // A card paused on provider-owned background work has no open turn but will resume automatically,
+        // so it must not enter the stall queue even after the ordinary-wait threshold passes.
+        let autoResume = AgentState(turnStatus: .waiting(.init(resume: .init())))
+        let m = modelWith([card("bg-loop", phase: .live(autoResume)),
+                           card("blocked", phase: .live(.permissionRequested))])
+        XCTAssertEqual(m.needsYouRows(now: late).map(\.task.title), ["blocked"])
     }
 
     // MARK: signals — labels + the multi-reason row
 
     func testSignalsCarryTheirLabels() {
-        let m = modelWith([card("perm", phase: .live(.waiting(.permission)))])
+        let m = modelWith([card("perm", phase: .live(.permissionRequested))])
         let row = m.needsYouRows(now: t0).first
         XCTAssertEqual(row?.signals.map(\.label), ["permission"])
     }
@@ -88,7 +89,7 @@ final class NeedsYouQueueTests: XCTestCase {
     func testMultiSignalRowTopReasonDrivesIt() {
         // A card blocked on permission AND nearly out of context holds BOTH reasons; the row lists both,
         // and the top (most hard-blocked) is permission.
-        let m = modelWith([card("both", phase: .live(.waiting(.permission)), ctx: 92)])
+        let m = modelWith([card("both", phase: .live(.permissionRequested), ctx: 92)])
         let row = m.needsYouRows(now: t0).first
         XCTAssertEqual(row?.topReason, .permission)
         XCTAssertEqual(row?.signals.map(\.reason), [.permission, .ctxCritical])
@@ -99,11 +100,11 @@ final class NeedsYouQueueTests: XCTestCase {
     func testSortByTopReasonThenOldest() {
         let old = t0.addingTimeInterval(-600)
         let new = t0.addingTimeInterval(-60)
-        let perm = card("perm", phase: .live(.waiting(.permission)), at: new)
+        let perm = card("perm", phase: .live(.permissionRequested), at: new)
         let died = card("died", phase: .dead(.agentExited), dead: .agentExited, at: new)
         let ctx  = card("ctx", phase: .live(.running), ctx: 95, at: new)
         // Two same-reason (permission) rows to prove the oldest-first tiebreak within a bucket.
-        let permOld = card("perm-old", phase: .live(.waiting(.permission)), at: old)
+        let permOld = card("perm-old", phase: .live(.permissionRequested), at: old)
 
         let order = modelWith([ctx, perm, died, permOld]).needsYouRows(now: t0).map(\.task.title)
         // dead(0) < permission(1) [oldest first] < ctxCritical(5)
@@ -132,7 +133,7 @@ final class NeedsYouQueueTests: XCTestCase {
     }
 
     func testUnknownAgentCannotBorrowClaudePermissionKeys() {
-        var unknown = card("permission", phase: .live(.waiting(.permission)))
+        var unknown = card("permission", phase: .live(.permissionRequested))
         unknown.agentId = "future-agent"
         let m = modelWith([unknown])
         XCTAssertNil(m.permissionGateChord(unknown.id, \.approveChord))
@@ -140,8 +141,8 @@ final class NeedsYouQueueTests: XCTestCase {
     }
 
     func testGateFiresOnlyWhileWaitingOnPermission() {
-        let perm = card("perm", phase: .live(.waiting(.permission)))
-        let humanTurn = card("human", phase: .live(.waiting(.humanTurn)))
+        let perm = card("perm", phase: .live(.permissionRequested))
+        let humanTurn = card("human", phase: .live(.waiting))
         let running = card("run", phase: .live(.running))
         let dead = card("dead", phase: .dead(.agentExited))
         let m = modelWith([perm, humanTurn, running, dead], agents: [standardGateAgent])
@@ -161,7 +162,7 @@ final class NeedsYouQueueTests: XCTestCase {
             authMode: .subscription, approveChord: [.named(.tab)], denyChord: [])
         let agent = AgentInfo(id: "tabber", name: "Tabber", icon: "sparkle",
                               models: [AgentModel(id: "m")], capabilities: tabCaps)
-        var t = card("perm", phase: .live(.waiting(.permission)))
+        var t = card("perm", phase: .live(.permissionRequested))
         t.agentId = "tabber"
         let m = modelWith([t], agents: [agent])
         XCTAssertEqual(m.permissionGateChord(t.id, \.approveChord), [.named(.tab)])

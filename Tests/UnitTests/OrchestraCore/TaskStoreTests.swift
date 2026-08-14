@@ -29,8 +29,8 @@ struct TaskStoreTests {
     func updateMerges() async throws {
         let store = TaskStore(path: tempPath())
         let t = try await store.create(sample()).task
-        let updated = try await store.update(t.id) { $0.phase = .live(.waiting(.humanTurn)); $0.desc = "Editing Foo.swift" }.task
-        #expect(updated.waitReason != nil)
+        let updated = try await store.update(t.id) { $0.phase = .live(.waiting); $0.desc = "Editing Foo.swift" }.task
+        #expect(updated.workInFlight == false)
         #expect(updated.desc == "Editing Foo.swift")
         #expect(updated.updatedAt >= t.updatedAt)
     }
@@ -174,9 +174,10 @@ struct TaskStoreTests {
     private func assertMigratedPhases(_ tasks: [Task]) {
         func phase(_ title: String) -> Phase? { tasks.first { $0.title == title }?.phase }
         #expect(tasks.count == 6, "no card dropped")
-        #expect(phase("running") == .live(.running))
-        #expect(phase("wait-nil") == .live(.waiting(.humanTurn)))         // nil waitReason → humanTurn, never unknown
-        #expect(phase("wait-perm") == .live(.waiting(.permission)))
+        let unavailable = Phase.live(.init(turnStatus: .unavailable))
+        #expect(phase("running") == unavailable)
+        #expect(phase("wait-nil") == unavailable)
+        #expect(phase("wait-perm") == unavailable)   // legacy status cannot prove current turn/request truth
         #expect(phase("done") == .dead(.rebootUnrevived))                 // legacy "done" (unarchived) → safe recoverable terminal
         #expect(phase("dead") == .dead(.resumeFailed))                    // dead preserves its reason
         #expect(phase("arch") == .archived(teardownComplete: true))       // archived Bool short-circuits to the archived terminal

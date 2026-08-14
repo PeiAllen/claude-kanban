@@ -173,7 +173,7 @@ extension OrchestraService {
     /// on a card that is now being delivered to leaves a false flag the arm then suppresses on and B5b
     /// would notify about. So the flip proceeds ONLY while the card is still at `expectedEpoch` AND
     /// still in the phase the decision was made for (`.dead` for the direct-dead bypass, else
-    /// `.live(.waiting(.humanTurn))`) — checked before the write AND re-checked after it, since the
+    /// `.live(.waiting)`) — checked before the write AND re-checked after it, since the
     /// write itself suspends.
     func flipStuckIfExhausted(_ id: UUID, expectedEpoch: Int, bypassAttemptBudget: Bool = false,
                               expectDead: Bool? = nil) async {
@@ -234,13 +234,13 @@ extension OrchestraService {
 
     /// Does the flip still own this card? The card must be non-archived, at the generation the flip was
     /// decided for, and STILL in the phase that made it stuck-eligible — `.dead` for the direct-dead
-    /// bypass, else `.live(.waiting(.humanTurn))`. Any revival (`.relaunching`, an adopt back to
+    /// bypass, else `.live(.waiting)`. Any revival (`.relaunching`, an adopt back to
     /// `.live(.running)`, or a completed dead card brought back live) changes one of those and aborts
     /// the flip, so a card now being delivered to never carries a false stuck flag.
     private func stuckOwnershipHolds(_ card: Task, expectedEpoch: Int, expectDead: Bool) -> Bool {
         guard !card.archived, card.sessionEpoch == expectedEpoch else { return false }
         if expectDead { if case .dead = card.phase { return true }; return false }
-        if case .live(.waiting(.humanTurn)) = card.phase { return true }
+        if case .live = card.phase, card.workInFlight == false { return true }
         return false
     }
 

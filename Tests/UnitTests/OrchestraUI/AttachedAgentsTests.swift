@@ -151,20 +151,20 @@ import Foundation
                    reviewer("03", .launching), reviewer("04", .creatingWorktree)]
         #expect(m.attachedLiveness(of: target) == .running)
 
-        // GREEN DOMINATES IDLE: a concluded (humanTurn) reviewer beside a running one stays green —
+        // GREEN DOMINATES IDLE: an ordinary-wait reviewer beside a running one stays green —
         // a finished reviewer is idle, NOT attention. (This is the bug the old test enshrined.)
         m.tasks = [target, reviewer("02", .live(.running)),
-                   reviewer("03", .live(.waiting(.humanTurn)))]
+                   reviewer("03", .live(.waiting))]
         #expect(m.attachedLiveness(of: target) == .running)
 
         // All concluded, none running, none blocked → idle (grey), still not amber.
-        m.tasks = [target, reviewer("02", .live(.waiting(.humanTurn))),
-                   reviewer("03", .live(.waiting(.humanTurn)))]
+        m.tasks = [target, reviewer("02", .live(.waiting)),
+                   reviewer("03", .live(.waiting))]
         #expect(m.attachedLiveness(of: target) == .idle)
 
         // NEEDS-YOU-NOW DOMINATES: a permission block ambers even beside a running reviewer.
         m.tasks = [target, reviewer("02", .live(.running)),
-                   reviewer("03", .live(.waiting(.permission)))]
+                   reviewer("03", .live(.permissionRequested))]
         #expect(m.attachedLiveness(of: target) == .needsAttention)
 
         // Dead is needs-you-now too.
@@ -179,8 +179,9 @@ import Foundation
     @Test func livenessTier_perAgentClassification() {
         #expect(BoardStore.AttachedLiveness(phase: .live(.running)) == .running)
         #expect(BoardStore.AttachedLiveness(phase: .launching) == .running)
-        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting(.humanTurn))) == .idle)
-        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting(.permission))) == .needsAttention)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting)) == .idle)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.init(turnStatus: .unavailable))) == .running)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.permissionRequested)) == .needsAttention)
         #expect(BoardStore.AttachedLiveness(phase: .dead(.sessionVanished)) == .needsAttention)
     }
 

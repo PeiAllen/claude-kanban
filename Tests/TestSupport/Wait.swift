@@ -21,7 +21,7 @@ public struct PollTimeout: Error, CustomStringConvertible {
 ///
 /// 1. **A timeout aborts the test.** It used to `#expect(false)` and *return*, letting the caller carry on
 ///    against a premise that never held (e.g. `reconcileToLive` handing back a card still `.launching`).
-///    The real failure then surfaced as a baffling downstream assertion (`waitReason == nil`) that reads
+///    The real failure then surfaced as a baffling downstream state assertion that reads
 ///    like a product bug. Throwing stops the test at the wait that actually failed.
 /// 2. **The inter-poll wait is a YIELD, not a wall-clock sleep.** The happy path costs no wall-clock at
 ///    all: each miss re-runs `cond()` as soon as the cooperative pool has run whatever the condition is

@@ -79,13 +79,17 @@ struct CodexAdapterArgvTests {
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
-    // C1 · Codex permission gate. Codex's `PermissionRequest` hook fires `_report --event permission`,
-    // and THIS adapter classifies that hooksPush into the SAME `waitReason == .permission` Claude uses
-    // (via its Notification/permission_prompt), so a blocked Codex card surfaces as a Needs-You 🔐 row.
-    @Test("parse(permission hooksPush) → waiting/.permission (Codex PermissionRequest gate)")
-    func parsePermissionHook() {
-        let r = adapter.parse(.hooksPush(kind: "permission", payload: .object([:])))
-        #expect(r == StatusReport(run: .waiting(.permission)))
+    @Test("PermissionRequest bypasses metadata parsing and maps to an AgentRequest")
+    func permissionHookSignal() {
+        let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
+        #expect(adapter.parse(raw) == nil)
+        #expect(adapter.agentSignals(
+            from: raw,
+            context: .init(sessionEpoch: 1, harnessSessionId: "thread")
+        ) == [.init(
+            sessionEpoch: 1,
+            kind: .requests([.init(id: "permission", kind: .permission)])
+        )])
     }
 
     // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
@@ -102,13 +106,10 @@ struct CodexAdapterArgvTests {
         #expect(adapter.parse(.hooksPush(kind: "stop", payload: .object([:]))) == nil)
     }
 
-    // The permission push must not disturb the fileTail path: a completed turn is still humanTurn.
-    @Test("fileTail turn-complete still classifies humanTurn (permission push is additive)")
-    func fileTailUnaffected() {
+    @Test("fileTail turn-complete is ignored because app-server owns turn state")
+    func fileTailTurnCompleteIgnored() {
         let line = #"{"type":"turn_complete","timestamp":"2026-07-04T10:00:00Z"}"#
-        let r = adapter.parse(.fileTail(line: line))
-        #expect(r?.snapshot?.run != nil)
-        #expect(r?.snapshot?.run == .waiting(.humanTurn))
+        #expect(adapter.parse(.fileTail(line: line)) == nil)
     }
 
     // The rendered Codex hooks file must wire the PermissionRequest event, or the gate never fires.

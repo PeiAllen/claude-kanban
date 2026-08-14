@@ -54,7 +54,7 @@ struct StaleNudgeTests {
         // The parent card reports activity → funnel schedules the child's TreeStat recompute. The path
         // debounces twice (fan-out 750ms → child recompute 750ms) on the service's production-default
         // ContinuousClock, so the condition converges in ~1.5s; the poll itself is yield-based, not a sleep.
-        try await env.svc.report(parentCard.id, StatusReport(desc: "did work", run: .running))
+        try await env.svc.report(parentCard.id, StatusReport(desc: "did work"))
         try await pollUntil("the funnel's staleness nudge reached the child") {
             (try? await env.svc.inboxPeek(child.id))?.isEmpty == false
         }

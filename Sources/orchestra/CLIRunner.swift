@@ -343,8 +343,7 @@ enum CLIRunner {
         guard let tasks = try? result.decode([Task].self) else { printJSON(result); return }
         if tasks.isEmpty { print("(no cards)"); return }
         // Pad to the longest label so no pill is truncated, and the column stays aligned; self-maintaining
-        // as labels evolve. Unified onto the one label vocabulary `displayState` renders everywhere else
-        // (was the terser machine rawValue — `idle`/`needsPermission` — which no other surface shows).
+        // as labels evolve. Unified onto the one label vocabulary `displayState` renders everywhere else.
         let pillWidth = PhaseDisplayKey.allCases.map(\.label.count).max() ?? 7
         for t in tasks {
             // CLI is a one-shot fetch — there's no persistent link to go stale mid-render, so `connection:

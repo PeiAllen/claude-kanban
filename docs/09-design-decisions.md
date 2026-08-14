@@ -30,7 +30,8 @@ The decisions that shape it:
 
 - **One writer, one concluder.** Every mover routes its phase change through `transition()`
   (`OrchestraService+Lifecycle.swift`), which validates the edge against a pure `isLegalEdge` machine
-  (spec §P1), stamps `phaseChangedAt`, bumps the epoch, and fires conclusions — all in one place, so the
+  (spec §P1), stamps `phaseChangedAt` on lifecycle/turn-status changes, bumps the epoch, and fires
+  conclusions — all in one place, so the
   legal-edge invariant, staleness fencing, and `wait`-resolution can't drift across call sites. A
   companion `mutate:` closure lets a caller land companion field-writes (a fresh session id, cleared dead
   metadata) **atomically in the same store patch** as the phase change. `report()`'s former direct
@@ -155,32 +156,34 @@ and iOS boards cannot drift). The authored line wins: `desc` is blank between tu
 anyway, so falling back to it only when there is no note costs nothing and gains a board that still says
 what each card is for when every agent is idle.
 
-### The Stage-2 wire break: `status` → `phase`
+### The status wire cutover: `Phase.live(AgentState)`
 
-Stage 2 is a **deliberate clean break** in the wire and on-disk model, not a compatibility layer.
-`status`/`waitReason` are removed from `Task`, and **`AgentStatus` is deleted from the wire entirely**:
-`SnapshotReport` now carries `run: RunState?` (the agent's observed `.running`/`.waiting(reason)`) instead
-of a `status`/`waitReason` pair, and clients render from a new **non-wire, non-Codable `PhaseDisplayKey`**
-derived from `phase` on demand (so the display vocabulary can evolve without touching the durable model).
-The **only** backward-compat kept is the **one-time on-disk migration** that reads a pre-Stage-2
-`tasks.json`: it lives inside `Task.init(from:)` (the card's own tolerant decoder, superseding the plan's
-separate `LegacyStoredBoard`), maps the legacy triple to `phase` fail-safe (nil/unknown status →
-`.dead(.rebootUnrevived)`, an idle card's absent wait reason → `.humanTurn`, preserving `deadReason`), and
-drops a record only when its `id` is absent or its `phase` value no longer decodes (the sole current such
-value is a legacy `.dead(.completed)`, after that case's clean-break removal — see the
-[note below](#done-is-not-observable--success-is-agent-signalled-not-inferred)) — with the store's
-element-wise `FailableTask` load so a single undecodable record self-drops rather than stranding the whole
-board to `.bak`. The full mapping table and
-fail-safe rules are in [chapter 3](03-data-model.md#schema-migration--the-one-time-statuswaitreason--phase-mapping).
-This follows the project's *prefer breaking changes over compatibility shims* stance: break the wire, but
-never nuke on-disk state.
+Lifecycle and agent status share one persisted sum type: `Phase.live` carries the complete current
+`AgentState`, while every non-live phase carries none. This keeps invalid combinations unrepresentable —
+a dead or launching Card cannot retain a stale permission request — without making Core interpret Claude
+or Codex vocabulary. Adapters emit provider-neutral `AgentSignal`s, one generic reducer owns the live
+snapshot, and `transition()` remains the sole writer of `phase`.
+
+`AgentState.turnStatus` has only `running`, `waiting(WaitingInfo)`, and `unavailable`. Running means a
+top-level harness turn is open; waiting means none is open; unavailable means Orchestra lacks current
+evidence. Permission/input requests and activity are independent fields, so a permission request does not
+pretend the turn ended. An automatic-resume marker on a wait means the provider still owns the next move.
+Inbox delivery therefore keys on `workInFlight == false`, while status UI reads only `turnStatus` and
+attention reads requests separately.
+
+`StatusReport` is now metadata/lifecycle-only; it has no `run` or `turnCompleted` field. The only
+compatibility is decode-time: both the old top-level `status`/`waitReason` shape and the intermediate
+`Phase.live(RunState)` shape preserve the live lifecycle but become `turnStatus: unavailable`. A required
+clean daemon restart then reconnects Codex and waits for fresh Claude hooks instead of guessing from stale
+persisted telemetry. The full mapping is in
+[chapter 3](03-data-model.md#schema-migration--legacy-status-snapshots-become-live-but-unavailable).
 
 ### "Done" is not observable — success is agent-signalled, not inferred
 
-The daemon's only completion signal is `turnCompleted` ("a turn ended, idle"), identical for "finished the
+The daemon's terminal turn signal is `AgentSignal.turnCompleted` ("a turn ended, waiting"), identical for "finished the
 assignment" and "paused between turns" — so "done" is not observable, and the old inference that set a
 finished read-only reviewer to `.dead(.completed)` retired live cards merely waiting for instruction. It is
-gone: a finished reviewer idles `.live(.waiting(.humanTurn))` like any card, and **success is
+gone: a finished reviewer idles `.live(AgentState.waiting)` like any card, and **success is
 agent-signalled** — the delegate `send`s its result and the orchestrator `archive`s the card. Death stays
 observable (any `.dead` reason concludes `.exited`); archive is the only `.done`; `orchestra wait` resolves
 only on a real conclusion (merge/archive/death), never on a delegate finishing its work.
@@ -222,13 +225,12 @@ line, and the card can surface it. The verb is set/replace with **no clear form*
 `needs-input` is the complement (the question that outlives the turn, and the only option for a backend
 with no such prompt), never a replacement.
 
-Retirement is keyed to **proof that the question is moot**, never to an intent, and there are exactly two
-proofs. The first is the next turn starting: a landing into `live(.running)` from anywhere that is not
-already running and is not a permission wait — an approval resumes the *same* turn, so a question declared
-earlier in it must survive. The second is a queued inbox batch being **handed back as a Stop
+Retirement is keyed to **proof that the question is moot**, never to an intent. The first proof is the
+next normalized top-level turn starting from a non-running status. A permission approval resumes the
+same open turn, so request changes alone never clear a question. The second is a queued inbox batch being **handed back as a Stop
 continuation**, which is not redundant with the first: a Claude card given an injected answer that way
 resumes the same session with no `UserPromptSubmit`, and if it replies in prose it calls no tool either,
-so it reports `.running` never and crosses no phase edge.
+so it may emit no separate turn-start hook.
 
 That second seam is keyed to the **claim** — the moment the payload is handed over — and the distinction
 is load-bearing in both directions. Keying it to the delivery *receipt* instead is wrong, because a
@@ -241,24 +243,11 @@ completed session replacement, which is a third clear (alongside an id rollover 
 are generation-fenced so a dying session's late signal cannot erase what the incoming one declared.
 Nothing else clears it; selection cannot, because glancing at a question is not answering it.
 
-The turn-start proof carries one **transport fence**, because how a turn-start reaches the daemon differs
-by backend. Claude pushes it synchronously through a hook, so it is applied in order and clears
-unconditionally. Codex's turn-start is a line in a rollout file the daemon **polls**, so a line *written*
-before a declaration can be *applied* after it — a stale poll that would erase a question it predates. The
-declaration therefore carries its own `declaredAt`, and a turn-start retires it only when the turn-start
-evidence is newer. The comparison is a genuine cross-source one — the rollout line's own write time (its
-`seq`, stamped in epoch µs) against the daemon's clock at the declaration — sound because both are one
-host's wall clock and the line-write causally precedes the tool call that declares. That comparison lives
-in `report()`, where the evidence timestamp is in scope; the phase funnel, the sole phase writer, is left
-reasoning about phases, not clocks, and handles only the unconditional session-replacement clear. The two
-fields travel as one `PendingQuestion` value so a clear can never drop the text while keeping the stamp —
-and `declaredAt` is persisted as **fractional Unix seconds**, never through the store's `.iso8601` date
-strategy, which rounds to the whole second. That rounding would be a correctness bug across a restart: the
-rollout tailer replays from offset 0, so a reloaded declaration whose sub-second part was lost could be
-beaten by a pre-declaration line and wrongly cleared. A malformed persisted value drops only the question,
-never the card (a `try?` decode) — the field is new on this branch and only ever lands on `main` as this
-struct, so there is no cross-version migration, just card-preservation against a dev daemon's interim
-state.
+Turn-starts now arrive on serial current-session sources: Claude's hook path or the Codex app-server
+observer. Both are fenced by Card epoch and provider session identity before the reducer clears the
+question, so the old rollout-poll timestamp comparison no longer exists. `declaredAt` remains useful for
+attention display age and is persisted as fractional Unix seconds. The text and timestamp travel as one
+`PendingQuestion`, and a malformed persisted value drops only the question, never the Card.
 
 ### Board animations pause when nobody is looking
 
@@ -397,11 +386,11 @@ desktop is unaffected: it shells out to `/usr/bin/ssh` via `SSHMaster`, a separa
 
 ### State is pushed through a two-way hook channel
 
-Live card fields (`ctxPct`, `desc`, run-state, session id, title) are **pushed by the agent** via a
-managed Claude Code `--settings` file (statusLine + hooks → `orchestra _report`), not scraped from the
-pane. The channel is bounded (a stalled daemon can't freeze the agent's status bar) and seq-guarded (a
-stale `ctxPct` can't overwrite a fresh one); pane capture is a fallback only. The same channel is the
-backbone for the planned Orchestra → agent context injection.
+Claude lifecycle/display metadata (`ctxPct`, `desc`, session id, title) and live hook observations are
+**pushed by the agent** through a managed `--settings` file (statusLine + hooks → `orchestra _report`),
+not scraped from the pane. Metadata is seq-guarded, while turn/request observations are epoch- and
+provider-session-fenced before entering the reducer. Codex gets turn state from its app-server observer
+and keeps the rollout tail for metadata. Pane capture is a terminal-render fallback only.
 
 ### Ownership: Orchestra deletes only what it made
 
@@ -764,13 +753,13 @@ routes. Because the fence reads `sessionEpoch`, `payloadForStop` now needs the c
 `drainForStop`'s "safe without a task" property; that's sound because a real Stop hook always fires for a
 live card.
 
-**The hook dispatch claims the stopDrain *before* applying the Stop's own report.** A real Claude Stop
-carries a `waiting(.humanTurn)` report, and applying it first lands the card `.live(.waiting)` — whose
+**The hook dispatch claims the stopDrain *before* applying the Stop observation.** A real Claude Stop
+maps to `AgentSignal.turnCompleted`, and applying it first lands the Card at an ordinary wait — whose
 wake-on-live would cold-relaunch a `nativeReinvoke` card with no active CLI wait, bumping the epoch out from
 under this Stop's own claim so the fence above then rejects it and a healthy session is needlessly restarted
 on every send. The Stop hook *is* the reinvoke, so its same-epoch claim must win over a cold relaunch:
 `handleHook(.stop)` runs `payloadForStop` first — minting a live same-epoch lease — and only then applies
-the report, so the waiting-landing wake now defers on that live lease instead of relaunching. The fence's
+the normalized observation, so the waiting-landing wake now defers on that live lease instead of relaunching. The fence's
 real purpose is untouched: a genuinely stale Stop (a superseded generation's) still fails the epoch check
 and no-ops.
 
@@ -1172,7 +1161,7 @@ the rest into a `+N`):
 | # | Reason | Predicate | Label |
 |---|--------|-----------|-------|
 | 1 | dead | `phase == .dead` | "dead" |
-| 2 | permission | `.live(.waiting(.permission))` | "permission" |
+| 2 | permission | `phase.live.agentState.activeRequests` contains `.permission` | "permission" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
 | 4 | needs input | `pendingQuestion != nil` | "question" |
 | 5 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
@@ -1212,23 +1201,22 @@ promptless spawn, a blank restart/reopen, a `/clear` — instead *sets* the bit 
 awaiting the human's first move again, so it is theirs to pace. (A seed-spawned or agent-delivered card is
 never awaiting a first prompt — its seed is its first turn — so it stays stall-eligible, exactly as
 specced.) The **machine opening turn is the subtle case**: a spawn/handoff seed, or a wake-delivered inbox
-batch, reaches the report path as a `promptText` *exactly* like a typed prompt, and a resume lands
-`.waiting(.humanTurn)` (see `landing(of:)`) — so the seed would satisfy the gate and wrongly exempt agent
+batch, reaches the report path as a `promptText` *exactly* like a typed prompt, and a seedless resume lands
+with `turnStatus == .waiting` (see `landing(of:)`) — so the seed would satisfy the gate and wrongly exempt agent
 work. `finishLaunch` (and the reconciler's stepper-less adopt) marks the generation that owes such a turn;
 the report path consumes that marker on the generation's first prompt instead of reading it as human, so
 an agent-work card keeps its safety-net stall while a genuine follow-up (no seed owed) still sets the bit.
 
 **The terminal-typing half of the signal is Claude-only, by capability, not oversight.** It rides Claude's
-`UserPromptSubmit` hook, which reports the typed prompt (`promptText`) as a distinct event. Codex is a
-`fileTail` agent with no such event: a human message and a daemon-injected continuation (both typed into
-the TUI as user input) land in the rollout identically, so there is no telemetry that distinguishes a
+`UserPromptSubmit` hook, which reports the typed prompt (`promptText`) as a distinct event. Codex's app
+server reports turn edges but no authoritative physical-human source: a human message and a
+daemon-injected continuation both appear as user input, so there is no provider telemetry that distinguishes a
 human turn from an injected one. Rather than risk a false *human-paced* — which would break the safety net
 for an agent-work Codex card, the one failure worse than a spurious stall — Codex relies solely on the
 `send`-path signal, which is agent-agnostic (the daemon classifies the sender itself). The residue is that
 a Codex card paced purely by terminal typing — including typing into the inspector's live terminal, which
 delivers keystrokes straight to the pane — can still amber after `T`, the same benign fail-safe direction,
-and no worse than before this row existed. **TODO — fix at the Codex app-server migration:** the right
-signal is not the agent's telemetry at all but the CLIENT's — the app knows a human is at the keyboard
+and no worse than before this row existed. A future fix belongs at the client boundary, because the app knows a human is at the keyboard
 when they type into the inspector, so an app-side "human drove this" mark on terminal input closes the gap
 agent-agnostically (for Claude too), and the app-server's richer telemetry is the moment to wire it.
 
@@ -1442,10 +1430,11 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   `TurnComplete` both mean idle and nested/flat token fields both parse; `seq` is the line timestamp (µs)
   so the [report seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel) keeps the freshest snapshot.
 
-Like the forest PRs above, B1/B2 are a single provider conformer, not the whole model-providers axis — the
-Codex **send-keys wake** has since landed (C4, below) and its launch is now **access-gated** like Claude
-(default permissioning, or the read-only preset per card) — but **board-routed approval telemetry** remains
-deferred, so the row stays in the roadmap as history is recorded here.
+Like the forest PRs above, B1/B2 are a single provider conformer, not the whole model-providers axis.
+Codex **send-keys wake** later landed (C4, below) and its launch became **access-gated** like Claude
+(default permissioning, or the read-only preset per card). **Board-routed approval telemetry** remained
+deferred at this point in the history; the later provider-neutral status cutover closed it with
+hook-carried permission requests and retired the send-keys wake.
 
 The eighth landed PR is **C3 — F1 resume-in-card with a seed**.
 It builds the **third and last** of the design's three
@@ -1649,10 +1638,10 @@ pins the seed-fold order and the query's no-side-effect. D3 also lands the **app
 (`scripts/orch-ux-e2e.sh` with a `fixtures/fake-agent` symlink on `PATH` — no real vendor agent,
 `USE_REAL_CLAUDE` unset — and an RPC-driven UC1–UC8 replay; the `screencapture` step is advisory per design
 rule O6 and expected to fail on a headless window server). With D3 merged the **whole agent-provider forest
-is shipped**; but as with every entry above it is a set of surfaces, not a whole axis — the model-providers
-axis still owes Codex board-routed approval telemetry (its launch is now access-gated like Claude, so write
-access is no longer clamped off), and agent-integration its richer sub-status — so those rows
-stay in [chapter 10](10-roadmap.md).
+is shipped**; but as with every entry above it is a set of surfaces, not a whole axis. At that point the
+model-providers axis still owed Codex board-routed approval telemetry and agent-integration still owed its
+richer sub-status. The later provider-neutral status cutover closed the approval gap; the richer
+agent-integration work remains in [chapter 10](10-roadmap.md).
 
 Landing after the forest closed is **enable-codex — making Codex startable** (commit `cf83921`, branch
 `enable-codex`). The whole Codex backend — `CodexAdapter`, its models, rollout-tail telemetry, trust, and
@@ -1674,8 +1663,9 @@ This change is pure **reachability wiring**, no new launch behavior:
   catalog for the headless screenshot).
 - **Access-gated permissioning.** Codex now honors the card's `access` like Claude: a default card launches
   with Codex's own default permissioning, and only a read-only card gets the `-s read-only -a never` preset
-  (`accessFlags`). Board-routed approval telemetry remains the model-providers axis's live remainder
-  ([chapter 10](10-roadmap.md)). New tests (`CodexAdapterTests`) pin `adapter(forModel:)`,
+  (`accessFlags`). Board-routed approval telemetry was still open when this change landed; the later
+  provider-neutral status cutover closed it through `AgentRequest.permission`. New tests
+  (`CodexAdapterTests`) pin `adapter(forModel:)`,
   the union `models()`, `agents()`, a model-only spawn landing on Codex, the default preserved, and an
   explicit `agentId` winning. (As-built: see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).)
 

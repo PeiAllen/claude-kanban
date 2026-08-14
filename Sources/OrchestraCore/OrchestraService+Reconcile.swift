@@ -161,13 +161,13 @@ extension OrchestraService {
                     if let probed = probedEpoch ?? nil, probed == t.sessionEpoch {
                         runtime[t.id]?.launchReadyTicks = 0
                         // Land in the flavor the LaunchStepper WOULD have used (mirror its rule) rather than a
-                        // hardcoded `.humanTurn`: a prompted first launch lands `.running`, a provisional/resumed
+                        // hardcoded wait: a prompted first launch lands `.running`, a provisional/resumed
                         // card `.waiting`. Adopt jumps `.launching→.live` WITHOUT the LaunchStepper, so nothing
                         // downstream corrects it — it must derive the landing here. Falls back to `.waiting` if
                         // the adapter is momentarily unavailable (never worse than the old hardcode).
                         let adopted = try? registry.get(t.agentId)
                         let adoptFlavor = adopted.map { deriveLaunchFlavor(t, $0) }
-                        let land = adoptFlavor.map { landing(of: $0) } ?? .waiting(.humanTurn)
+                        let land = adoptFlavor.map { landing(of: $0) } ?? .waiting
                         // Adopt jumps `.launching→.live` WITHOUT a stepper, so it must also mark a seeded
                         // opening turn the report path would otherwise read as human — the same COMPANION
                         // duty as the `pendingSeed` clear below. (Done before the clear, which reads it not.)
@@ -365,7 +365,14 @@ extension OrchestraService {
                 let e = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
                 if (e ?? nil) == t.sessionEpoch {
                     ensureRuntime(for: t)
-                    reconcileAgentObservation(t)
+                    // AgentState is a current observation, not historical progress. A daemon restart
+                    // invalidates the persisted snapshot; Codex restores it from its attach response,
+                    // while Claude remains unavailable until its next live hook/span.
+                    if t.turnStatus == .unavailable {
+                        reconcileAgentObservation(t)
+                    } else {
+                        await invalidateAgentObservation(t)
+                    }
                     continue                                // adopt — leave `.live`
                 }
                 _ = await transition(t.id, to: .relaunching,

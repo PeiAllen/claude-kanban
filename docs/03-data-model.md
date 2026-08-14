@@ -18,7 +18,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `lastSessionName` | `String?` | The last session name seen for this card — the `--name` a launch pushed, or the last value the agent reported. The `session_name` mirror is a **delta** against this, so a live session echoing its launch name can't overwrite a newer title. |
 | `desc` | `String` | **Volatile** one-line blurb of what the agent is doing now, pushed by its hooks (pane-parse fallback). The report pipeline overwrites it every snapshot and `restart`/`/clear` blank it. |
 | `note` | `String?` | **Durable** authored one-liner about what this card IS — e.g. `Wave 2/4 — lease/claim delivery`. Set only by `spawn(note:)` / `set-note`, never by telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it. See [desc vs note](09-design-decisions.md#desc-vs-note-volatile-status-vs-durable-narrative). |
-| `pendingQuestion` | `PendingQuestion?` | The agent's **declared** open question (`{text, declaredAt}`) — set by [`needs-input`](05-command-reference.md#registry-commands) when it ends a turn blocked on a decision only the card's owner can make. Set/replace only: the daemon retires it, at proof the next turn started (a turn-start landing, or a queued batch handed back as a Stop continuation) or a completed session replacement. `declaredAt` fences a polled Codex turn-start so a rollout line predating the declaration can't erase it. The two fields travel as one value so a clear can't drop the text while keeping the stamp. nil ⇒ no open question. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
+| `pendingQuestion` | `PendingQuestion?` | The agent's **declared** open question (`{text, declaredAt}`) — set by [`needs-input`](05-command-reference.md#registry-commands) when it ends a turn blocked on a decision only the card's owner can make. Set/replace only: the daemon retires it at proof the next turn started, when a queued batch is handed back as a Stop continuation, or after a completed session replacement. `declaredAt` supplies display age; the two fields travel as one value. nil ⇒ no open question. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
 | `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **cache** derived from the git-config lineage store: `set-parent`, `spawn --base`, and converge write it; nil means the card has no parent link. |
@@ -31,9 +31,9 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `startIn` | `StartIn` | `plan` \| `impl` — where the agent began. |
 | `column` | `Column` | Current board column. |
 | `order` | `Int` | Sort position within the column. |
-| `phase` | `Phase` | The **persisted lifecycle SSOT** (Stage 2 — replaces the retired `status`/`waitReason` pair). `creatingWorktree` \| `launching` \| `live(RunState)` \| `relaunching` \| `dead(DeadReason)` \| `archived(teardownComplete:)`. The `transition()` funnel is its sole writer. |
+| `phase` | `Phase` | The **persisted lifecycle SSOT**. `creatingWorktree` \| `launching` \| `live(AgentState)` \| `relaunching` \| `dead(DeadReason)` \| `archived(teardownComplete:)`. The `transition()` funnel is its sole writer; provider-neutral `AgentSignal`s reduce the value carried by `live`. |
 | `sessionEpoch` | `Int` | Monotonic per-card session generation, bumped on each (re)launch entry so a stale signal (a late hook, a liveness poll) from a superseded session is fenced out. |
-| `phaseChangedAt` | `Date` | When `phase` last changed — drives phase-relative timers and terminal-dwell checks. |
+| `phaseChangedAt` | `Date` | When the lifecycle phase or live `TurnStatus` last changed — live activity/request detail does not reset it. Drives status-relative timers and terminal-dwell checks. |
 | `pendingSeed` | `String?` | Handoff/seeded-wake seed staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared on the `.live` landing (see [migration & persistence](#persistence-and-migration)). |
 | `pendingModel` | `String?` | A [`--model` re-seat](05-command-reference.md#the---model-re-seat) staged for the NEXT (re)launch (`restart`/`handoff`/`resume`), consumed+cleared on the `.live` landing exactly like `pendingSeed`. Separate from `model` because it is the **launch intent**, and it is the one thing `report()` cannot clobber: the report path owns `model` and is not epoch-fenced, so the *dying* session's last statusline would otherwise revert the override before the relaunch read it (see [migration & persistence](#persistence-and-migration) and [ch. 9](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence)). |
 | `deadReason` | `DeadReason?` | Set together with `phase = .dead(_)`; carries the terminal reason. |
@@ -41,7 +41,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer and the inspector header (axis 7), measured against the card's default baseline — parent-relative when it has a parent branch, else branch-relative. Nil for a non-git / zero-change / not-yet-computed card. |
 | `hasPendingDelivery` | `Bool` | Broadcast-only snapshot bit: the card has a claimable inbox message or a live delivery lease (`hasClaimable ∨ hasLiveLease`). Maintained in the per-tick delivery reconciler (so it arms even for a running card, whose `wake` returns before delivering, and disarms when the queue drains). Consumed by stall detection — a card with pending work in flight is not idle. Never authoritative state. |
-| `humanPaced` | `Bool` | Broadcast-only bit: the card is the human's to **pace**, so the client stall row exempts it (a human-paced card never ambers "stalled", in any column, however long it idles — see [the attention system](09-design-decisions.md#the-attention-system)). Earned two ways: **driven last by a human** (a prompt typed into an idle-*waiting* session, or a human-sourced `send`), OR **awaiting the human's first move** (a promptless "New agent" card — `true` at that launch, and legacy `awaitingFirstPrompt` records migrate to `true` on decode). Keyed on `humanPaced` alone, not `awaitingFirstPrompt` (which is sticky on Codex, so a predicate trusting it would exempt an agent-driven Codex card forever). It flips to `false` on a fresh **agent-driving** turn — an agent/inbox delivery (a `.card`-sourced `send`) or a handoff **seed** — is **preserved** across a session-preserving relaunch (reboot recovery / seedless idle-wake / resumable reopen), and is **set `true`** by a voluntary blank (re)launch (promptless spawn / blank restart / reopen / `/clear`). The launch's own machine opening positional (seed / wake-delivered inbox) reaches the report path as a `promptText` and a resume lands `.waiting(.humanTurn)`, so `finishLaunch` (and the reconciler's stepper-less adopt) marks that generation and the report path consumes the marker on its first prompt rather than mistaking the seed for a human turn. Decode-migrates from `awaitingFirstPrompt`; the client stall fold is its only consumer. |
+| `humanPaced` | `Bool` | Compatibility bit for the current client stall row: the card is the human's to pace, so per-card quiescence does not amber it. A human prompt or human-sourced `send` sets it; an agent/inbox delivery or handoff seed clears it; session-preserving relaunches preserve it. The launch's own machine prompt is generation-marked so the prompt report does not misclassify it as human input. This bit is separate from `AgentState` and is planned for removal when the orchestration-level stalled watchdog replaces the current attention rule. |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |
@@ -56,7 +56,7 @@ A `Task` is the single persisted record behind every card. Its fields:
   patch) and returns, and the reconciler's `TeardownStepper` drives `.archivedPending → .archivedComplete`
   (kill the session, release a borrow/worktree, reclaim the run dir, cancel debounces/watches, nudge
   children). The `archived` Bool mirror is retained alongside `phase` for display/filtering. A read-only
-  freeform/scratch delegated card idles `.live(.waiting(.humanTurn))` when its turn ends — exactly like a
+  freeform/scratch delegated card idles `.live(AgentState.waiting)` when its turn ends — exactly like a
   worktree card — rather than being inferred done; success is agent-signalled (the delegate `send`s its
   result, and the orchestrator `archive`s the card once it consumes that result).
   [`reopen`](05-command-reference.md#registry-commands)
@@ -67,7 +67,8 @@ A `Task` is the single persisted record behind every card. Its fields:
   object; `detail` present only for the payload-carrying cases (`live`, `dead`, `archived`):
   - `creatingWorktree` — materializing the cwd (worktree / scratch / borrow); **every** spawn enters here,
   - `launching` — cwd ready, bringing the agent session up,
-  - `live(RunState)` — the agent is up; sub-state in `RunState`,
+  - `live(AgentState)` — the harness process is up and the payload is Orchestra's current provider-neutral
+    observation of its turn, activity, and requests,
   - `relaunching` — a restart/resume in flight,
   - `dead(DeadReason)` — terminal-ish: session gone, awaiting recovery,
   - `archived(teardownComplete: Bool)` — off the board; the Bool distinguishes an archive whose
@@ -75,16 +76,21 @@ A `Task` is the single persisted record behind every card. Its fields:
   A coarse `Phase.Kind` (`creatingWorktree`/`launching`/`live`/`relaunching`/`dead`/`archivedPending`/
   `archivedComplete`) flattens the `archived` Bool for stepper dispatch and terminal/bump checks;
   `isTerminal` is `dead(*)` or `archived(*)`.
-- **`RunState`** — the running sub-state of a `live` card (the mid-life detail that used to live in
-  `status`/`waitReason`): `running` (actively working) or `waiting(WaitReason)` (blocked, carrying *why*).
-  Custom `{name, detail?}` Codable, `detail` only on `.waiting`.
-- **`WaitReason`** — why a card is `.live(.waiting(_))`: `permission` (blocked on tool approval) or
-  `humanTurn` (finished its turn / idle, waiting on the human).
+- **`AgentState`** — the complete current snapshot attached only to `Phase.live`: `turnStatus`, optional
+  `activity`, and `activeRequests`. Leaving `live` discards all three; entering `live` reconstructs them
+  from launch knowledge and structured provider observation.
+- **`TurnStatus`** — Orchestra's view of the top-level harness turn: `running`,
+  `waiting(WaitingInfo)`, or `unavailable`. A wait may carry `AutomaticResume`, meaning the provider has
+  committed to another turn without human or Orchestra input. `Task.workInFlight` derives `true` for a
+  running turn or an automatic-resume wait, `false` for an ordinary wait, and nil for unavailable.
+- **`AgentRequest`** — an open human-action request (`permission` or `input`). Requests are orthogonal to
+  turn state: a permission prompt normally exists inside a running turn.
 - **`PhaseDisplayKey`** — a coarse **display-only, non-wire, non-Codable** label derived from `phase` on
   demand (`Task.phaseDisplay`), never persisted, so the display vocabulary can evolve without touching the
-  durable model: `starting` / `launching` / `relaunching` / `running` / `idle` / `needsPermission` /
+  durable model: `starting` / `launching` / `relaunching` / `running` / `idle` / `unavailable` /
   `dead` / `done`. The being-born phases surface honestly (a spawning card reads `.starting`/`.launching`,
-  not a fake `.running`). `Task.waitReason` derives the `WaitReason` (nil unless `.live(.waiting(_))`).
+  not a fake `.running`). Permission and input presentation comes from `AgentState.activeRequests`, not
+  from this lifecycle-derived display key.
 - **`DeadReason`** — why a card died (set alongside `phase = .dead(_)`):
   - `agentExited` — a `SessionEnd` with reason exit/logout (usually mid-life and resumable),
   - `sessionVanished` — the tmux session is gone with no `SessionEnd` (crash or external kill),
@@ -130,14 +136,13 @@ as the tasks with `rev = 0` — the one on-disk compat kept).
   column), `update` (applies a mutation, bumps `updatedAt`, and — since PR1 — skips the persist + rev-bump
   on a no-op mutation), `remove`.
 
-### Schema migration — the one-time `status`/`waitReason` → `phase` mapping
+### Schema migration — legacy status snapshots become live-but-unavailable
 
-The Stage-2 flag-day retired the `status`/`waitReason`/`AgentStatus` triple in favor of `phase` +
-`RunState`. The one-time on-disk migration that carries a pre-Stage-2 `tasks.json` forward lives **inside
-`Task.init(from:)`** — the card's own tolerant custom decoder — **not** a separate `LegacyStoredBoard`
-structural pass (superseding the plan's approach, because Task 2.1 had already given `Task` a hand-written
-`init(from:)`). Every record — whether it arrived via the `{rev, tasks}` envelope or a bare array — routes
-through this single migrating init. Its contract:
+The current cutover replaces both the original `status`/`waitReason` fields and the intermediate
+`Phase.live(RunState)` payload with `Phase.live(AgentState)`. Compatibility lives only in
+`Task.init(from:)` and `Phase.init(from:)`; there is no second runtime reducer or compatibility writer.
+Every record — whether it arrived via the `{rev, tasks}` envelope or a bare array — routes through these
+decoders. Their contract:
 
 - **`id` is required; the `phase` field is the one non-tolerant field.** A record throws (and `FailableTask`
   drops just that record) when `id` is absent OR when `phase` carries an unknown value — `phase` is decoded
@@ -150,22 +155,24 @@ through this single migrating init. Its contract:
   `startIn`, `column`, `deadReason`) are `try?`-guarded so a present-but-renamed/removed rawValue falls back
   to the same safe default the memberwise init uses (`.worktree`, `.readWrite`, `unknown` model, `.impl`,
   `.impl`, nil) — one garbage field can never drop an otherwise-recoverable record.
-- **Migrating seed.** When the `phase` key is **absent** (a pre-Stage-2 record), `phase` is seeded from the
-  legacy `status`/`waitReason`/`deadReason`/`archived` keys — read leniently as `String?` (the fields no
-  longer exist on the type) so a garbage status still decodes to a safe phase. A record that already carries
-  `phase` decodes it directly (no migration). The mapping (fail-safe, top-to-bottom precedence):
+- **Live legacy snapshots lose only their unprovable turn detail.** A stored intermediate
+  `live({name: running|waiting, ...})` value decodes as `live(AgentState(turnStatus: unavailable))`. The
+  harness lifecycle remains live, but Orchestra waits for fresh structured observation before claiming
+  whether a top-level turn is open.
+- **Pre-phase seed.** When the `phase` key is absent, `phase` is seeded from the older
+  `status`/`waitReason`/`deadReason`/`archived` keys. `waitReason` is accepted for decoding but cannot be
+  trusted after the required clean daemon restart, so both old live statuses become unavailable:
 
   | legacy record | migrated `phase` |
   |---|---|
   | `archived == true` | `.archived(teardownComplete: true)` |
-  | `status == "running"` | `.live(.running)` |
-  | `status == "waiting"` | `.live(.waiting(waitReason ?? .humanTurn))` — a nil/unknown wait reason (common for idle cards) maps to `.humanTurn`, never a fake permission wait |
+  | `status == "running"` | `.live(AgentState(turnStatus: .unavailable))` |
+  | `status == "waiting"` | `.live(AgentState(turnStatus: .unavailable))` |
   | `status == "dead"` | `.dead(deadReason ?? .agentExited)` — the preserved terminal reason |
   | nil / legacy `"done"` / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe recoverable terminal, never a throw (a genuinely retired card carries `archived == true`, handled by the first row) |
 
 - **Envelope `rev` preserved.** The `{rev, tasks}` envelope's `rev` loads as-is; a bare-array file loads at
-  `rev = 0`. Encode is custom (the decode-only legacy keys make Codable synthesis impossible) and writes
-  every stored property — deliberately **not** `status`/`waitReason`, which no longer exist on the wire.
+  `rev = 0`. Encode writes only the current `Phase.live(AgentState)` form, never either legacy status shape.
 
 Other schema compat is unchanged: the legacy `worktree: String` field is decode-only (mapped onto `cwd`; the
 store always writes `cwd` + `origin`), and optional fields decode with sane defaults, so a board created
@@ -174,18 +181,15 @@ before borrowed/scratch cards existed still opens.
 > **Note on `pendingSeed`.** Wired in PR4b: `resume(id, seed:)` (driving handoff's `resumeInCard` and
 > seeded-wake) persists the folded seed as `pendingSeed` in the **same** funnel patch as
 > `transition(.relaunching)`; `restart` clears it (a blank restart carries no seed). It is consumed and
-> cleared on the `.live` landing, at each of the four sites that can perform one: the `RelaunchStepper`,
-> the `LaunchStepper` (a reopened resumable card), the reconciler's *adopt* path, and — since the
-> [`--model` re-seat](05-command-reference.md#the---model-re-seat) — `report()` itself, when a stamped
-> current-generation report lands a card the steppers left behind. Every one of them clears it in the same
+> cleared on the `.live` landing at each lifecycle-owned landing site: the `RelaunchStepper`, the
+> `LaunchStepper` (a reopened resumable card), and the reconciler's same-epoch *adopt* path. Each clears it in the same
 > `mutate` closure that writes `.live`; a `resumeFailed` leaves it in place so a retried relaunch still
 > carries the seed.
 
 > **Note on `pendingModel`.** It mirrors `pendingSeed` field-for-field: written in the same funnel patch as
 > `transition(.relaunching)` by `restart`/`resume` (and `handoff` through `resumeInCard`), encoded only when
-> present (`encodeIfPresent`, so an older board decodes unchanged), consumed at the same four `.live`
-> landings — `RelaunchStepper`, `LaunchStepper`, the reconciler's *adopt* path, and `report()`'s own
-> landing when the report is stamped with the current generation — through the shared
+> present (`encodeIfPresent`, so an older board decodes unchanged), consumed at the same three `.live`
+> landings — `RelaunchStepper`, `LaunchStepper`, and the reconciler's *adopt* path — through the shared
 > `consumeModelReseat(_:_:)`, and left in place by a failed launch so the retry still carries the re-seat.
 > The one thing it adds beyond `pendingSeed` is that consuming it **re-asserts `model`** from the request,
 > because a stale statusline can have moved `model` while the card was `.relaunching`. `finishLaunch` builds
@@ -326,18 +330,23 @@ notices (PR T2): the actionable *"runs untrusted (sandboxed) … run `orchestra 
 them blocks the action it warns about. The app's Activity popover renders these; the daemon keeps the
 most recent 200 in a ring buffer that is replayed to new subscribers.
 
-### The report types
+### Metadata reports and agent-state signals
 
-The agent's `_report` channel carries a `StatusReport`, a unified patch with two halves:
+The agent's `_report` hook channel carries two independent payloads in one RPC. `StatusReport` is the
+metadata/lifecycle patch, with two halves:
 
 - the **event half** (`EventReport`) — causally-ordered fields: `sessionId`, `transcriptPath`,
   `sessionSource`, `endReason`, `promptText`;
-- the **snapshot half** (`SnapshotReport`) — a seq-stamped atomic snapshot: `ctxPct`, `modelId`,
-  `modelDisplay`, `run` (a `RunState?` — the agent's observed `.running`/`.waiting(reason)`, which
-  **replaces the retired `status`/`waitReason` pair** so `AgentStatus` is off the wire entirely), `desc`,
-  `turnCompleted`, `sessionName`. `report()` maps a present `run` onto a `.live(run)` phase write through
-  the `transition()` funnel (it no longer writes `phase` directly).
+- the **snapshot half** (`SnapshotReport`) — a seq-stamped atomic metadata snapshot: `ctxPct`, `modelId`,
+  `modelDisplay`, `desc`, and `sessionName`.
 
 How those halves are merged into the card (event half applied unconditionally and ordered; snapshot
 half seq-gated against a monotonic cursor) is detailed in
 [Cards, worktrees & sessions](04-cards-worktrees-sessions.md) and `OrchestraService+Report.swift`.
+
+The companion compact hook observation and Codex app-server messages go through
+`Adapter.agentSignals(from:context:)`. Adapters interpret provider vocabulary and emit normalized
+`AgentSignal`s; `AgentStateReducer` is the only generic fold, and `transition()` atomically persists its
+output as the new `Phase.live(AgentState)`. Every signal carries the launch `sessionEpoch`; held Codex
+sources are additionally bound to the provider thread id, and pushed Claude hooks are checked against
+the current session id. There is no status field in `StatusReport` and no second Core status reducer.

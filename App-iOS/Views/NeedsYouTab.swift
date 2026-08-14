@@ -278,9 +278,10 @@ private struct AttentionRow: View {
     /// Honest age prefix per status — a context-full card is still *running*, not waiting.
     private var waitingLabel: String {
         switch task.phaseDisplay {
-        case .dead:    return "Died "
-        case .running: return "Running "
-        default:       return "Waiting "
+        case .dead:        return "Died "
+        case .running:     return "Running "
+        case .unavailable: return "Unavailable "
+        default:           return "Waiting "
         }
     }
 

@@ -245,7 +245,7 @@ struct WakeMergeWatchTests {
         let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "p"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
-        try await env.svc.report(parent.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(parent.id, .waiting())
         let name = env.sessions.sessionName(parent.id)
 
         let cmd = try #require(CommandRegistry().command("wait"))
@@ -268,8 +268,8 @@ struct WakeMergeWatchTests {
         #expect(await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: false) == nil)
     }
 
-    @Test("Codex task_complete leaves a watched read-only delegated child idle — success is not a conclusion")
-    func codexTaskCompleteDoesNotConcludeReadOnlyDelegatedChild() async throws {
+    @Test("legacy Codex task_complete neither closes the turn nor concludes a delegated child")
+    func codexTaskCompleteDoesNotCloseTurnOrConcludeChild() async throws {
         let base = NSTemporaryDirectory() + "orch-codex-complete-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/cwd", withIntermediateDirectories: true)
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: base + "/codexhome")
@@ -284,19 +284,18 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        let report = try #require(codex.parse(.fileTail(line: #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#)))
-        try await env.svc.report(child.id, report)
+        #expect(codex.parse(.fileTail(line: #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#)) == nil)
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.phase == .live(.waiting(.humanTurn)))         // idles, success is agent-signalled (send)
+        #expect(after.turnStatus == .running)                      // app-server turn/completed is authoritative
         #expect(after.archived == false)
         waiting.cancel(); _ = await waiting.value
     }
 
-    @Test("Claude TaskCompleted leaves a watched read-only delegated child idle — success is not a conclusion")
-    func claudeTaskCompletedDoesNotConcludeReadOnlyDelegatedChild() async throws {
+    @Test("Claude TaskCompleted neither closes the turn nor concludes a delegated child")
+    func claudeTaskCompletedDoesNotCloseTurnOrConcludeChild() async throws {
         let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
         let repo = TestEnv.repo(env.base)
         let cwd = env.base + "/borrowed"
@@ -306,13 +305,12 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "taskcompleted", payload: .object([:]))))
-        try await env.svc.report(child.id, report)
+        #expect(ClaudeCodeAdapter().parse(.hooksPush(kind: "taskcompleted", payload: .object([:]))) == nil)
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.phase == .live(.waiting(.humanTurn)))         // idles, success is agent-signalled (send)
+        #expect(after.turnStatus == .running)                      // only a top-level turn end closes the turn
         #expect(after.archived == false)
         waiting.cancel(); _ = await waiting.value
     }
@@ -326,14 +324,17 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:]))))
-        try await env.svc.report(child.id, report)
+        let epoch = try #require(await env.svc.store.get(child.id)).sessionEpoch
+        await env.svc.receiveAgentSignals(
+            cardId: child.id,
+            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
+        )
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.waitReason != nil)
-        #expect(after.waitReason == .humanTurn)
+        #expect(after.workInFlight == false)
+        #expect(after.turnStatus == .waiting())
         waiting.cancel(); _ = await waiting.value
     }
 
@@ -348,12 +349,16 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        try await env.svc.report(child.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        let epoch = try #require(await env.svc.store.get(child.id)).sessionEpoch
+        await env.svc.receiveAgentSignals(
+            cardId: child.id,
+            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
+        )
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.phase == .live(.waiting(.humanTurn)))         // idles, success is agent-signalled (send)
+        #expect(after.turnStatus == .waiting())                     // idles, success is agent-signalled (send)
         #expect(after.archived == false)
         waiting.cancel(); _ = await waiting.value
     }
@@ -366,18 +371,22 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        try await env.svc.report(child.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        let epoch = try #require(await env.svc.store.get(child.id)).sessionEpoch
+        await env.svc.receiveAgentSignals(
+            cardId: child.id,
+            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
+        )
         await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.waitReason != nil)
-        #expect(after.waitReason == .humanTurn)
+        #expect(after.workInFlight == false)
+        #expect(after.turnStatus == .waiting())
         waiting.cancel(); _ = await waiting.value
     }
 
-    @Test("idle notification still waits for the human and does not conclude")
-    func idleNotificationDoesNotConclude() async throws {
+    @Test("idle notification is not a turn edge and does not conclude")
+    func idleNotificationDoesNotCloseTurn() async throws {
         let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
         let cwd = env.base + "/borrowed"
         try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
@@ -388,13 +397,13 @@ struct WakeMergeWatchTests {
         let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(
             kind: "notification",
             payload: try JSONValue.parse(Data(#"{"notification_type":"idle_prompt","message":"done"}"#.utf8)))))
-        try await env.svc.report(child.id, report)
+        try await env.svc.report(child.id, report)   // legacy report fields cannot change AgentState
         await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.waitReason != nil)
-        #expect(after.waitReason == .humanTurn)
+        #expect(after.workInFlight == true)
+        #expect(after.turnStatus == .running)
         waiting.cancel(); _ = await waiting.value
     }
 

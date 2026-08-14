@@ -388,7 +388,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     /// A recognizable, NON-Claude parse: turns a tailed line into a marker report, proving parse is
     /// per-adapter (a Claude adapter returns nil for the same `.fileTail` raw).
     func parse(_ raw: RawTelemetry) -> StatusReport? {
-        if case let .fileTail(line) = raw { return StatusReport(desc: "tail:\(line)", run: .running) }
+        if case let .fileTail(line) = raw { return StatusReport(desc: "tail:\(line)") }
         return nil
     }
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {

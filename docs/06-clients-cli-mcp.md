@@ -63,7 +63,7 @@ so conclusions coalesce into the caller's own inbox. (See
 [chapter 9](09-design-decisions.md#shipped-feature-history).)
 
 Note `wait` resolves only on a **real conclusion** — a merge/archive (`.done`) or a death (`.exited`).
-A read-only delegate (a reviewer or fork) that finishes its turn idles `.live(.waiting)` and does **not**
+A read-only delegate (a reviewer or fork) that finishes its turn idles `.live(AgentState.waiting)` and does **not**
 conclude on success, so its result must return via `send`, and the orchestrator `archive`s the consumed
 card itself. `wait` is for cards that conclude on their own (a worktree PR card that merges), never for a
 delegate's result.
@@ -172,10 +172,10 @@ the service manager for the daemon lifecycle.
 ## The hooks / `_report` channel
 
 Hooks are a **first-class, core-owned channel** — the primary bidirectional path between core and a
-running agent. Core owns the *protocol* (a `HookEvent` vocabulary + a `HookResponse`, dispatched once in
-the daemon); each adapter owns only the *format* at the edge (`parse` telemetry in, `encode` a response
-out, `sessionSource` normalize, and render its own hook file). The organizing rule is **convert at the
-edge, dispatch in core** — raw agent JSON never crosses the wire.
+running agent. Core owns the protocol (`HookEvent` + `HookResponse`) and the generic status reducer; each
+adapter owns provider interpretation (`parse` metadata, compact hook-observation projection,
+`agentSignals`, response encoding, and hook rendering). The edge forwards only the small raw subset the
+adapter selected, so Core can fence it against the current Card epoch/session before normalization.
 
 **Rendering (per launch, by the adapter).** Each adapter supplies its hook configuration from a bundled
 template — `claude-hooks.json` becomes Claude's managed `--settings` file, while `codex-hooks.json` is
@@ -204,9 +204,9 @@ the command carries a baked `--agent <id>` so the client can resolve its adapter
 
 The `--event` strings **are** the `HookEvent` raw values (Core), so the template, client, and daemon
 share one vocabulary. `Notification`/`Stop` and `PreToolUse`/`PostToolUse` each get a distinct event —
-so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires only `SessionStart → --event
-session` (its telemetry is the daemon-side rollout tail; its `parse` returns `nil` for this push, so the
-event is orientation-only). A card that also needs per-card settings (read-only enforcement — see [the
+so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires SessionStart, PermissionRequest,
+and Stop; its app-server connection supplies turn/status observations, while PermissionRequest remains a
+hook-sourced request and Stop remains the inbox-drain return channel. A card that also needs per-card settings (read-only enforcement — see [the
 read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier)) does **not** get a second
 `--settings`; `SettingsComposer` deep-merges those overlays *onto* this base into one file (Claude applies
 multiple `--settings` last-file-wins, so a second file would silently drop the statusLine + hooks).
@@ -216,11 +216,13 @@ multiple `--settings` last-file-wins, so a second file would silently drop the s
 1. **Render + print the status line first** — unbuffered — so a slow daemon never stalls the status bar.
 2. **Resolve this card's adapter** from `--agent` (`AgentRegistry`), guarding on `$ORCHESTRA_TASK_ID`
    (set by `SessionManager` at launch) and a known `HookEvent` — a plain `claude` you run does nothing.
-3. **Convert at the edge:** `adapter.parse` turns the raw payload into a `StatusReport` (and, for
-   `session`, `adapter.sessionSource` extracts the `SessionSource`). The raw payload dies here.
-4. **Send one typed `hook` RPC** — `{ref, event, report?, source?}` — under a tight budget (~50 ms
+3. **Split at the edge:** `adapter.parse` extracts metadata/lifecycle into `StatusReport`,
+   `adapter.sessionSource` extracts SessionStart source, and `adapter.hookObservationPayload` selects the
+   bounded raw fields needed for status normalization. Large tool bodies die here.
+4. **Send one typed `hook` RPC** — `{ref, event, report?, source?, observationPayload?}` — under a tight budget (~50 ms
    statusline fire-and-forget, ~2 s otherwise). The daemon's `OrchestraService.handleHook` dispatches
-   **both directions and is adapter-free**: it applies the `report` to the store (send), and for
+   both directions: it applies metadata, asks the Card's adapter for normalized `AgentSignal`s after
+   epoch/session fencing, and for
    `session` composes the live orientation ([SessionBrief](04-cards-worktrees-sessions.md), skipped on a
    `compact` source) or for `stop` drains the [durable inbox](03-data-model.md#the-inbox-store-f3) (F3)
    into a neutral `HookResponse`.
@@ -256,25 +258,17 @@ Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 `hooks.<event>` entries in its per-launch profile file, so its stdout `additionalContext` is folded into the
 session and the same orientation (step 5) reaches a Codex card too. This adapter's hook contribution lives in
 the profile file that `prepareToLaunch` writes; it has no Codex-specific *global* persistent setup step.
-Codex's `parse` returns `nil` for this push (its telemetry is the
-[daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter)), so the `session` event is
-**orientation-only** — the daemon returns the same brief, and the edge encodes it identically to Claude.
+Codex's `parse` also binds the provider session id from this hook before returning the same orientation
+brief Claude receives.
 
-The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_report` process *is* the Claude
-**`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it
-to the adapter's `ClaudeCodeAdapter.parse(_:)` — the parse is **agent-dependent**, so it belongs to the
-adapter, not the CLI. This is the transport/parse boundary PR A2 established (relocating the former
-`ReportHelper.map`/`toolDesc` verbatim into the adapter, keeping Claude telemetry byte-identical). The
-daemon-side **rollout-tail** transport for another agent — Codex — has since landed (PR B2): its
-`RolloutTailer` + `OrchestraService.pollTelemetry()` call the *same* `adapter.parse` seam from a file tail
-instead of a push endpoint (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter)). See
-[the adapter's telemetry parse](04-cards-worktrees-sessions.md#the-claude-code-adapter) and the
-agent-provider interface contract.
+Both conversions remain adapter-owned. `parse(_:)` handles metadata from hooks or the Codex rollout
+tail; `agentSignals(from:context:)` maps the compact hook payload, Claude OTLP spans, or Codex app-server
+messages into the provider-neutral live state. The CLI never interprets provider fields itself.
 
-On the daemon side, `OrchestraService+Report.swift` merges the report's **event half** (applied
-unconditionally and ordered — e.g. `SessionEnd`→`dead`, session-id rollover into `priorSessionIds`,
-prompt text → auto-title + `running`) and its seq-gated **snapshot half** (`ctxPct`, `desc`, model,
-status), emitting a `taskUpserted` event and an activity entry only when something actually changed.
+On the daemon side, `OrchestraService+Report.swift` merges the report's event half (for example
+`SessionEnd`→dead, session-id rollover, and prompt auto-title) and seq-gated metadata snapshot (`ctxPct`,
+`desc`, model, session name). `OrchestraService+AgentObservation.swift` independently applies normalized
+signals through `AgentStateReducer` and atomically writes the resulting `Phase.live(AgentState)`.
 
 This same channel now carries the **first realized Orchestra → agent direction**: the F3 Stop-drain
 (step 4 above) injects the durable inbox back into the agent at its turn-end. The **F1 resume seed** (PR C3)

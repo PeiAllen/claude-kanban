@@ -19,7 +19,7 @@ import Foundation
     /// A card whose timestamps default to `t0` — so "nothing changed since t0" is the baseline and a
     /// test only states the fields it cares about.
     private func card(_ id: String = "01",
-                      phase: Phase = .live(.waiting(.humanTurn)),
+                      phase: Phase = .live(.waiting),
                       treeStat: TreeStat? = nil,
                       pendingQuestion: PendingQuestion? = nil,
                       ctxPct: Double = 0,
@@ -60,7 +60,7 @@ import Foundation
     }
 
     @Test func permissionRow() {
-        let r = reasons(card(phase: .live(.waiting(.permission))))
+        let r = reasons(card(phase: .live(.permissionRequested)))
         #expect(r.first?.reason == .permission)
         #expect(r.first?.label == "permission")
     }
@@ -279,7 +279,7 @@ import Foundation
         let reviewer = card("02", access: .readOnly)
         #expect(!reasons(reviewer, canStall: false, now: late).contains { $0.reason == .stalled })
 
-        let blocked = card("02", phase: .live(.waiting(.permission)), access: .readOnly)
+        let blocked = card("02", phase: .live(.permissionRequested), access: .readOnly)
         #expect(reasons(blocked, canStall: false, now: late).contains { $0.reason == .permission })
     }
 
@@ -303,7 +303,7 @@ import Foundation
     /// Multi-reason cards sort hard-blocked-first, so the L1 chip's top label is the most urgent and
     /// the rest become its "+N".
     @Test func multipleReasons_sortByPriority() {
-        let c = card(phase: .live(.waiting(.permission)),
+        let c = card(phase: .live(.permissionRequested),
                      pendingQuestion: PendingQuestion(text: "q", declaredAt: t0),
                      ctxPct: 91)
         let r = reasons(c, now: late)

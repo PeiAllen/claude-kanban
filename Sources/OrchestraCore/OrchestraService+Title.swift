@@ -90,10 +90,9 @@ extension OrchestraService {
         guard !clean.isEmpty else {
             throw OrchestraError.invalidParams("needs-input requires a question — one line stating what you need decided")
         }
-        // Stamp WHEN via the injected clock (`now`), so the fileTail turn-start fence has a declaration
-        // time to compare a Codex rollout line's own write time against — and so the whole thing is
-        // testable without wall-clock. Hoisted out of the `@Sendable` store.update closure so it doesn't
-        // capture the actor's `now`.
+        // Stamp WHEN via the injected clock (`now`) so clients can show how long the question has been
+        // open and tests need no wall clock. Hoisted out of the `@Sendable` store.update closure so it
+        // doesn't capture the actor's `now`.
         let declaredAt = now()
         guard let (saved, rev) = try? await store.update(t.id, {
             $0.pendingQuestion = PendingQuestion(text: clean, declaredAt: declaredAt)

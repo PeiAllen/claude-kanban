@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Board enums
 
-/// Board columns. There is intentionally no `done` case — finishing sets `status = .done` +
-/// `archived = true`, removing the card from the board into the Done popover.
+/// Board columns. There is intentionally no `done` case — archiving moves lifecycle into
+/// `Phase.archived` and removes the card from the board into the Done popover.
 public enum Column: String, Codable, Sendable, CaseIterable {
     case plan, impl, review
 
@@ -28,19 +28,9 @@ public enum Column: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Why a card is `.waiting` — carried inside `RunState.waiting` on the card's `phase`.
-/// Drives which notification trigger the app fires. `.dead` is a separate transition (see `deadReason`).
-public enum WaitReason: String, Codable, Sendable {
-    case permission   // agent blocked on tool approval (Claude Notification/permission_prompt)
-    case humanTurn    // agent genuinely finished its turn / idle, waiting on the human
-}
-
 /// A `needs-input` declaration: the one-line question, and WHEN it was declared. The two travel as one
 /// value so they can't drift — every clear nils the pair by construction, and nothing can carry the text
-/// without its timestamp. `declaredAt` exists for the fileTail turn-start fence (see `OrchestraService`'s
-/// report path): a Codex turn-start report arrives by a polled rollout tail, so a line WRITTEN before the
-/// declaration can be APPLIED after it; the daemon retires the question only when the turn-start evidence
-/// is newer than `declaredAt`, so a stale late line can't erase a question it predates.
+/// without its timestamp. `declaredAt` also gives attention consumers the age of the open question.
 public struct PendingQuestion: Codable, Sendable, Equatable {
     public var text: String
     public var declaredAt: Date
@@ -51,12 +41,8 @@ public struct PendingQuestion: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey { case text, declaredAt }
 
-    // `declaredAt` rides as FRACTIONAL Unix seconds, NOT through the encoders' `.iso8601` strategy — the
-    // fence compares sub-second declaration times against a rollout line's µs write time, and `.iso8601`
-    // rounds to whole seconds, so a round-trip through disk would drop the fraction and let a
-    // pre-declaration line beat a reloaded declaration. This is the same reason `Task.sessionDiscoverySince`
-    // is numeric. Decode accepts a legacy `.iso8601` string defensively (whole-second, no fence in that
-    // window — but the card survives).
+    // Keep the existing fractional Unix-seconds wire shape so question age round-trips exactly. Decode
+    // still accepts the earlier ISO-8601 representation.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.text = try c.decode(String.self, forKey: .text)
@@ -74,7 +60,7 @@ public struct PendingQuestion: Codable, Sendable, Equatable {
     }
 }
 
-/// Why a card went `dead` — set alongside `status = .dead`, surfaced by the Recovery panel + CLI/MCP.
+/// Why a card went `dead` — carried by `Phase.dead`, surfaced by the Recovery panel + CLI/MCP.
 public enum DeadReason: String, Codable, Sendable {
     case agentExited       // SessionEnd reason exit/logout — the agent quit (mid-life, usually resumable)
     case sessionVanished   // poll liveness reconcile: tmux session gone, no SessionEnd (crash / `tmux kill`)
@@ -88,33 +74,24 @@ public enum DeadReason: String, Codable, Sendable {
                            // card is resumable the moment the resource is reclaimed. See `deadResource`.
 }
 
-/// The running sub-state of a `live` card — the mid-life detail that used to live in `status`/`waitReason`.
-/// `.running` = the agent is actively working; `.waiting` = blocked, carrying *why* (see `WaitReason`).
-public enum RunState: Codable, Equatable, Sendable {
-    case running
-    case waiting(WaitReason)
-
+private struct LegacyRunState: Decodable {
     private enum CodingKeys: String, CodingKey { case name, detail }
 
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .running: try c.encode("running", forKey: .name)
-        case .waiting(let reason):
-            try c.encode("waiting", forKey: .name)
-            try c.encode(reason, forKey: .detail)
-        }
-    }
-
-    public init(from decoder: Decoder) throws {
+    init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let name = try c.decode(String.self, forKey: .name)
-        switch name {
-        case "running": self = .running
-        case "waiting": self = .waiting(try c.decode(WaitReason.self, forKey: .detail))
+        switch try c.decode(String.self, forKey: .name) {
+        case "running": break
+        case "waiting":
+            let detail = try c.decode(String.self, forKey: .detail)
+            guard detail == "humanTurn" || detail == "permission" else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .detail, in: c, debugDescription: "invalid legacy wait reason"
+                )
+            }
         default:
-            throw DecodingError.dataCorruptedError(forKey: .name, in: c,
-                debugDescription: "unknown RunState case \"\(name)\"")
+            throw DecodingError.dataCorruptedError(
+                forKey: .name, in: c, debugDescription: "invalid legacy run state"
+            )
         }
     }
 }
@@ -126,12 +103,12 @@ public enum RunState: Codable, Equatable, Sendable {
 /// archive whose worktree/session teardown is still pending from one fully torn down.
 ///
 /// Wire form is a `{ "name": <case>, "detail": <associated value> }` object — `detail` present only for
-/// the cases that carry a payload (`live`, `dead`, `archived`); nested enums (`RunState`, `WaitReason`)
-/// encode recursively, `DeadReason` as its raw `String`, and `archived`'s Bool directly.
+/// the cases that carry a payload (`live`, `dead`, `archived`); live carries the complete provider-neutral
+/// `AgentState`, `DeadReason` remains its raw `String`, and `archived` carries its Bool directly.
 public enum Phase: Codable, Equatable, Sendable {
     case creatingWorktree      // materialize the cwd (worktree / scratch / borrow) — ALL spawns enter here
     case launching             // cwd ready, bringing the agent session up
-    case live(RunState)        // the agent is up; sub-state in `RunState`
+    case live(AgentState)      // the harness process is up; current provider observation in `AgentState`
     case relaunching           // a restart/resume is in flight
     case dead(DeadReason)      // terminal-ish: session gone, awaiting recovery (see `DeadReason`)
     case archived(teardownComplete: Bool)  // off the board; `teardownComplete` = worktree/session torn down
@@ -169,9 +146,9 @@ public enum Phase: Codable, Equatable, Sendable {
         case .creatingWorktree: try c.encode("creatingWorktree", forKey: .name)
         case .launching:        try c.encode("launching", forKey: .name)
         case .relaunching:      try c.encode("relaunching", forKey: .name)
-        case .live(let run):
+        case .live(let state):
             try c.encode("live", forKey: .name)
-            try c.encode(run, forKey: .detail)
+            try c.encode(state, forKey: .detail)
         case .dead(let reason):
             try c.encode("dead", forKey: .name)
             try c.encode(reason, forKey: .detail)
@@ -188,7 +165,21 @@ public enum Phase: Codable, Equatable, Sendable {
         case "creatingWorktree": self = .creatingWorktree
         case "launching":        self = .launching
         case "relaunching":      self = .relaunching
-        case "live":             self = .live(try c.decode(RunState.self, forKey: .detail))
+        case "live":
+            if let state = try? c.decode(AgentState.self, forKey: .detail) {
+                self = .live(state)
+            } else if (try? c.decode(LegacyRunState.self, forKey: .detail)) != nil {
+                // A pre-cutover live snapshot cannot prove whether a provider turn is still open after
+                // the required clean daemon restart. Preserve the live lifecycle, but expose uncertainty
+                // until the structured source supplies fresh same-epoch evidence.
+                self = .live(.init(turnStatus: .unavailable))
+            } else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .detail,
+                    in: c,
+                    debugDescription: "invalid live AgentState payload"
+                )
+            }
         case "dead":             self = .dead(try c.decode(DeadReason.self, forKey: .detail))
         case "archived":         self = .archived(teardownComplete: try c.decode(Bool.self, forKey: .detail))
         default:
@@ -206,9 +197,12 @@ extension Phase {
         case .creatingWorktree:            return .starting
         case .launching:                   return .launching
         case .relaunching:                 return .relaunching
-        case .live(.running):              return .running
-        case .live(.waiting(.permission)): return .needsPermission
-        case .live(.waiting(.humanTurn)):  return .idle
+        case .live(let state):
+            switch state.turnStatus {
+            case .running:     return .running
+            case .waiting:     return .idle
+            case .unavailable: return .unavailable
+            }
         case .archived:                    return .done
         case .dead:                        return .dead
         }
@@ -224,9 +218,9 @@ public enum PhaseDisplayKey: String, Sendable, Equatable, CaseIterable {
     case starting        // .creatingWorktree — materializing the cwd
     case launching       // .launching — bringing the session up
     case relaunching     // .relaunching — a restart/resume in flight
-    case running         // .live(.running)
-    case idle            // .live(.waiting(.humanTurn)) — finished its turn, waiting on the human
-    case needsPermission // .live(.waiting(.permission)) — blocked on tool approval
+    case running         // .live where a top-level harness turn is open
+    case idle            // .live where no top-level harness turn is open
+    case unavailable     // .live, but Orchestra cannot currently determine whether a turn is open
     case dead            // .dead — needs recovery
     case done            // .archived — finished + retired
 }
@@ -241,7 +235,7 @@ extension PhaseDisplayKey {
         case .relaunching:     return "Relaunching"
         case .running:         return "Running"
         case .idle:            return "Waiting"
-        case .needsPermission: return "Waiting"
+        case .unavailable:     return "Unavailable"
         case .dead:            return "Dead"
         case .done:            return "Done"
         }
@@ -524,8 +518,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// only events that can retire it: proof that the agent's next turn started (a landed turn-start, or a
     /// continuation handed back at Stop), and a completed session replacement. It exists because an agent
     /// asking a question in its own terminal is otherwise indistinguishable from an ordinary idle card —
-    /// the human never learns they are the blocker. Carries its own `declaredAt` for the fileTail
-    /// turn-start fence (see `PendingQuestion`). nil ⇒ no open question.
+    /// the human never learns they are the blocker. `declaredAt` supplies the question's display age.
+    /// nil ⇒ no open question.
     public var pendingQuestion: PendingQuestion?
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
@@ -545,8 +539,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// resource and its numbers, while `deadDetail` keeps the raw tmux/pane evidence for debugging.
     /// Additive-optional Codable (mirrors `pendingSeed`). nil for every other death.
     public var deadResource: HostResourceReport?
-    /// Persisted lifecycle phase — the convergence SSOT (Stage 2). The sole source of running/waiting/
-    /// dead/archived truth: `status`/`waitReason` were retired into `phase` + `RunState` (Stage 2 flag-day).
+    /// Persisted lifecycle phase — the convergence SSOT. A live phase owns the current `AgentState`;
+    /// leaving live discards that provider observation along with its activity and requests.
     public var phase: Phase
     /// Monotonic per-card session generation — bumped on each (re)launch so stale-session signals
     /// (liveness polls, late hooks) from a superseded generation can be fenced out.
@@ -598,7 +592,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// recovery, a seedless idle-wake, a resumable reopen): a reboot is not a driving turn, and re-clearing
     /// there would re-stall a human's own cards. The launch's own machine opening positional (seed /
     /// wake-delivered inbox) reaches the report path as a `promptText` and a resume lands
-    /// `.waiting(.humanTurn)`, so `finishLaunch` marks that generation and the report path consumes the
+    /// `.waiting`, so `finishLaunch` marks that generation and the report path consumes the
     /// marker on its first prompt rather than mistaking the seed for a human turn. The terminal-typing
     /// signal rides Claude's `UserPromptSubmit` hook (`promptText`); Codex (`fileTail`) has no event
     /// distinguishing a human turn from an injected one, so a Codex card leans on the agent-agnostic launch
@@ -697,15 +691,15 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 
-    // Custom decode that ALSO performs the one-time on-disk migration from the retired
-    // `status`/`waitReason`/`archived` triple to `phase` (Stage 2 flag-day). Two properties:
-    //   1. Best-effort/lossless: `id` is the ONLY required field — every other field is
+    // Custom decode that also performs the on-disk migrations from the retired
+    // `status`/`waitReason`/`archived` triple and intermediate live payload. Two properties:
+    //   1. Best-effort/lossless: `id` is required and a present `phase` must be valid; every other field is
     //      `decodeIfPresent` with a safe default, so a partial/garbage legacy record is *kept* (as a
     //      safe-terminal card) rather than throwing and stranding the whole board to `.bak`.
     //   2. Migrating: when the `phase` key is ABSENT (a pre-Stage-2 record) `phase` is seeded from the
     //      legacy `status`/`waitReason`/`deadReason`/`archived` keys (read leniently as `String?` so a
-    //      garbage status can never abort the record). A record that already has `phase` decodes it
-    //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
+    //      garbage status can never abort the record). `Phase.init` separately maps an intermediate
+    //      live RunState payload to live/unavailable. Encode writes only the current shape.
     private enum CodingKeys: String, CodingKey {
         case id, title, titleSource, awaitingFirstPrompt, lastSessionName
         case desc, note, pendingQuestion, repo, branch, parentBranch, cwd, origin, access
@@ -807,15 +801,14 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         }
     }
 
-    /// Seed `phase` from a pre-Stage-2 record's legacy fields. Precedence top-to-bottom; a nil/unknown
-    /// `waitReason` on a waiting card is common (idle cards) so it maps to `.humanTurn`, never a fake
-    /// wait; a nil/unrecognized `status` maps to the safe terminal `.dead(.rebootUnrevived)` (never throws).
+    /// Seed `phase` from a pre-Stage-2 record's legacy fields. A live legacy status preserves the live
+    /// lifecycle but cannot prove current turn state after the clean-restart cutover, so it starts
+    /// unavailable until structured provider observation arrives.
     static func migratedPhase(status: String?, waitReason: String?,
                               deadReason: DeadReason?, archived: Bool) -> Phase {
         if archived { return .archived(teardownComplete: true) }
         switch status {
-        case "running": return .live(.running)
-        case "waiting": return .live(.waiting(WaitReason(rawValue: waitReason ?? "") ?? .humanTurn))
+        case "running", "waiting": return .live(.init(turnStatus: .unavailable))
         case "dead":    return .dead(deadReason ?? .agentExited)
         default:        return .dead(.rebootUnrevived)   // nil / legacy "done" / unrecognized → safe recoverable terminal
         }
@@ -937,10 +930,14 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// classification lives, so board cells / detail headers / status pills no longer each re-map it.
     public var phaseDisplay: PhaseDisplayKey { phase.displayKey }
 
-    /// Why this card is waiting, derived from `phase` — `nil` unless it is `.live(.waiting(_))`.
-    public var waitReason: WaitReason? {
-        if case .live(.waiting(let r)) = phase { return r } else { return nil }
+    /// Current provider observation, present exactly while the Card lifecycle is live.
+    public var agentState: AgentState? {
+        if case .live(let state) = phase { return state }
+        return nil
     }
+
+    public var turnStatus: TurnStatus? { agentState?.turnStatus }
+    public var workInFlight: Bool? { agentState?.workInFlight }
 }
 
 // MARK: - Command result shapes
@@ -1190,8 +1187,8 @@ public struct CardSessions: Codable, Sendable, Equatable {
 
 // MARK: - Status channel (agent -> Orchestra)
 
-/// Seq-stamped **snapshot** half of a status patch: fields that describe the agent's *current* state
-/// with no ordering guarantee (statusLine + Pre/PostToolUse/Notification hooks). The whole struct is
+/// Seq-stamped **snapshot** half of a metadata patch: fields with no ordering guarantee (status line,
+/// rollout token usage, and tool descriptions). The whole struct is
 /// applied as a unit behind the per-card monotonic `seq` guard, so a stale snapshot can never
 /// overwrite a fresher one. Putting these together (separate from `EventReport`) makes the
 /// seq-gating contract type-level: a field here is *always* gated, a field on `EventReport` never is.
@@ -1203,32 +1200,25 @@ public struct SnapshotReport: Codable, Sendable, Equatable {
     public var modelId: String?
     /// Current model *display label* (e.g. `model.display_name`) — UI only, never used to launch.
     public var modelDisplay: String?
-    /// The agent's observed run-state — `.running` or `.waiting(reason)`. Replaces the retired
-    /// `status`/`waitReason` pair; `report()` maps a present `run` onto a `.live(run)` phase write.
-    public var run: RunState?
     public var desc: String?
-    /// The agent reported a natural turn/task completion, not just an idle notification.
-    public var turnCompleted: Bool?
     /// A `/rename` mirror — applied only on a genuine change (see report) so it can't clobber the
     /// re-title-after-restart flow.
     public var sessionName: String?
     public init(seq: UInt64 = 0, ctxPct: Double? = nil, modelId: String? = nil,
-                modelDisplay: String? = nil, run: RunState? = nil, desc: String? = nil,
-                turnCompleted: Bool? = nil, sessionName: String? = nil) {
+                modelDisplay: String? = nil, desc: String? = nil, sessionName: String? = nil) {
         self.seq = seq; self.ctxPct = ctxPct; self.modelId = modelId
-        self.modelDisplay = modelDisplay; self.run = run; self.desc = desc
-        self.turnCompleted = turnCompleted; self.sessionName = sessionName
+        self.modelDisplay = modelDisplay; self.desc = desc; self.sessionName = sessionName
     }
 }
 
-/// **Event-ordered** half of a status patch: fields from discrete, causally-ordered hooks
+/// **Event-ordered** half of a metadata/lifecycle patch: fields from discrete, causally-ordered hooks
 /// (SessionStart / UserPromptSubmit / SessionEnd). Applied unconditionally — never seq-gated — so a
 /// genuine transition is never dropped as "stale".
 public struct EventReport: Codable, Sendable, Equatable {
     public var sessionId: String?
     /// Carried for completeness; re-derived from the live id in `Adapter.sessionInfo`, not persisted.
     public var transcriptPath: String?
-    /// SessionStart `source` (startup/resume/clear/compact) — drives waiting/clear transitions + resume confirm.
+    /// SessionStart `source` (startup/resume/clear/compact) — drives lifecycle cleanup and readiness confirmation.
     public var sessionSource: String?
     /// SessionEnd genuine-termination reason (exit/logout/other) — drives the mid-life `.dead` transition.
     /// Transition reasons (clear/resume/compact) are dropped by the `_report` helper and never reach here.
@@ -1241,9 +1231,9 @@ public struct EventReport: Codable, Sendable, Equatable {
     }
 }
 
-/// A live patch the agent pushes to the daemon: an optional ordered-`event` part and/or an optional
-/// seq-gated `snapshot` part. A single hook can carry both (e.g. UserPromptSubmit → `promptText`
-/// event + `status` snapshot). Consumers read `.event` / `.snapshot`; the flat initializer below is
+/// A metadata/lifecycle patch the agent pushes to the daemon: an optional ordered-`event` part and/or an
+/// optional seq-gated `snapshot` part. A single hook can carry both an event and metadata snapshot.
+/// Consumers read `.event` / `.snapshot`; the flat initializer below is
 /// the single place that routes a field to its bucket.
 public struct StatusReport: Codable, Sendable, Equatable {
     public var event: EventReport?
@@ -1257,11 +1247,10 @@ public struct StatusReport: Codable, Sendable, Equatable {
     /// (and is exercised by the report tests) instead of being re-derived at every call site.
     public init(seq: UInt64 = 0, sessionId: String? = nil, transcriptPath: String? = nil,
                 ctxPct: Double? = nil, modelId: String? = nil, modelDisplay: String? = nil,
-                sessionName: String? = nil, desc: String? = nil, run: RunState? = nil,
-                turnCompleted: Bool? = nil,
+                sessionName: String? = nil, desc: String? = nil,
                 promptText: String? = nil, sessionSource: String? = nil, endReason: String? = nil) {
         let hasSnapshot = seq != 0 || ctxPct != nil || modelId != nil || modelDisplay != nil
-            || sessionName != nil || desc != nil || run != nil || turnCompleted != nil
+            || sessionName != nil || desc != nil
         let hasEvent = sessionId != nil || transcriptPath != nil || promptText != nil
             || sessionSource != nil || endReason != nil
         self.init(
@@ -1269,8 +1258,7 @@ public struct StatusReport: Codable, Sendable, Equatable {
                                           sessionSource: sessionSource, endReason: endReason,
                                           promptText: promptText) : nil,
             snapshot: hasSnapshot ? SnapshotReport(seq: seq, ctxPct: ctxPct, modelId: modelId,
-                                                   modelDisplay: modelDisplay, run: run,
-                                                   desc: desc, turnCompleted: turnCompleted,
+                                                   modelDisplay: modelDisplay, desc: desc,
                                                    sessionName: sessionName) : nil)
     }
 }

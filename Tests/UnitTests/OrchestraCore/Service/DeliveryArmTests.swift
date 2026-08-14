@@ -24,7 +24,7 @@ struct DeliveryArmTests {
         let t = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         env.adapter.writeTranscript(for: t.agentSessionId!)
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(t.id, .waiting())
         // One reconcile to GRADUATE (clear spawnPending): the graduating tick hits the startup-abort
         // `continue`, so it does not also run the arm — and there is no message yet, so even if the
         // card were already graduated this tick delivers nothing. After it, the card is normal-live
@@ -96,7 +96,8 @@ struct DeliveryArmTests {
     func armSkipsPermissionWaiting() async throws {
         let env = TestEnv.make(grace: 2)
         let card = try await idleWithMessage(env)
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.permission)))
+        await env.svc.testSetTurnStatus(card.id, .running)
+        await env.svc.testSetRequests(card.id, [.init(id: "permission", kind: .permission)])
 
         await env.svc.reconcile()
 

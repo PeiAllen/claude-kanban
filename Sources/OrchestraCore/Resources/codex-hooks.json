@@ -1,5 +1,5 @@
 {
-  "_comment": "Orchestra renders this hook object in memory for each Codex launch, replacing __ORCHESTRA_BIN__ with the live orchestra binary path and __AGENT_ID__ with the adapter id, then passes each event through a TOML -c override. It never writes this configuration into the user's Codex home. SessionStart supplies card orientation, Stop drains the durable inbox, and PermissionRequest maps to the provider-neutral permission wait state. Codex telemetry remains the daemon-side rollout tail.",
+  "_comment": "Orchestra renders this hook object in memory for each Codex launch, replacing __ORCHESTRA_BIN__ with the live orchestra binary path and __AGENT_ID__ with the adapter id, then writes it into the launch-scoped profile. It never changes the user's global Codex configuration. SessionStart supplies card orientation, Stop drains the durable inbox, and PermissionRequest opens an AgentRequest without changing turn status. The app-server observer owns turn state; the rollout tail supplies metadata.",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" } ] }

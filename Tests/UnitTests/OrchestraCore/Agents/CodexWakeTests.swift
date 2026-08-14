@@ -39,7 +39,7 @@ struct CodexWakeTests {
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))                       // idle
+        await env.svc.testSetTurnStatus(card.id, .waiting())                       // idle
         let name = env.sessions.sessionName(card.id)
 
         try await env.svc.send(card.id, "PING-CODEX")
@@ -67,7 +67,7 @@ struct CodexWakeTests {
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
         await env.svc.registerWatch(parent.id, [child.id])                    // parent has a durable watch
-        try await env.svc.report(parent.id, StatusReport(run: .waiting(.humanTurn)))   // idle, but watching
+        await env.svc.testSetTurnStatus(parent.id, .waiting())   // idle, but watching
         let name = env.sessions.sessionName(parent.id)
 
         try await env.svc.send(parent.id, "POKE-CODEX")
@@ -139,7 +139,7 @@ struct CodexWakeTests {
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))                       // idle
+        await env.svc.testSetTurnStatus(card.id, .waiting())                       // idle
         let name = env.sessions.sessionName(card.id)
 
         try await env.svc.send(card.id, "PING-CODEX")
@@ -161,7 +161,7 @@ struct CodexWakeTests {
         await env.svc.reconcile()
 
         let after = try #require(await env.svc.list().first { $0.id == card.id })
-        #expect(after.waitReason != nil)                     // alive — NOT .dead(resumeFailed)
+        #expect(after.agentState != nil)                     // alive — NOT .dead(resumeFailed)
         #expect(after.phaseDisplay != .dead)
         #expect(after.deadReason == nil)
         #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("PING-CODEX") == true)  // seed rode in

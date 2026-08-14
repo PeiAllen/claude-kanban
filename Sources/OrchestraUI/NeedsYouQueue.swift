@@ -52,30 +52,30 @@ public extension BoardStore {
     /// over the shipped `send-keys` RPC. The chord is the card's *agent capability* (not a neutral-layer
     /// constant), so Codex's structured approval overrides Claude's keystrokes per-adapter.
     ///
-    /// **State-guarded**: only fires while the card is still `.waiting/.permission`. Without the guard, a
+    /// **State-guarded**: only fires while the card still has a permission request. Without the guard, a
     /// prompt the human just answered (from another surface, or a race) means the approve `Enter` lands in
-    /// the now-live REPL and submits whatever sits in the composer. A just-answered card no longer waiting
-    /// makes this a safe no-op.
+    /// the now-live REPL and submits whatever sits in the composer. A just-answered Card makes this a safe
+    /// no-op because the request has disappeared.
     func approvePermission(_ id: UUID) async {
         guard let chord = permissionGateChord(id, \.approveChord) else { return }
         await sendKeysToAgent(id, chord)
     }
 
     /// **Deny** a card's pending permission prompt (the agent's deny chord). Same state guard as
-    /// `approvePermission` — never sends into a card that has left `.waiting/.permission`.
+    /// `approvePermission` — never sends into a Card whose permission request has closed.
     func denyPermission(_ id: UUID) async {
         guard let chord = permissionGateChord(id, \.denyChord) else { return }
         await sendKeysToAgent(id, chord)
     }
 
     /// The approve/deny chord for a card that is STILL blocked on a permission prompt, or `nil` if the
-    /// card is unknown, no longer `.waiting/.permission`, or its agent has no send-keys gate (empty chord
+    /// card is unknown, no longer requesting permission, or its agent has no send-keys gate (empty chord
     /// → structured-approval agent). Centralizes the state guard + per-capability chord lookup for both
     /// gate verbs. Internal (not private) so the guard + per-adapter routing is unit-testable.
     func permissionGateChord(_ id: UUID,
                              _ key: KeyPath<AgentCapabilities, [KeyToken]>) -> [KeyToken]? {
         guard let t = tasks.first(where: { $0.id == id }),
-              t.waitReason == .permission,
+              t.agentState?.hasRequest(kind: .permission) == true,
               let capabilities = capabilities(for: t.agentId) else { return nil }
         let chord = capabilities[keyPath: key]
         return chord.isEmpty ? nil : chord

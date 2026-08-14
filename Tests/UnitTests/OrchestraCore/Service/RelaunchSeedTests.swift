@@ -139,7 +139,7 @@ struct RelaunchSeedTests {
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         try await env.svc.restart(t.id)   // provisional + fresh id (no transcript on disk)
         _ = try await TestEnv.reconcileToLive(env.svc, t.id)   // lands the blank restart
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(t.id, .waiting())
         try await env.svc.send(t.id, "prompt-payload")
 
         _ = try await env.svc.resume(t.id)   // wake the provisional card for delivery
@@ -183,7 +183,7 @@ struct RelaunchSeedTests {
     func test_hookEpochMatchConfirmsHeld() async throws {
         let env = TestEnv.make(grace: 5, capabilities: .claudeCode)
         let held = try await Self.liveWithHeldLease(env)
-        try await env.svc.report(held.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: held.epoch)
+        try await env.svc.report(held.id, StatusReport(), observedEpoch: held.epoch)
         #expect(try await env.svc.inboxPeek(held.id).isEmpty)   // confirmed + removed
     }
 
@@ -191,7 +191,7 @@ struct RelaunchSeedTests {
     func test_hookStaleEpochNeverConfirms() async throws {
         let env = TestEnv.make(grace: 5, capabilities: .claudeCode)
         let held = try await Self.liveWithHeldLease(env)
-        try await env.svc.report(held.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: held.epoch - 1)
+        try await env.svc.report(held.id, StatusReport(), observedEpoch: held.epoch - 1)
         #expect(try await env.svc.inboxPeek(held.id).count == 1)   // NOT confirmed — retained
     }
 
@@ -200,7 +200,7 @@ struct RelaunchSeedTests {
         let env = TestEnv.make(grace: 5, capabilities: Self.codexStub)
         let held = try await Self.liveWithHeldLease(env)
         try await env.svc.inbox.setTailWatermark(cardId: held.id, epoch: held.epoch, watermark: 100, path: "/roll.jsonl")
-        try await env.svc.report(held.id, StatusReport(run: .running), tail: ("/roll.jsonl", 150))
+        try await env.svc.report(held.id, StatusReport(), tail: ("/roll.jsonl", 150))
         #expect(try await env.svc.inboxPeek(held.id).isEmpty)
     }
 
@@ -209,7 +209,7 @@ struct RelaunchSeedTests {
         let env = TestEnv.make(grace: 5, capabilities: Self.codexStub)
         let held = try await Self.liveWithHeldLease(env)
         try await env.svc.inbox.setTailWatermark(cardId: held.id, epoch: held.epoch, watermark: 100, path: "/roll.jsonl")
-        try await env.svc.report(held.id, StatusReport(run: .running), tail: ("/roll.jsonl", 50))
+        try await env.svc.report(held.id, StatusReport(), tail: ("/roll.jsonl", 50))
         #expect(try await env.svc.inboxPeek(held.id).count == 1)   // pre-kill line → retained
     }
 
@@ -218,7 +218,7 @@ struct RelaunchSeedTests {
         let env = TestEnv.make(grace: 5, capabilities: Self.codexStub)
         let held = try await Self.liveWithHeldLease(env)
         try await env.svc.inbox.setTailWatermark(cardId: held.id, epoch: held.epoch, watermark: 100, path: "/roll.jsonl")
-        try await env.svc.report(held.id, StatusReport(run: .running), tail: ("/OTHER.jsonl", 9999))
+        try await env.svc.report(held.id, StatusReport(), tail: ("/OTHER.jsonl", 9999))
         #expect(try await env.svc.inboxPeek(held.id).count == 1)   // rotated rollout → retained (dup-not-loss)
     }
 
@@ -233,7 +233,7 @@ struct RelaunchSeedTests {
         // A line from the NEW generation, on the SAME transcript (a resume keeps `agentSessionId` and
         // appends), past the OLD lease's watermark. It proves the NEW session is alive — it proves
         // NOTHING about the stale lease's messages, which that session never received.
-        try await env.svc.report(held.id, StatusReport(run: .running), tail: ("/roll.jsonl", 150))
+        try await env.svc.report(held.id, StatusReport(), tail: ("/roll.jsonl", 150))
         #expect(try await env.svc.inboxPeek(held.id).count == 1)   // stale generation → retained
     }
 }

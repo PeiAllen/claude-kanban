@@ -154,8 +154,6 @@ struct SendVerbTests {
         let (card, _) = try await stuckCard(env, branch: "b")
         // Park the card `.running` so the opportunistic wake no-ops (this test isolates the re-arm, not
         // delivery) — a running card is not deliverable and wake returns before charging anything.
-        try await env.svc.report(card.id, StatusReport(run: .running))
-
         try await env.svc.send(card.id, "try again", messageId: UUID())
 
         #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince == nil)
@@ -169,7 +167,6 @@ struct SendVerbTests {
         let card = try await liveCard(env)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
-        try await env.svc.report(card.id, StatusReport(run: .running))   // wake will no-op; card is not stuck
         await yieldBriefly()
         let baseline = await collector.upserts.count
 
@@ -191,7 +188,6 @@ struct SendVerbTests {
         let card = try await liveCard(env)                               // spawn seed ⇒ agent-paced
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
-        try await env.svc.report(card.id, StatusReport(run: .running))   // wake no-ops
         await yieldBriefly()
         let baseline = await collector.upserts.count
 

@@ -24,7 +24,7 @@ struct DeliveryRaceTests {
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: prompt, repo: repo, branch: branch))
         if transcript { env.adapter.writeTranscript(for: card.agentSessionId!) }
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         await env.svc.reconcile()   // graduate
         return card
     }
@@ -136,7 +136,7 @@ struct DeliveryRaceTests {
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: card.agentSessionId!)
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         try await env.svc.inbox.enqueue(card.id, "crashed mid-claim")
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
         _ = try await env.svc.inbox.claim(card.id, route: .channelPush, epoch: epoch,
@@ -166,7 +166,7 @@ struct DeliveryRaceTests {
         for (i, route) in [DeliveryRoute.stopDrain, .channelPush, .relaunchSeed].enumerated() {
             let c = try await TestEnv.spawnAndAwaitLive(
                 env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b\(i)"))
-            try await env.svc.report(c.id, StatusReport(run: .waiting(.humanTurn)))
+            await env.svc.testSetTurnStatus(c.id, .waiting())
             try await env.svc.inbox.enqueue(c.id, "route-\(route.rawValue)")
             let e = try #require(await env.svc.store.get(c.id)).sessionEpoch
             _ = try await env.svc.inbox.claim(c.id, route: route, epoch: e,

@@ -109,11 +109,14 @@ public protocol Adapter: Sendable {
     /// result via `OrchestraService.report`. DEFAULTED to `nil` (additive — no conformer breaks) so an
     /// adapter opts in per transport it actually receives.
     func parse(_ raw: RawTelemetry) -> StatusReport?
-    /// Normalize provider observations into the replacement live-agent contract. During migration this
-    /// is a dark path: adapters can map and compare these values, but only the legacy `parse` report may
-    /// mutate a card until the single Core cutover. One raw event may eventually update more than one
-    /// independent field, hence the array result.
+    /// Normalize provider observations into the live-agent contract. One raw event may update more than
+    /// one independent field, hence the array result. This is the sole status-authority path; `parse`
+    /// remains responsible only for lifecycle and presentation metadata.
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal]
+    /// Select the compact, provider-owned portion of a hook payload needed by `agentSignals`. The edge
+    /// helper sends this alongside the metadata report so Core can apply the current Card/session fences
+    /// before normalization. Returning nil means this hook carries no agent-state observation.
+    func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue?
     /// The launch-local endpoint this adapter needs for structured observation, if any. Core only
     /// allocates and carries the endpoint; provider-specific launch and connection details stay here.
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint?
@@ -152,6 +155,7 @@ public extension Adapter {
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }
+    func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? { nil }
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? { nil }
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,
@@ -178,6 +182,14 @@ public extension Adapter {
         guard let window = reportedContextWindow, window > 0 else { return nil }
         return min(100, max(0, Double(usedTokens) / Double(window) * 100))
     }
+}
+
+/// Keep hook control messages bounded: tool hook payloads can contain entire file bodies, while the
+/// status mapper normally needs only session identity and a few small discriminator fields.
+func projectedHookPayload(_ payload: JSONValue, keys: [String]) -> JSONValue {
+    .object(Dictionary(uniqueKeysWithValues: keys.compactMap { key in
+        payload[key].map { (key, $0) }
+    }))
 }
 
 /// Look up / list adapters; list an agent's models.

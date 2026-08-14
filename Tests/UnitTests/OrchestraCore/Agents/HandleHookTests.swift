@@ -3,6 +3,10 @@ import Foundation
 @testable import OrchestraCore
 
 @Suite struct HandleHookTests {
+    private func state(_ service: OrchestraService, _ id: UUID) async -> AgentState? {
+        await service.store.get(id)?.agentState
+    }
+
     @Test("sessionStart returns the live orientation; compact skips it")
     func sessionStart() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
@@ -29,31 +33,31 @@ import Foundation
         #expect(r?.additionalContext == nil)
     }
 
-    /// MAJOR (final-review): a REAL Claude Stop carries a `waiting(.humanTurn)` report, and `handleHook`
-    /// must claim the stopDrain BEFORE applying that report — else the report's `.live(.waiting)` landing
-    /// fires wake-on-live, which cold-relaunches a `nativeReinvoke` card with no active wait (bumping the
-    /// epoch), so `payloadForStop`'s fence then fails and a HEALTHY session is needlessly restarted on
-    /// every send. This asserts the busy card DRAINS via stopDrain with no epoch bump / no relaunch. The
-    /// old `stop` test passed `report: nil`, so it never exercised this.
-    @Test("a Stop carrying a real waiting report drains via stopDrain — no cold relaunch")
-    func stopWithWaitingReportDrainsNotRelaunch() async throws {
-        let env = TestEnv.make(grace: 2)
+    @Test("a Stop claims its drain before applying the turn-completed observation")
+    func stopClaimsBeforeTurnCompletion() async throws {
+        let adapter = HookSignalTestAdapter()
+        let env = TestEnv.make(grace: 2, registry: AgentRegistry(adapters: [adapter]))
         let card = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))   // .running
-        env.adapter.writeTranscript(for: card.agentSessionId!)   // resumable — the state a cold relaunch needs
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b", agentId: adapter.id)
+        )
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        try await env.svc.send(card.id, "DRAIN-ME")              // queued; a running card doesn't wake, so it waits for the Stop
-        let ensureBefore = env.sessions.ensureCount
+        try await env.svc.send(card.id, "DRAIN-ME")
 
-        // The ACTUAL Claude Stop: the stop event PLUS a report that lands waiting(.humanTurn).
-        let r = await env.svc.handleHook(card.id.uuidString, event: .stop,
-                                         report: StatusReport(run: .waiting(.humanTurn)),
-                                         source: nil, observedEpoch: epoch, stopHookActive: false)
+        let payload: JSONValue = .object(["session_id": .string("hook-session")])
+        let r = await env.svc.handleHook(
+            card.id.uuidString,
+            event: .stop,
+            report: nil,
+            source: nil,
+            observedEpoch: epoch,
+            stopHookActive: false,
+            observationPayload: payload
+        )
 
-        #expect(r?.continuation?.contains("DRAIN-ME") == true)                       // drained via stopDrain
-        #expect(try #require(await env.svc.store.get(card.id)).sessionEpoch == epoch) // NO epoch bump
-        #expect(env.sessions.ensureCount == ensureBefore)                            // session NOT restarted
-        #expect(env.sessions.ensureArgv[env.sessions.sessionName(card.id)]?.contains("--resume") != true)
+        #expect(r?.continuation?.contains("DRAIN-ME") == true)
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
+        #expect(try await env.svc.inboxPeek(card.id).first?.lease?.route == .stopDrain)
     }
 
     @Test("stop with an empty inbox yields no continuation")
@@ -71,14 +75,15 @@ import Foundation
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
 
         let r = await svc.handleHook(card.id.uuidString, event: .postToolUse,
-                                     report: StatusReport(desc: "Running: ls", run: .waiting(.humanTurn)), source: nil)
+                                     report: StatusReport(desc: "Running: ls"), source: nil)
         #expect(r == nil)
         let after = try await svc.resolveRef(card.id.uuidString)
-        #expect(after.waitReason != nil)   // the report landed
+        #expect(after.desc == "Running: ls")
+        #expect(after.turnStatus == .running)   // legacy `run` is no longer status authority
     }
 
-    @Test("fresh hook payloads update the replacement state without changing its provider-neutral reducer")
-    func hookPayloadUpdatesShadowAgentState() async throws {
+    @Test("fresh hook payloads update the authoritative provider-neutral state")
+    func hookPayloadUpdatesAgentState() async throws {
         let adapter = HookSignalTestAdapter()
         let env = TestEnv.make(
             registry: AgentRegistry(adapters: [adapter]),
@@ -90,23 +95,41 @@ import Foundation
                        branch: "hook-shadow", agentId: adapter.id)
         )
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .unavailable)
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
         let launchEnv = try #require(env.sessions.ensureEnv[env.sessions.sessionName(card.id)])
         #expect(launchEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] ==
                 "http://127.0.0.1:43181/test-token/v1/traces/\(card.id.uuidString.lowercased())/\(epoch)")
 
         let prompt: JSONValue = .object(["session_id": .string("hook-session")])
         _ = await env.svc.handleHook(
-            card.shortId, event: .userPrompt, report: StatusReport(run: .running), source: nil,
+            card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+
+        let permission: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "notification_type": .string("permission_prompt"),
+            "message": .string("Allow Bash?"),
+        ])
+        _ = await env.svc.handleHook(
+            card.shortId, event: .notification, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: permission
+        )
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.hasRequest(kind: .permission) == true)
+
+        _ = await env.svc.handleHook(
+            card.shortId, event: .postToolUse, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: prompt
+        )
+        #expect(await state(env.svc, card.id)?.activeRequests.isEmpty == true)
 
         _ = await env.svc.handleHook(
             card.shortId, event: .statusLine, report: StatusReport(ctxPct: 12), source: nil,
             observedEpoch: epoch
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         await env.svc.receivePushedAgentObservation(
             cardId: card.id,
@@ -116,13 +139,13 @@ import Foundation
                 attributes: .object(["session.id": .string("hook-session")])
             )
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .waiting())
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
 
         _ = await env.svc.handleHook(
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         let stop: JSONValue = .object([
             "session_id": .string("hook-session"),
@@ -132,7 +155,7 @@ import Foundation
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: stop
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .waiting(.init(resume: .init())))
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting(.init(resume: .init())))
     }
 
     @Test("hook observations are fenced by both launch epoch and current harness session")
@@ -150,7 +173,7 @@ import Foundation
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         let wrongSession: JSONValue = .object(["session_id": .string("old-session")])
         _ = await env.svc.handleHook(
@@ -161,7 +184,7 @@ import Foundation
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch + 1, observationPayload: prompt
         )
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
     }
 
     @Test("unknown ref returns nil, never throws")

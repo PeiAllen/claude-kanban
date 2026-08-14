@@ -33,11 +33,11 @@ public enum ReadinessOutcome: Sendable, Equatable {
 
 /// How spawn / reopen bring the agent session up once the card is being walked to `.live`. `.blank`
 /// starts a fresh session (readiness is the successful `ensure` — the 2.5 sync-spawn readiness stub;
-/// dedicated signals arrive in 2.6) and lands on the given run-state. `.resume` relaunches the vendor
-/// transcript and confirms readiness via `awaitReadiness` (the SessionStart(resume) hook / relaunch
-/// liveness), landing `.waiting`.
+/// dedicated signals arrive in 2.6) and lands on the known initial agent state. `.resume` relaunches the
+/// vendor transcript and confirms readiness via `awaitReadiness`; a supplied seed owns the opening turn,
+/// while a seedless resume reaches the provider prompt.
 public enum LaunchFlavor: Sendable {
-    case blank(landing: RunState, prompt: String?)
+    case blank(landing: AgentState, prompt: String?)
     case resume(seed: String?)
 }
 

@@ -97,12 +97,12 @@ struct SpawnPhaseTests {
         #expect(t.phase == .live(.running))
     }
 
-    @Test("a promptless (provisional) spawn lands .live(.waiting(.humanTurn))")
+    @Test("a promptless (provisional) spawn lands .live(.waiting)")
     func test_provisionalSpawnLandsWaiting() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
-        #expect(t.phase == .live(.waiting(.humanTurn)))
+        #expect(t.phase == .live(.waiting))
     }
 
     @Test("relaunch supersede: a second relaunching self-edge bumps the epoch; the first attempt's completion is dropped")
@@ -118,12 +118,12 @@ struct SpawnPhaseTests {
         #expect(e2 == e1 + 1)
 
         // The first attempt's completion (old epoch) is fenced out.
-        let stale = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: e1)
+        let stale = await env.svc.transition(t.id, to: .live(.waiting), observedEpoch: e1)
         #expect(stale == .noop)
         #expect(try #require(await env.svc.store.get(t.id)).phase.kind == .relaunching)
 
         // The surviving attempt's completion (current epoch) applies.
-        let fresh = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: e2)
+        let fresh = await env.svc.transition(t.id, to: .live(.waiting), observedEpoch: e2)
         #expect(fresh == .applied)
     }
 
@@ -155,7 +155,7 @@ struct SpawnPhaseTests {
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: t.agentSessionId!)                       // resumable
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))   // idle
+        await env.svc.testSetTurnStatus(t.id, .waiting())   // idle
         let name = env.sessions.sessionName(t.id)
         let before = env.sessions.ensureCount
 
@@ -217,7 +217,7 @@ struct SpawnPhaseTests {
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)             // reconciler blank-launches
 
         #expect(updated.archived == false)
-        #expect(updated.phase == .live(.waiting(.humanTurn)))
+        #expect(updated.phase == .live(.waiting))
         #expect(updated.agentSessionId != oldId)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(!argv.contains("--resume"))

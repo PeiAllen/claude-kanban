@@ -608,18 +608,12 @@ notification's `content.sound` so there is no separate audio player. The firing 
 `[.banner, .sound]` so an `Always` alert still surfaces (with its configured sound, or silently when the
 sound pref is None) in the foreground, which macOS would otherwise suppress.
 
-The load-bearing subtlety is **background-wait suppression.** A card flips to `.waiting` — and would thus
-alert — every time the agent ends a turn, *including* when it merely yielded to await auto-resuming
-background work (a `run_in_background` shell, a background subagent, a `/loop` wake); the user isn't
-needed there, so an alert would be pure noise. The Claude adapter suppresses it: a `Stop` hook whose
-payload carries a **non-empty `background_tasks` or `session_crons` array** means the agent paused on work
-that will auto-resume it, so the adapter returns `nil` and the card **stays `.running`** — no `.waiting`
-flip, no false "Needs you" alert. When the background work finishes and the agent's next genuine `Stop`
-arrives with both arrays empty, the card flips to `.waiting` + *Needs you* as normal. This suppression is
-Claude-adapter behavior (see [chapter 4](04-cards-worktrees-sessions.md#agent-adapters)). **Codex**
-degrades gracefully: it only ever reaches *Needs you* / *Died* (it has no permission hook and no
-background-task introspection), and its *Needs you* needs no suppression, since a Codex turn resolves its
-background shells and subagents within the turn itself.
+The load-bearing subtlety is **automatic-resume suppression.** A Claude `Stop` whose payload carries a
+non-empty `background_tasks` or `session_crons` array closes the visible top-level turn, but also records
+the provider's commitment to resume. The Card therefore displays `Waiting` while `workInFlight` remains
+true, so no Needs-you alert or inbox wake fires. A later Stop with no such commitment becomes an ordinary
+wait and alerts normally. Codex reports turn boundaries through app-server and currently has no equivalent
+automatic-resume signal; its PermissionRequest hook still opens the same independent permission alert.
 
 ## The iPhone companion
 

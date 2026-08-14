@@ -96,7 +96,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let terminalImagePaste: TerminalImagePaste
     public let readinessConfirmation: ReadinessConfirmation
 
-    /// The key chord the Needs-You gate sends to APPROVE a `waitReason == .permission` prompt, and the
+    /// The key chord the Needs-You gate sends to APPROVE an open permission request, and the
     /// chord that DENIES it. These are agent-terminal-layout facts, not provider-neutral truths: Claude's
     /// TUI accepts the pre-highlighted "Yes" with `Enter` and cancels with `Esc`. They live on the
     /// capability (not on the neutral Needs-You queue) so each adapter states its own gate keys — a

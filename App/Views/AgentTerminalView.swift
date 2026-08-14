@@ -300,7 +300,7 @@ struct AgentTerminalView: NSViewRepresentable {
         /// so a stale reattach queued against the OLD target can't fire against the new one.
         private var attachGeneration = 0
         /// Set by the representable's update from the owning view: is this card renderable-live right now?
-        /// (Derived from `displayState(phase:connection:).statusKey == .running/.idle/.needsPermission` — i.e.
+        /// (Derived from `displayState(phase:connection:).statusKey == .running/.idle/.unavailable` — i.e.
         /// a `.live` phase on a live link. A dead/creating card must NOT auto-re-attach.)
         var attachWhileLive: () -> Bool = { false }
         /// Re-attach closure the representable installs (calls `attach(term)` on the tracked view).

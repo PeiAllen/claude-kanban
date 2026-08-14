@@ -78,8 +78,8 @@ public struct CodexAdapter: Adapter {
 
     // MARK: telemetry parse (fileTail) — the daemon tails the rollout JSONL; THIS converts one line.
 
-    /// Codex status/detail/context telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one
-    /// rollout JSONL line at a time; this converts it to a normalized `StatusReport`. Its SessionStart hook
+    /// Codex metadata telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one rollout JSONL
+    /// line at a time; this extracts session, context, and display detail into `StatusReport`. Its SessionStart hook
     /// additionally supplies the definitive card-owned session id before discovery. AGENT-DEPENDENT (D3) —
     /// the mapping lives here, never in core. Rename-tolerant (Codex's rollout schema drifts:
     /// `TaskComplete`→`TurnComplete`, nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE
@@ -91,15 +91,13 @@ public struct CodexAdapter: Adapter {
         // `ORCHESTRA_TASK_ID`. Codex provides its generated `session_id` on the hook's stdin, so this is a
         // direct card ↔ session correlation even when multiple primary rollouts share one cwd. Binding it
         // here avoids relying on rollout discovery for the normal launch path; discovery remains a safe
-        // fallback if the hook is unavailable. PermissionRequest remains the provider-neutral wait gate.
+        // fallback if the hook is unavailable. PermissionRequest is mapped only through `agentSignals`.
         if case let .hooksPush(kind, payload) = raw {
             if kind == HookEvent.sessionStart.rawValue,
                let sid = payload["session_id"]?.stringValue, !sid.isEmpty {
                 return StatusReport(sessionId: sid)
             }
-            return kind == HookEvent.permission.rawValue
-                ? StatusReport(run: .waiting(.permission))
-                : nil
+            return nil
         }
         guard case let .fileTail(line) = raw else { return nil }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,11 +118,9 @@ public struct CodexAdapter: Adapter {
             guard let sid, !sid.isEmpty else { return nil }
             return StatusReport(sessionId: sid)
         }
-        // Idle signal FIRST (a completed turn ends `.running`, rename-tolerant).
+        // Turn edges come from app-server notifications, never from the historical rollout tail.
         if any("turncomplete", "taskcomplete") {
-            // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
-            // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
-            return StatusReport(seq: seq, run: .waiting(.humanTurn), turnCompleted: true)
+            return nil
         }
         // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
         // rollout names a model; fall back to the rollout's explicit context window for model-less
@@ -139,64 +135,90 @@ public struct CodexAdapter: Adapter {
             guard pct != nil || mid != nil else { return nil }
             return StatusReport(seq: seq, ctxPct: pct, modelId: mid)
         }
-        // Turn start → running.
         if any("taskstarted", "turnstarted") {
-            return StatusReport(seq: seq, run: .running)
+            return nil
         }
-        // A tool/function call mid-turn → running (+ a coarse desc).
+        // A tool/function call contributes display detail only; the app-server turn stays authoritative.
         if any("functioncall", "responseitem") {
             if let name = payload["name"]?.stringValue, !name.isEmpty {
-                return StatusReport(seq: seq, desc: "Running \(name)", run: .running)
+                return StatusReport(seq: seq, desc: "Running \(name)")
             }
-            return StatusReport(seq: seq, run: .running)
+            return nil
         }
         return nil
     }
 
-    // MARK: replacement agent-state mapping (dark until the Core cutover)
+    // MARK: provider-neutral agent-state mapping
+
+    public func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? {
+        guard event == .permission else { return nil }
+        return projectedHookPayload(
+            payload,
+            keys: ["session_id", "thread_id", "id", "tool_use_id", "message"]
+        )
+    }
 
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
         guard let expectedThreadId = context.harnessSessionId else { return [] }
 
-        let kind: AgentSignal.Kind?
+        let kinds: [AgentSignal.Kind]
         switch raw {
         case .rpcNotification(let method, let params):
             guard params["threadId"]?.stringValue == expectedThreadId else { return [] }
             switch method {
             case "turn/started":
-                kind = .turnStarted
+                kinds = [.turnStarted]
             case "turn/completed":
-                kind = .turnCompleted()
+                kinds = [.turnCompleted()]
             case "thread/status/changed":
-                kind = turnReconciliation(from: params["status"])
+                kinds = reconciliations(from: params["status"])
             default:
-                kind = nil
+                kinds = []
             }
 
         case .rpcResponse(let method, let result):
             guard ["thread/resume", "thread/read"].contains(method), let thread = result["thread"],
                   thread["id"]?.stringValue == expectedThreadId
             else { return [] }
-            kind = turnReconciliation(from: thread["status"])
+            kinds = reconciliations(from: thread["status"])
 
-        case .hooksPush, .fileTail, .traceSpanEnded:
-            kind = nil
+        case .hooksPush(let hook, let payload):
+            guard hook == HookEvent.permission.rawValue else { return [] }
+            let reportedSession = payload["session_id"]?.stringValue
+                ?? payload["thread_id"]?.stringValue
+            guard reportedSession == nil || reportedSession == expectedThreadId else { return [] }
+            kinds = [.requests([.init(
+                id: payload["id"]?.stringValue
+                    ?? payload["tool_use_id"]?.stringValue
+                    ?? "permission",
+                kind: .permission,
+                prompt: payload["message"]?.stringValue
+            )])]
+        case .fileTail, .traceSpanEnded:
+            kinds = []
         }
 
-        return kind.map { [.init(sessionEpoch: context.sessionEpoch, kind: $0)] } ?? []
+        return kinds.map { .init(sessionEpoch: context.sessionEpoch, kind: $0) }
     }
 
-    private func turnReconciliation(from status: JSONValue?) -> AgentSignal.Kind? {
+    private func reconciliations(from status: JSONValue?) -> [AgentSignal.Kind] {
         switch status?["type"]?.stringValue {
         case "active":
-            // Approval/input flags describe requests nested inside an open turn; they do not make it wait.
-            return .turnReconciled(.running)
+            let flags = status?["activeFlags"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            var requests: [AgentRequest] = []
+            if flags.contains("waitingOnApproval") {
+                requests.append(.init(id: "permission", kind: .permission))
+            }
+            if flags.contains("waitingOnUserInput") {
+                requests.append(.init(id: "input", kind: .input))
+            }
+            return [.turnReconciled(.running), .requests(requests)]
         case "idle":
-            return .turnReconciled(.waiting())
+            return [.turnReconciled(.waiting()), .requests([])]
         case "notLoaded", "systemError":
-            return .turnReconciled(.unavailable)
+            return [.turnReconciled(.unavailable)]
         default:
-            return nil
+            return []
         }
     }
 

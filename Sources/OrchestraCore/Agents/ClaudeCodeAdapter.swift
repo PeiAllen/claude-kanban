@@ -83,9 +83,9 @@ public struct ClaudeCodeAdapter: Adapter {
     // MARK: telemetry parse (hooksPush) — relocated from the `orchestra` CLI `ReportHelper.map`.
 
     /// Claude telemetry is `hooksPush`: the `_report` transport pushes each hook event (kind + JSON
-    /// payload); this converts it to a normalized two-tier `StatusReport`. Byte-identical to the former
-    /// CLI `ReportHelper.map` so `ReportTests` and live Claude reporting are unchanged. Claude has no
-    /// `fileTail` transport, so any non-`hooksPush` raw returns nil.
+    /// payload); this extracts lifecycle and display metadata into `StatusReport`. Turn state is mapped
+    /// separately by `agentSignals`, so this parser never writes agent status. Claude has no `fileTail`
+    /// transport, so any non-`hooksPush` raw returns nil.
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
         guard case let .hooksPush(kind, p) = raw else { return nil }
         switch kind {
@@ -105,25 +105,16 @@ public struct ClaudeCodeAdapter: Adapter {
                 transcriptPath: p["transcript_path"]?.stringValue,
                 sessionSource: p["source"]?.stringValue)
         case "prompt":
-            return StatusReport(run: .running, promptText: p["prompt"]?.stringValue)
+            return StatusReport(promptText: p["prompt"]?.stringValue)
         case "pretool", "posttool":
             let tool = p["tool_name"]?.stringValue ?? "tool"
-            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), run: .running)
+            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]))
         case "notification":
-            // The Notification hook: permission_prompt is the only "you're blocking me" case; everything
-            // else (idle_prompt, …) is a genuine human-turn wait.
-            let reason: WaitReason = p["notification_type"]?.stringValue == "permission_prompt"
-                ? .permission : .humanTurn
-            return StatusReport(desc: p["message"]?.stringValue, run: .waiting(reason))
+            return StatusReport(desc: p["message"]?.stringValue)
         case "taskcompleted":
-            return StatusReport(run: .waiting(.humanTurn), turnCompleted: true)
+            return nil
         case "stop":
-            // A turn that yielded to await background work (a run_in_background shell, a background
-            // subagent, a /loop or scheduled wake) will AUTO-RESUME — the human isn't needed. Leave the
-            // card running (return nil) so it neither flips to waiting nor alerts. (background_tasks /
-            // session_crons are Claude Code v2.1.145+; absent on older builds → treated as empty.)
-            if hasAutomaticResume(p) { return nil }
-            return StatusReport(run: .waiting(.humanTurn))
+            return nil
         case "sessionend":
             let reason = p["reason"]?.stringValue ?? "other"
             // Transition reasons are ignored (the matching SessionStart handles them).
@@ -134,22 +125,48 @@ public struct ClaudeCodeAdapter: Adapter {
         }
     }
 
-    // MARK: replacement agent-state mapping (dark until the Core cutover)
+    // MARK: provider-neutral agent-state mapping
+
+    public func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? {
+        let keys: [String]
+        switch event {
+        case .sessionStart:
+            keys = ["session_id", "source"]
+        case .userPrompt, .preToolUse, .postToolUse:
+            keys = ["session_id"]
+        case .notification:
+            keys = ["session_id", "notification_type", "tool_use_id", "message"]
+        case .stop:
+            keys = ["session_id", "background_tasks", "session_crons"]
+        case .statusLine, .permission, .taskCompleted, .sessionEnd:
+            return nil
+        }
+        return projectedHookPayload(payload, keys: keys)
+    }
 
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
-        let kind: AgentSignal.Kind?
+        let kinds: [AgentSignal.Kind]
         switch raw {
         case .hooksPush(let hook, let payload):
             guard belongsToHarnessSession(payload, context: context) else { return [] }
             switch hook {
             case "prompt":
-                kind = .turnStarted
+                kinds = [.turnStarted]
             case "stop":
-                kind = .turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil)
+                kinds = [.turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil)]
+            case "session" where ["clear", "resume"].contains(payload["source"]?.stringValue):
+                kinds = [.turnReconciled(.waiting()), .requests([])]
+            case "notification" where payload["notification_type"]?.stringValue == "permission_prompt":
+                kinds = [.requests([.init(
+                    id: payload["tool_use_id"]?.stringValue ?? "permission",
+                    kind: .permission,
+                    prompt: payload["message"]?.stringValue
+                )])]
+            case "pretool", "posttool":
+                // A permission request, if any, has resolved before the tool can run.
+                kinds = [.requests([])]
             default:
-                // Tool, notification, permission, and child-task events are activity/request inputs,
-                // not evidence that the top-level harness turn opened or closed.
-                kind = nil
+                kinds = []
             }
 
         case .traceSpanEnded(let name, let attributes):
@@ -157,13 +174,13 @@ public struct ClaudeCodeAdapter: Adapter {
                   belongsToHarnessSession(attributes, context: context)
             else { return [] }
             // Claude emits this terminal root span on the Ctrl-C path where no Stop hook fires.
-            kind = .turnCompleted()
+            kinds = [.turnCompleted()]
 
         case .fileTail, .rpcNotification, .rpcResponse:
-            kind = nil
+            kinds = []
         }
 
-        return kind.map { [.init(sessionEpoch: context.sessionEpoch, kind: $0)] } ?? []
+        return kinds.map { .init(sessionEpoch: context.sessionEpoch, kind: $0) }
     }
 
     private func hasAutomaticResume(_ payload: JSONValue) -> Bool {

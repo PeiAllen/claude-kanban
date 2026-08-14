@@ -18,7 +18,7 @@ struct SendWakeTests {
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                     // resumable
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                          // idle/Waiting
+        await env.svc.testSetTurnStatus(t.id, .waiting())                          // idle/Waiting
         return t
     }
 
@@ -71,7 +71,7 @@ struct SendWakeTests {
         env.adapter.writeTranscript(for: parent.agentSessionId!)
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 } // parent has a live `orchestra wait`
-        try await env.svc.report(parent.id, StatusReport(run: .waiting(.humanTurn)))   // idle, but waiting on the child
+        await env.svc.testSetTurnStatus(parent.id, .waiting())   // idle, but waiting on the child
         let ensureBefore = env.sessions.ensureCount
 
         try await env.svc.send(parent.id, "poke")

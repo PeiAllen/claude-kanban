@@ -433,7 +433,7 @@ private struct AgentChrome: View {
                                       // Auto-reattach on a dead pane while the card is genuinely live on a
                                       // live link — never for a dead/creating card or a down link.
                                       attachWhileLiveGate: { !displayState(phase: task.phase, connection: model.connectionState).isStale
-                                                         && [.running, .idle, .needsPermission].contains(task.phaseDisplay) })
+                                                         && [.running, .idle, .unavailable].contains(task.phaseDisplay) })
                         // Key by session AND active connection so switching cards OR connections tears down the
                         // old terminal and attaches a fresh one against the right host — without this, SwiftUI
                         // reuses the same NSView and every card shows card #1's tmux.

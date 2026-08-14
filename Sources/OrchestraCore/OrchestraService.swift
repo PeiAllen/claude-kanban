@@ -1090,24 +1090,23 @@ public actor OrchestraService {
 
     /// The core-owned hook-channel dispatch — the single place both directions of the hook channel meet,
     /// and it is ADAPTER-FREE (dispatch keys on `HookEvent`, never on agent identity). The `_report` edge
-    /// has already converted the raw payload into a typed event: it applies any telemetry `report` to the
-    /// store (send direction) and composes the existing `sessionBrief`/`payloadForStop` content into a
-    /// neutral `HookResponse` (receive direction) for the adapter to encode. `nil` on unknown ref or when
-    /// there is nothing to send back.
+    /// has already split the raw payload into metadata and a compact adapter-owned status observation.
+    /// This applies both, then composes the existing `sessionBrief`/`payloadForStop` content into a neutral
+    /// `HookResponse` for the adapter to encode. `nil` on unknown ref or when there is nothing to send back.
     public func handleHook(_ ref: String, event: HookEvent,
                            report: StatusReport?, source: SessionSource?,
                            observedEpoch: Int? = nil, stopHookActive: Bool = false,
                            observationPayload: JSONValue? = nil) async -> HookResponse? {
         guard let task = try? await resolveRef(ref) else { return nil }
 
-        // STOP: claim/confirm the stopDrain BEFORE applying the Stop's own report. A real Claude Stop
-        // report lands `.live(.waiting(.humanTurn))`, whose wake-on-live (+Lifecycle step 7) would else
+        // STOP: claim/confirm the stopDrain BEFORE applying the Stop observation. A real Claude Stop
+        // observation lands `.live(.waiting)`, whose wake-on-live (+Lifecycle step 7) would else
         // cold-relaunch a `nativeReinvoke` card with no active CLI wait — bumping the epoch out from under
         // this same-epoch claim, so `payloadForStop`'s entry fence then fails and a HEALTHY session is
         // needlessly restarted on every send. The Stop hook IS the reinvoke, so its same-epoch stopDrain
         // claim must win over a cold relaunch: claiming first mints a live same-epoch lease, and the
         // subsequent waiting-landing wake then DEFERS on `hasLiveLease` (deliver rung 3) instead of
-        // relaunching. Applying the report afterward still lands the phase; the epoch fence's real purpose
+        // relaunching. Applying the observation afterward still lands the phase; the epoch fence's real purpose
         // is untouched — a genuinely stale Stop (observedEpoch ≠ sessionEpoch) still no-ops in payloadForStop.
         if event == .stop {
             let continuation = await payloadForStop(task.id, observedEpoch: observedEpoch, stopHookActive: stopHookActive)

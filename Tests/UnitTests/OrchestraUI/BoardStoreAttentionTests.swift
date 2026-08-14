@@ -17,7 +17,7 @@ import Foundation
 
     private func card(_ id: String, branch: String, parentBranch: String? = nil,
                       access: CardAccess = .readWrite,
-                      phase: Phase = .live(.waiting(.humanTurn)),
+                      phase: Phase = .live(.waiting),
                       ctxPct: Double = 0,
                       pendingQuestion: PendingQuestion? = nil,
                       treeStat: TreeStat? = nil,
@@ -101,7 +101,7 @@ import Foundation
     // MARK: - the SUBTREE fold
 
     @Test func subtree_excludesSelf() {
-        let root = card("01", branch: "feat/root", phase: .live(.waiting(.permission)))
+        let root = card("01", branch: "feat/root", phase: .live(.permissionRequested))
         let m = board([root])
         #expect(!m.ownAttention(of: root, now: late).isEmpty)   // root itself needs you
         #expect(m.subtreeAttention(of: root, now: late) == 0)    // but it is not its own descendant
@@ -110,7 +110,7 @@ import Foundation
     @Test func subtree_countsAPermissionBlockedAttachedReviewer() {
         let target = card("01", branch: "feat/x", phase: .live(.running))
         let reviewer = card("02", branch: "review/x", parentBranch: "feat/x",
-                            access: .readOnly, phase: .live(.waiting(.permission)))
+                            access: .readOnly, phase: .live(.permissionRequested))
         #expect(board([target, reviewer]).subtreeAttention(of: target, now: late) == 1)
     }
 
@@ -119,7 +119,7 @@ import Foundation
     @Test func subtree_multiReasonDescendant_countsOnce() {
         let root = card("01", branch: "feat/root", phase: .live(.running))
         let child = card("02", branch: "feat/child", parentBranch: "feat/root",
-                         access: .readOnly, phase: .live(.waiting(.permission)), ctxPct: 95)
+                         access: .readOnly, phase: .live(.permissionRequested), ctxPct: 95)
         let m = board([root, child])
         #expect(m.ownAttention(of: child, now: late).count == 2)      // permission + ctx-critical
         #expect(m.subtreeAttention(of: root, now: late) == 1)          // ...one card
@@ -138,7 +138,7 @@ import Foundation
 
     @Test func attentionTier_ambersOnABlockedOrDeadReviewer() {
         let target = card("01", branch: "feat/x")
-        for phase: Phase in [.live(.waiting(.permission)), .dead(.agentExited)] {
+        for phase: Phase in [.live(.permissionRequested), .dead(.agentExited)] {
             let reviewer = card("02", branch: "review/x", parentBranch: "feat/x",
                                 access: .readOnly, phase: phase)
             let m = board([target, reviewer])
@@ -187,7 +187,7 @@ import Foundation
         let working = card("02", branch: "review/x", parentBranch: "feat/x",
                            access: .readOnly, phase: .live(.running))
         let blocked = card("03", branch: "review/y", parentBranch: "feat/x",
-                           access: .readOnly, phase: .live(.waiting(.permission)))
+                           access: .readOnly, phase: .live(.permissionRequested))
         #expect(board([target, working, blocked]).attentionLiveness(of: target) == .needsAttention)
     }
 

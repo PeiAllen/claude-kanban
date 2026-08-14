@@ -173,8 +173,8 @@ struct ArchiveIntentTests {
         #expect(await Self.phaseKind(e, card.id) == .archivedPending)
 
         // The late LaunchStepper finalize (launching → live at the same epoch) is funnel-rejected.
-        let r = await e.svc.transition(card.id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
-        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting(.humanTurn))))
+        let r = await e.svc.transition(card.id, to: .live(.waiting), observedEpoch: epoch)
+        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting)))
 
         try await pollUntil { await e.svc.reconcile(); return await Self.phaseKind(e, card.id) == .archivedComplete }
         #expect(e.sessions.killed.contains(e.sessions.sessionName(card.id)))
@@ -196,8 +196,8 @@ struct ArchiveIntentTests {
         // finalize is funnel-rejected. The orphan-session sweep (+ teardown kill) must reclaim it.
         e.sessions.setStampedEpoch(card.id, epoch)
         #expect(e.sessions.isAliveTest(card.id))
-        let r = await e.svc.transition(card.id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
-        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting(.humanTurn))))
+        let r = await e.svc.transition(card.id, to: .live(.waiting), observedEpoch: epoch)
+        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting)))
 
         try await pollUntil {
             await e.svc.reconcile()

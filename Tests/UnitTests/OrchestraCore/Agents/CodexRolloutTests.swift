@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Codex model table — vendored offline (E1 denominator for B2)")
 struct CodexModelTableTests {
@@ -33,24 +34,20 @@ struct CodexModelTableTests {
     }
 }
 
-@Suite("Codex rollout parse — fileTail line → StatusReport")
+@Suite("Codex rollout parse — metadata only")
 struct CodexRolloutParseTests {
     let a = CodexAdapter()
 
     private func tail(_ s: String) -> StatusReport? { a.parse(.fileTail(line: s)) }
 
-    @Test("test_rollout_to_statusreport: task_started → running")
-    func taskStartedRunning() throws {
-        let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#))
-        #expect(r.snapshot?.run == .running)
+    @Test("task_started is ignored because app-server owns turn state")
+    func taskStartedIgnored() {
+        #expect(tail(#"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#) == nil)
     }
 
-    @Test("turn_complete → waiting with humanTurn reason")
-    func turnCompleteHumanTurn() throws {
-        let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"turn_complete"}}"#))
-        #expect(r.snapshot?.run != nil)
-        #expect(r.snapshot?.run == .waiting(.humanTurn))
-        #expect(r.snapshot?.turnCompleted == true)
+    @Test("turn_complete is ignored because app-server owns turn state")
+    func turnCompleteIgnored() {
+        #expect(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"turn_complete"}}"#) == nil)
     }
 
     @Test("token_count → ctxPct (tokens ÷ table window) + modelId")
@@ -80,24 +77,17 @@ struct CodexRolloutParseTests {
         #expect(r.snapshot?.ctxPct == 50.0)   // 136000 / 272000, NOT 136000/999
     }
 
-    @Test("function_call → running + desc")
+    @Test("function_call contributes description without turn state")
     func functionCallDesc() throws {
         let line = #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}"#
         let r = try #require(tail(line))
-        #expect(r.snapshot?.run == .running)
         #expect(r.snapshot?.desc == "Running shell")
     }
 
-    @Test("idle signal: TurnComplete → waiting")
-    func idleSignal() throws {
-        let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#))
-        #expect(r.snapshot?.run != nil)
-    }
-
-    @Test("rename tolerance: old TaskComplete AND new TurnComplete both mean idle")
-    func renameToleranceTurn() throws {
-        #expect(tail(#"{"type":"event_msg","payload":{"type":"TaskComplete"}}"#)?.snapshot?.run != nil)
-        #expect(tail(#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#)?.snapshot?.run != nil)
+    @Test("old and new completion spellings are both ignored by the metadata parser")
+    func completionRenameTolerance() {
+        #expect(tail(#"{"type":"event_msg","payload":{"type":"TaskComplete"}}"#) == nil)
+        #expect(tail(#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#) == nil)
     }
 
     @Test("rename tolerance: total_token_usage.total_tokens AND a flat total_tokens both parse")
@@ -110,8 +100,8 @@ struct CodexRolloutParseTests {
 
     @Test("seq-gate mapping: later timestamp → strictly larger seq")
     func seqFromTimestamp() throws {
-        let t1 = try #require(tail(#"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"task_started"}}"#))
-        let t2 = try #require(tail(#"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"task_started"}}"#))
+        let t1 = try #require(tail(#"{"timestamp":"2026-07-01T10:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}"#))
+        let t2 = try #require(tail(#"{"timestamp":"2026-07-01T10:00:06.000Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}"#))
         #expect((t2.snapshot?.seq ?? 0) > (t1.snapshot?.seq ?? 0))
     }
 
@@ -306,16 +296,21 @@ struct CodexTelemetryE2ETests {
         return try #require(CodexAdapter().parse(.fileTail(line: firstLine))?.event?.sessionId)
     }
 
-    @Test("pollTelemetry tails a Codex rollout and updates the card's ctxPct + status")
+    @Test("pollTelemetry updates ctxPct without changing app-server turn status")
     func tailUpdatesBoard() async throws {
         let (svc, card, rollout) = try await makeEnv()
+        await svc.pollTelemetry()   // bind session_meta, which starts this fixture's missing app-server observer
+        try await pollUntil("missing app-server to make turn observation unavailable") {
+            await svc.store.get(card.id)?.turnStatus == .unavailable
+        }
+        let before = try #require(await svc.list().first { $0.id == card.id }).turnStatus
         append(rollout, #"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#)
         append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_token_usage":{"total_tokens":68000}}}}"#)
         await svc.pollTelemetry()
 
         let after = try #require(await svc.list().first { $0.id == card.id })
         #expect(after.ctxPct == 25.0)
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == before)
     }
 
     @Test("pollTelemetry handles current Codex token_count without model id")
@@ -328,13 +323,18 @@ struct CodexTelemetryE2ETests {
         #expect(after.ctxPct == 10.0)
     }
 
-    @Test("idle signal reaches the board: TurnComplete → waiting")
-    func idleReachesBoard() async throws {
+    @Test("legacy rollout TurnComplete no longer changes authoritative turn status")
+    func legacyIdleIsIgnored() async throws {
         let (svc, card, rollout) = try await makeEnv()
+        await svc.pollTelemetry()   // bind session_meta, which starts this fixture's missing app-server observer
+        try await pollUntil("missing app-server to make turn observation unavailable") {
+            await svc.store.get(card.id)?.turnStatus == .unavailable
+        }
+        let before = try #require(await svc.list().first { $0.id == card.id }).turnStatus
         append(rollout, #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#)
         await svc.pollTelemetry()
         let after = try #require(await svc.list().first { $0.id == card.id })
-        #expect(after.waitReason != nil)
+        #expect(after.turnStatus == before)
     }
 
     @Test("seq-gate holds end-to-end: a stale (earlier-timestamp) ctx line can't overwrite a fresher one")

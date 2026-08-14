@@ -342,7 +342,7 @@ public class BoardStore: ObservableObject {
     /// Eye-tint tier for attached agents — a THREE-tier priority, not a binary. `needsAttention` (a
     /// reviewer on a permission prompt, or dead) is a distinct warning that DOMINATES everything; `running`
     /// (any reviewer active or still being born) DOMINATES `idle`; `idle` (a reviewer that finished its
-    /// turn — `humanTurn` — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
+    /// turn — an ordinary wait — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
     /// is `idle`, NOT attention: a running sibling keeps the eye green, and only a genuine block (or an
     /// all-quiet group) changes it.
     public enum AttachedLiveness: Equatable {
@@ -353,9 +353,14 @@ public class BoardStore: ObservableObject {
         /// The tier a single agent's phase maps to.
         public init(phase: Phase) {
             switch phase {
-            case .dead, .live(.waiting(.permission)): self = .needsAttention
-            case .live(.waiting(.humanTurn)):         self = .idle
-            default:                                  self = .running   // running + being-born
+            case .dead:
+                self = .needsAttention
+            case .live(let state) where state.hasRequest(kind: .permission):
+                self = .needsAttention
+            case .live(let state) where state.workInFlight == false:
+                self = .idle
+            default:
+                self = .running   // work in flight, unavailable observation, and being-born
             }
         }
     }

@@ -26,20 +26,17 @@ public enum AttentionTransition {
     /// The push trigger a status transition warrants, or `nil`. Mirrors the macOS notifier exactly
     /// (`BoardModel.apply`):
     /// - `prev == nil` (a freshly-appended card / the post-reconnect wholesale set) → **never** fires.
-    /// - `prev != .waiting && status == .waiting` → `.permission` if `waitReason == .permission`
-    ///   else `.needsYou`.
+    /// - a new permission request → `.permission`, independently of whether the turn is open.
+    /// - work ownership changing to an ordinary wait with no automatic resume → `.needsYou`.
     /// - `prev != .dead && status == .dead` → `.died`.
     ///
-    /// **Background-wait suppression is by construction:** a card that yields its turn to a background
-    /// task (`run_in_background` shell, subagent, `/loop`/cron) stays `.running` with no `waitReason`
-    /// (the adapters emit no waiting report), so it never produces a `.waiting` transition and maps to
-    /// `nil` here. Asserted directly by a test.
+    /// **Automatic-resume suppression is by construction:** `waiting(resume != nil)` still has work in
+    /// flight, so it never produces a Needs-You transition.
     public static func trigger(prev: Phase?, task: Task) -> NotifyTrigger? {
         guard let prev else { return nil }
         let now = task.phase
-        if !prev.isWaiting, case .live(.waiting(let reason)) = now {
-            return reason == .permission ? .permission : .needsYou
-        }
+        if !prev.hasPermissionRequest, now.hasPermissionRequest { return .permission }
+        if !prev.needsHumanTurn, now.needsHumanTurn { return .needsYou }
         if prev.kind != .dead, now.kind == .dead { return .died }
         return nil
     }
@@ -78,9 +75,17 @@ public enum AttentionTransition {
 }
 
 private extension Phase {
-    /// True while the card is blocked waiting on the human (either wait reason) — the state whose
-    /// *entry* fires a Needs-You / permission notification.
-    var isWaiting: Bool { if case .live(.waiting) = self { return true } else { return false } }
+    var hasPermissionRequest: Bool {
+        if case .live(let state) = self { return state.hasRequest(kind: .permission) }
+        return false
+    }
+
+    var needsHumanTurn: Bool {
+        guard case .live(let state) = self,
+              case .waiting(let info) = state.turnStatus
+        else { return false }
+        return info.resume == nil
+    }
 }
 
 /// Stateful attention observer for the daemon: remembers each card's last status and emits an intent on a

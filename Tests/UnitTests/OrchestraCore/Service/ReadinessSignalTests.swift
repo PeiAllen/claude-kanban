@@ -44,7 +44,7 @@ struct ReadinessSignalTests {
         // readiness waiter is resolved by the delivered SessionStart(resume) (inject) → `.live`.
         _ = try await env.svc.resume(t.id)
         let live = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
-        #expect(live.phase == .live(.waiting(.humanTurn)))
+        #expect(live.phase == .live(.waiting))
         #expect(live.deadReason == nil)
     }
 

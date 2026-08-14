@@ -9,8 +9,8 @@ import OrchestraUI
 ///
 ///   • **Read** — a `capture`-backed scroll render of the agent pane (D1: a non-attaching, size-capped
 ///     `capture-pane` scrape; ugly but zero-attach and sizing-safe) plus the live status pill / context
-///     gauge / `waitReason` from the board event stream (the header already carries status+ctx; this tab
-///     surfaces the *waiting* reason as an actionable banner).
+///     gauge / agent state from the board event stream (the header already carries status+ctx; this tab
+///     surfaces an ordinary wait or a permission request as an actionable banner).
 ///   • **Steer** — a "Message the agent" bar → `send` (queued to the inbox, drained at turn-end) with a
 ///     constrained key row → `send-keys` (D2: Esc/↵/arrows/y/n/^C — no live attach, no resize pressure).
 ///   • **Gates** — surfaced as Needs-You (M3), not here: a waiting-on-permission card shows a banner
@@ -35,8 +35,8 @@ struct AgentTab: View {
             RecoveryView(task: task)
         } else {
             VStack(spacing: 0) {
-                if let reason = task.waitReason {
-                    WaitBanner(reason: reason, theme: theme)
+                if let bannerKind {
+                    WaitBanner(kind: bannerKind, theme: theme)
                 }
                 CaptureRender(cardId: task.id, onOpenImage: onOpenImage)
                     // Tap-off + swipe-down dismissal for the composer keyboard. Additive container-level
@@ -55,6 +55,12 @@ struct AgentTab: View {
                 }
             }
         }
+    }
+
+    private var bannerKind: AgentBannerKind? {
+        if task.agentState?.hasRequest(kind: .permission) == true { return .permission }
+        if task.workInFlight == false { return .waiting }
+        return nil
     }
 
     /// The one attach path (T4). Everything above is non-attaching; this is the deliberate, explicit door
@@ -84,15 +90,17 @@ struct AgentTab: View {
 
 /// A compact banner surfacing *why* the card is waiting. Gates live in the Needs-You queue (M3); this only
 /// points there — it never renders approve/deny.
+private enum AgentBannerKind { case permission, waiting }
+
 private struct WaitBanner: View {
-    let reason: WaitReason
+    let kind: AgentBannerKind
     let theme: Theme
 
-    private var sem: SemColor { reason == .permission ? theme.amber : theme.blue }
-    private var icon: String { reason == .permission ? "lock.shield.fill" : "person.crop.circle.badge.questionmark" }
-    private var title: String { reason == .permission ? "Needs your approval" : "Waiting on you" }
+    private var sem: SemColor { kind == .permission ? theme.amber : theme.blue }
+    private var icon: String { kind == .permission ? "lock.shield.fill" : "person.crop.circle.badge.questionmark" }
+    private var title: String { kind == .permission ? "Needs your approval" : "Waiting on you" }
     private var detail: String {
-        reason == .permission
+        kind == .permission
             ? "The agent is blocked on a permission — approve or deny it in Needs You."
             : "The agent finished its turn and is waiting. Steer it below, or take over."
     }

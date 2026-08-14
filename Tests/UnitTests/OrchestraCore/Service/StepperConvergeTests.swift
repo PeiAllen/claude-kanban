@@ -203,7 +203,7 @@ struct LaunchStepperTests {
             Issue.record("expected .blank"); return
         }
         #expect(prompt2 == nil)
-        #expect(land2 == .waiting(.humanTurn))
+        #expect(land2 == .waiting)
     }
 
     @Test("test_launchStepReachesLiveOnReady_immediate")   // .relaunchLiveness (stub) lands on ensure

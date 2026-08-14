@@ -157,10 +157,10 @@ final class AttachedAgentsGateTests: XCTestCase {
         model.tasks = [target, reviewer("02", .live(.running)), reviewer("03", .launching)]
         XCTAssertEqual(model.attachedLiveness(of: target), .running)
 
-        // GREEN DOMINATES IDLE: a concluded (humanTurn) reviewer beside a running one stays green —
+        // GREEN DOMINATES IDLE: an ordinary-wait reviewer beside a running one stays green —
         // a finished reviewer is idle, NOT attention.
         model.tasks = [target, reviewer("02", .live(.running)),
-                       reviewer("03", .live(.waiting(.humanTurn)))]
+                       reviewer("03", .live(.waiting))]
         XCTAssertEqual(model.attachedLiveness(of: target), .running)
 
         model.tasks = [target]

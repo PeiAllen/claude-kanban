@@ -105,7 +105,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))          // first sighting: no fire
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))  // running→waiting
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.permissionRequested))))  // running→waiting
 
         let sends = await mock.recorded()
         XCTAssertEqual(sends.count, 1)
@@ -137,14 +137,16 @@ final class PushNotifierTests: XCTestCase {
         let mock = MockPushSender()
         let notifier = PushNotifier(service: service, sender: mock)
 
-        // A card on a background task stays .running across snapshots — never a .waiting transition.
+        // A provider-owned background wait is visibly waiting but carries an automatic-resume commitment,
+        // so it remains work in flight and cannot produce a Needs-You notification.
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        let autoResume = AgentState(turnStatus: .waiting(.init(resume: .init())))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(autoResume))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(autoResume))))
 
         let sends = await mock.recorded()
-        XCTAssertTrue(sends.isEmpty, "a background-waiting (still-running) card must never push")
+        XCTAssertTrue(sends.isEmpty, "an automatic-resume wait must never push")
     }
 
     func testRemovedCardIsForgotten() async throws {
@@ -157,7 +159,7 @@ final class PushNotifierTests: XCTestCase {
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
         await notifier.handle(.taskRemoved(id))
         // Re-created with the same id is a fresh card (prev == nil) — the first waiting sighting won't fire.
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.humanTurn)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting))))
         let sends = await mock.recorded()
         XCTAssertTrue(sends.isEmpty)
     }
@@ -207,8 +209,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: mock)
 
         let id = UUID()
-        await notifier.seedBaseline([card(id: id, phase: .live(.waiting(.humanTurn)))])   // waiting at boot, not stuck
-        var stuck = card(id: id, phase: .live(.waiting(.humanTurn)))
+        await notifier.seedBaseline([card(id: id, phase: .live(.waiting))])   // waiting at boot, not stuck
+        var stuck = card(id: id, phase: .live(.waiting))
         stuck.deliveryStuckSince = Date()                                                 // first post-boot event: stuck
         await notifier.handle(.taskUpserted(stuck))
 
@@ -232,12 +234,12 @@ final class PushNotifierTests: XCTestCase {
 
         // Window flap (buffered, all rev ≤ the baseline the snapshot then captures = running).
         await notifier.setAfterSubscribeForTest {
-            try? await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
-            try? await env.svc.report(card.id, StatusReport(run: .running))
+            await env.svc.testSetTurnStatus(card.id, .waiting())
+            await env.svc.testSetTurnStatus(card.id, .running)
         }
         // Genuine post-snapshot transition (rev > baseline): running→waiting → must push exactly once.
         await notifier.setAfterBaselineForTest {
-            try? await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+            await env.svc.testSetTurnStatus(card.id, .waiting())
         }
         let run = _Concurrency.Task { await notifier.run() }
         defer { run.cancel() }
@@ -287,7 +289,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.permissionRequested))))
 
         let remaining = await service.registeredDevices()
         XCTAssertTrue(remaining.isEmpty, "a 410 Unregistered must drop the dead token")
@@ -322,7 +324,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.permissionRequested))))
 
         let remaining = await service.registeredDevices()
         XCTAssertEqual(remaining.map(\.token), [newTok],
@@ -338,7 +340,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.permissionRequested))))
 
         let remaining = await service.registeredDevices()
         XCTAssertEqual(remaining.map(\.clientId), ["cA"], "a transient 500 must NOT drop the token")

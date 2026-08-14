@@ -115,4 +115,24 @@ public struct AgentState: Codable, Equatable, Sendable {
             return nil
         }
     }
+
+    public var isWaiting: Bool {
+        if case .waiting = turnStatus { return true }
+        return false
+    }
+
+    public func hasRequest(kind: AgentRequest.Kind) -> Bool {
+        activeRequests.contains { $0.kind == kind }
+    }
+}
+
+extension AgentState {
+    public static var running: AgentState { .init(turnStatus: .running) }
+    public static var waiting: AgentState { .init(turnStatus: .waiting()) }
+    public static var permissionRequested: AgentState {
+        .init(
+            turnStatus: .running,
+            activeRequests: [.init(id: "permission", kind: .permission)]
+        )
+    }
 }

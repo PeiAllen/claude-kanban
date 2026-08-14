@@ -48,7 +48,7 @@ struct CardRuntime {
     /// cancel-before-replace and token-fenced-clear disciplines hold everywhere.
     var tasks: [ArmedSlot: Armed] = [:]
 
-    // MARK: - Live agent observation (replacement contract, dark until cutover)
+    // MARK: - Live agent observation
 
     /// Exact subscription identity. The endpoint selects the launch-local provider server; epoch and
     /// provider session fence callbacks that were already queued when a source was superseded.
@@ -59,9 +59,6 @@ struct CardRuntime {
     }
 
     var agentObservationIdentity: AgentObservationIdentity?
-    /// Ephemeral replacement state. It exists only while the card is live and is deliberately not emitted
-    /// or persisted until the atomic Phase.live cutover replaces the legacy run-state authority.
-    var shadowAgentState: AgentState?
 
     // MARK: - Readiness
 
@@ -123,7 +120,7 @@ struct CardRuntime {
     /// The generation that owes a MACHINE opening turn: a launch whose flavor carries a positional the
     /// daemon supplied (a spawn/handoff seed, or a wake-delivered inbox batch). That positional reaches
     /// the report path as a `promptText` exactly like a typed prompt — and a resume lands
-    /// `.waiting(.humanTurn)` — so the human-paced setter consumes this marker on the FIRST prompt of the
+    /// `.waiting` — so the human-paced setter consumes this marker on the FIRST prompt of the
     /// generation instead of mistaking the seed for a direct human turn (which would wrongly exempt agent
     /// work from the stall row). Set in `finishLaunch`, consumed once by `report()`. nil ⇒ no seed owed.
     var seedTurnEpoch: Int? = nil

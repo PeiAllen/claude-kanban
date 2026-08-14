@@ -79,7 +79,8 @@ On startup the daemon (`Sources/orchestrad/main.swift`):
    orphaned tmux sessions, and (as a safety net) flips a `.live` card to `dead` if its session vanished
    without a `SessionEnd` hook (see [the Convergence model](#the-convergence-model)) — and, alongside it,
    drives [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter), the rollout-tail tick that
-   pulls live state for `fileTail` agents (Codex) that don't push it.
+   refreshes metadata for `fileTail` agents (Codex). Turn state comes from structured provider events,
+   never this polling loop.
 5. **Installs a `SIGTERM` flush handler** (launchd/systemd send `SIGTERM` before `SIGKILL` on a clean
    stop/restart) that flushes any debounced `tasks.json` write, then parks on `dispatchMain()`.
 
@@ -143,8 +144,9 @@ reconciler step — routes through it, which in one call:
    set is `.rejected`, the stored phase untouched; a same-phase call is a `.noop` — except the
    `relaunching → relaunching` supersede self-edge, which re-arms a fresh generation instead of being
    swallowed);
-2. stamps `phaseChangedAt` and, on a (re)launch-bound entry, bumps `sessionEpoch` — all inside **one**
-   `store.update` patch that also applies the caller's `mutate` closure, so companion field writes
+2. stamps `phaseChangedAt` when the lifecycle phase or live `TurnStatus` changes and, on a
+   (re)launch-bound entry, bumps `sessionEpoch` — all inside **one** `store.update` patch that also
+   applies the caller's `mutate` closure, so companion field writes
    (`archived = true`, a cleared `agentSessionId`, a `deadReason`, a folded `pendingSeed`) land atomically
    with the phase;
 3. fires the terminal `Conclusion` exactly once, on entry into a terminal phase from a non-terminal one —
@@ -403,18 +405,24 @@ launch — Claude through a managed `--settings` file and Codex through a per-la
 that wires the agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind>
 --agent <id>`. Codex therefore keeps its normal native home, authentication, plugins, and state instead of
 receiving an Orchestra-owned `CODEX_HOME`.
-The helper resolves the card's adapter, parses at the edge, and sends one typed `hook` RPC to the daemon's
-adapter-free `handleHook` over the same control socket — which applies the `StatusReport` (and returns
-orientation/inbox-drain content to print):
+The helper resolves the card's adapter and sends one typed `hook` RPC to the daemon's adapter-free
+`handleHook` over the same control socket. The adapter extracts two independent payloads: a typed
+`StatusReport` for lifecycle/display metadata and a compact raw observation for provider-neutral
+`AgentSignal` mapping. The response carries orientation or inbox-drain content back to the agent:
 
 | Claude event | `_report --event` | What it updates on the card |
 |--------------|-------------------|------------------------------|
 | statusLine refresh | `statusline` | `ctxPct`, model id + display, session id, session name |
 | `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact); also injects the card's live column/mode/self-id **orientation** as `additionalContext` |
-| `UserPromptSubmit` | `prompt` | the prompt text → auto-title; run-state → `.running` |
-| `Pre/PostToolUse` | `tool` | `desc` (a live blurb of what the agent is doing) |
-| `Notification` / `Stop` | `notify` | `desc`; run-state → `.waiting(_)` |
+| `UserPromptSubmit` | `prompt` | prompt text → auto-title; normalized top-level turn start |
+| `Pre/PostToolUse` | `pretool` / `posttool` | `desc`; clear a resolved request without changing turn status |
+| `Notification` | `notification` | `desc`; a permission notification opens an independent permission request |
+| `Stop` | `stop` | normalized top-level turn completion, with an automatic-resume marker when Claude reports background work |
 | `SessionEnd` | `sessionend` | exit reason → may drive the card to `dead(_)` via the `transition()` funnel |
+
+Codex uses the same hook channel for SessionStart orientation, PermissionRequest, and Stop inbox drain,
+but its top-level turn state comes from a launch-local app-server observer. The rollout tail is metadata
+only: it discovers the session and reports context, model, and coarse activity text.
 
 This is a **two-way** channel: agent → Orchestra carries live fields, and the Orchestra → agent direction
 is now **realized** on several paths — the F3 Stop-drain injects the durable inbox back at turn-end via the
@@ -428,15 +436,16 @@ Two robustness rules matter:
 - **Bounded sends.** The statusLine report is a ~50 ms synchronous call cancelled on the next tick, so
   a slow daemon never stalls the agent's status bar; hooks get a ~2 s budget. The helper always prints
   the status line to stdout *before* attempting the network send.
-- **Monotonic seq guard.** Every snapshot report carries a sequence number; the daemon drops or
-  coalesces stale ones so a slow `ctxPct` can't land after a fresher value.
+- **Monotonic metadata seq guard.** Snapshot metadata reports carry a sequence number; the daemon drops
+  or coalesces stale ones so a slow `ctxPct` can't land after a fresher value. Turn/request signals use
+  provider event order plus Card epoch and provider-session identity instead.
 - **Field-delta writes, not whole-object replace.** `report()`'s persisted write goes through
   `Task.applyReportFields(from:changedFrom:)`, which overlays only the telemetry fields `report()` owns
   (session ids, `desc`, `title`/`titleSource`/`lastSessionName`/`awaitingFirstPrompt`, `ctxPct`, model)
   onto the task currently in the store. That list is a **whitelist**: a field report() mutates but does
   not name here is silently discarded on the way to disk, so every new report-owned field must be added
-  to it. Run-state and dead metadata are *not* overlaid here — they flow through the `transition()`
-  funnel / `markDead` (Stage 2), which is why `status`/`waitReason` no longer appear in this list.
+  to it. Live `AgentState` and dead metadata are *not* overlaid here — normalized signals and lifecycle
+  evidence flow through the `transition()` funnel.
   Being on the list is **not** enough to be written, though: `report()` reads the card, suspends, and
   writes back, so the overlay applies a field only when the report actually *changed* it
   (`changedFrom` is the snapshot it started from). Without that second test, an owned field with a
@@ -444,7 +453,7 @@ Two robustness rules matter:
   restored to the stale value report happened to read, silently and with no self-heal. So every other
   field, and every unchanged owned field, is left exactly as a concurrent RPC left it.
 
-Polling (`tmux capture-pane`) exists only as a *fallback* when the push channel is silent.
+`tmux capture-pane` remains a bounded terminal-render fallback; it is never a status authority.
 
 ## Tracing a command end to end
 

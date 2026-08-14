@@ -31,7 +31,8 @@ struct CardView: View {
     private var display: PhaseDisplayKey { ds.statusKey }
     private var sem: SemColor { theme.statusColor(ds.statusKey) }
     private var isRunning: Bool { display == .running }
-    private var isWaiting: Bool { task.waitReason != nil }
+    private var isWaiting: Bool { task.agentState?.isWaiting == true }
+    private var isLiveAgent: Bool { task.agentState != nil }
     private var isDead: Bool { display == .dead }
 
     /// One of this card's attached rows is selected (the card itself isn't). Keeps a retained cue on the
@@ -190,7 +191,7 @@ struct CardView: View {
     private func pill(_ rung: L1Rung, now: Date) -> some View {
         let age = relativeAge(task.phaseChangedAt, now: now)
         return HStack(spacing: 6) {
-            PulseDot(color: sem.dot, size: 6, active: isRunning || isWaiting)
+            PulseDot(color: sem.dot, size: 6, active: isLiveAgent)
             Text(rung.showsStateWord ? "\(ds.label) · \(age)" : age)
                 .font(F.ui(10.5, .semibold))
                 .tracking(0.0525)

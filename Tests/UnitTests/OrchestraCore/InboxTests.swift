@@ -1007,24 +1007,21 @@ struct InboxSendIdempotencyTests {
     }
 }
 
-@Suite("C1 · Stop-drain preserves the stop/waiting report")
+@Suite("C1 · turn completion preserves queued inbox work")
 struct NotifyPreservedTests {
-    @Test("the Stop hook's stop event still parses to a waiting StatusReport and drives the card to waiting")
+    @Test("a normalized Stop completion drives the card to waiting without draining by itself")
     func notifyStillWaiting() async throws {
-        // 1. parse is byte-identical: the stop event → waiting (the old shared "notify" kind is now split
-        //    into distinct notification/stop --event values; both still map to waiting).
-        let report = ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:])))
-        #expect(report?.snapshot?.run != nil)
-
-        // 2. applied through the service, the card goes to .waiting — with a message still queued in the inbox
-        //    (the drain is a separate step; the notify/waiting report is unaffected).
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "w", repo: repo, branch: "feat"))
         try await env.svc.send(task.id, "queued")
-        try await env.svc.report(task.id, report!)
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
+        await env.svc.receiveAgentSignals(
+            cardId: task.id,
+            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
+        )
         let st = try await env.svc.status(task.id)
-        #expect(st.task.waitReason != nil)                                          // notify/waiting preserved
+        #expect(st.task.turnStatus == .waiting())
         #expect(await Inbox(path: env.base + "/inbox.json").peek(task.id).count == 1) // drain not triggered
     }
 }

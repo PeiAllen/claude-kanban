@@ -55,9 +55,9 @@ public enum Attention {
 
     // MARK: - quiescence primitives
 
-    /// The agent finished its turn and is waiting on a human. The ONLY phase that can stall: a running
-    /// card is working, and dead/transient phases have their own rows or are mid-flight.
-    public static func isIdle(_ t: Task) -> Bool { t.waitReason == .humanTurn }
+    /// The provider owns no further work: an ordinary wait with no automatic resume. Running,
+    /// unavailable, and auto-resuming waits cannot satisfy the quiet predicate.
+    public static func isIdle(_ t: Task) -> Bool { t.workInFlight == false }
 
     /// "Nothing more is going to happen here on its own": concluded or dead, AND with no queued work.
     /// A card with a pending delivery is imminently active even while it reads idle, which is why the
@@ -87,7 +87,9 @@ public enum Attention {
         var out: [AttentionSignal] = []
 
         if c.phase.kind == .dead { out.append(.init(.dead, "dead")) }
-        if c.waitReason == .permission { out.append(.init(.permission, "permission")) }
+        if c.agentState?.hasRequest(kind: .permission) == true {
+            out.append(.init(.permission, "permission"))
+        }
         if c.treeStat?.state == .mergeRequested, !parentOwned {
             out.append(.init(.mergeRequested, "merge-requested"))
         }

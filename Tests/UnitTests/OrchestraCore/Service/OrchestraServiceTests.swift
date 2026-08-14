@@ -129,7 +129,7 @@ struct OrchestraServiceTests {
         let blank = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "   ", repo: repo, branch: "feat-x"))
         #expect(blank.awaitingFirstPrompt == true)
         #expect(blank.title == "feat-x")       // branch-name placeholder
-        #expect(blank.waitReason != nil)       // idle, awaiting the first user prompt
+        #expect(blank.workInFlight == false)       // idle, awaiting the first user prompt
         // No junk prompt is handed to the launch (a whitespace prompt must not be submitted).
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(blank.id)])
         let nameIdx = try #require(argv.firstIndex(of: "--name"))

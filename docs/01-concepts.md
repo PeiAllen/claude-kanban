@@ -89,14 +89,21 @@ stateDiagram-v2
     launching --> live : LaunchStepper — readiness confirmed
 
     state live {
-        running : live(.running)
-        idle : live(.waiting(.humanTurn))
-        perm : live(.waiting(.permission))
-        running --> idle : Stop / turn_complete
-        running --> perm : permission prompt
-        idle --> running : prompt / inbox drain
-        perm --> running : approved
+        running : turnStatus = running
+        waiting : turnStatus = waiting
+        unavailable : turnStatus = unavailable
+        running --> waiting : top-level turn completed
+        waiting --> running : top-level turn started
+        running --> unavailable : observation lost
+        waiting --> unavailable : observation lost
+        unavailable --> running : attach / reconciled active
+        unavailable --> waiting : attach / reconciled idle
     }
+
+    note right of live
+      Permission and input requests are orthogonal
+      to whether the top-level turn is open.
+    end note
 
     live --> relaunching : restart · resume · handoff
     relaunching --> relaunching : supersede (re-arm)
@@ -117,16 +124,17 @@ stateDiagram-v2
     archivedComplete --> [*]
 ```
 
-Neither axis constrains the other: a `live(.running)` card can sit in Plan, and a `dead` card can sit
+Neither axis constrains the other: a `live(AgentState.running)` card can sit in Plan, and a `dead` card can sit
 in Review. Verbs only persist *intent* and return — a 2-second `reconcile()` tick then drives each
 transitional card one edge onward, so a daemon crash and a clean boot converge through the same code
 path. Note that `dead → live` is the one **signal-gated** edge (no verb may drive it; only observing
 a live session can), and that archiving is not terminal — `reopen` sends an archived card back to
 `creatingWorktree`.
 
-The signals that drive the phase come from the agent itself over the report channel: a prompt
-submission moves it to `running`, a `Stop`/`Notification` hook to `waiting`, a `SessionEnd` can take
-it to `dead`. See [Architecture](02-architecture.md#the-report-channel) for how those arrive, and
+The live agent state comes from provider observation: a prompt submission opens a top-level turn, a
+`Stop` closes it, and a permission notification opens an independent request without changing the turn.
+A `SessionEnd` is lifecycle evidence and can take the Card to `dead`. See
+[Architecture](02-architecture.md#the-report-channel) for how those arrive, and
 [Recovery, resume and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart) for what
 happens when one goes wrong.
 

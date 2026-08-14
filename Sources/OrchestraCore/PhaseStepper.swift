@@ -106,12 +106,14 @@ private func transcriptExists(_ card: Task, _ adapter: any Adapter) -> Bool {
     return FileManager.default.fileExists(atPath: tp)
 }
 
-/// The `.blank` landing (or `.waiting` for a resume). Extracted so Launch/Relaunch share the read — and
+/// The initial provider-neutral state known from the launch command itself. Extracted so Launch/Relaunch
+/// share the rule — and
 /// the reconciler's epoch-identity adopt (`+Reconcile`), which jumps `.launching→.live` WITHOUT the
 /// LaunchStepper, so it must derive the same landing itself.
-func landing(of flavor: LaunchFlavor) -> RunState {
+func landing(of flavor: LaunchFlavor) -> AgentState {
     if case .blank(let l, _) = flavor { return l }
-    return .waiting(.humanTurn)
+    if case .resume(let seed) = flavor, let seed, !seed.isEmpty { return .running }
+    return .init(turnStatus: .waiting())
 }
 
 /// Derive the launch flavor from persisted fields alone (crash-recovery re-derives from disk): a card
@@ -120,7 +122,9 @@ func landing(of flavor: LaunchFlavor) -> RunState {
 /// (never-prompted) card lands `.waiting` with no positional.
 func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
     if transcriptExists(card, adapter) { return .resume(seed: card.pendingSeed) }
-    let land: RunState = card.awaitingFirstPrompt ? .waiting(.humanTurn) : .running
+    let land: AgentState = card.awaitingFirstPrompt
+        ? .init(turnStatus: .waiting())
+        : .running
     let prompt: String? = card.awaitingFirstPrompt ? nil : (card.initialPrompt.isEmpty ? nil : card.initialPrompt)
     return .blank(landing: land, prompt: prompt)
 }
@@ -270,7 +274,7 @@ public struct RelaunchStepper: PhaseStepper {
             if let payload = batch?.payload, !payload.isEmpty {
                 flavor = .blank(landing: .running, prompt: payload)   // a prompt IS submitted → running
             } else {
-                flavor = .blank(landing: .waiting(.humanTurn), prompt: nil)
+                flavor = .blank(landing: .waiting, prompt: nil)
             }
         } else {
             _ = await ctx.transition(card.id, .dead(.resumeFailed), nil, .relaunching) { t in

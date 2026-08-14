@@ -70,7 +70,7 @@ struct RecoveryTests {
         let intent = try await env.svc.resume(t.id)
         #expect(intent.phase.kind == .relaunching)
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
-        #expect(updated.waitReason != nil)
+        #expect(updated.workInFlight == false)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id (no new mint)
     }
@@ -105,7 +105,7 @@ struct RecoveryTests {
 
         let updated = try #require(await env.svc.store.get(t.id))
         #expect(updated.phase.kind == .live)
-        #expect(updated.waitReason != nil)
+        #expect(updated.workInFlight == false)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id
     }
@@ -171,7 +171,7 @@ struct RecoveryTests {
         #expect(newId != oldId)
         #expect(intent.priorSessionIds.contains(oldId))
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
-        #expect(updated.waitReason != nil)
+        #expect(updated.workInFlight == false)
         #expect(updated.initialPrompt == "Original ask")    // intact, not re-sent
         // launch argv carries --name <title> as its last pair; NO positional prompt follows it
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -195,7 +195,7 @@ struct RecoveryTests {
         #expect(e2 == e1 + 1)   // supersede bump — the single-winner mechanism (NOT competing steppers)
 
         // The earlier attempt's finalize (old epoch) is epoch-fenced to a no-op.
-        let stale = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: e1)
+        let stale = await env.svc.transition(t.id, to: .live(.waiting), observedEpoch: e1)
         #expect(stale == .noop)
         #expect(try #require(await env.svc.store.get(t.id)).phase.kind == .relaunching)
 
@@ -221,7 +221,7 @@ struct RecoveryTests {
         }
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == p.id })
-        #expect(after.waitReason != nil)        // blank-restarted (idle waiting), NOT marked dead
+        #expect(after.workInFlight == false)        // blank-restarted (idle waiting), NOT marked dead
         #expect(after.deadReason == nil)
         // Relaunched via a fresh `start` (no --resume) — the RelaunchStepper's provisional blank path.
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(p.id)])
@@ -245,21 +245,18 @@ struct RecoveryTests {
     // so `maxConcurrentRevivals` no longer governs boot recovery. Backoff is covered by `stepFailureBacksOff`.)
 
     /// A `send` to an idle card that lands WHILE a prior wake-driven resume is in flight (the card
-    /// mid-`.relaunching`): `wake` defers on the being-born phase, so B is stranded. B4 re-drives it
-    /// through the delivery arm once the relaunch settles and the first message's held lease resolves
-    /// — NOT through the funnel's wake-on-live, which correctly DEFERS while that lease is still live
-    /// (rung 3: never cold-restart a session that just took a delivery). This test drives that
-    /// re-delivery with an explicit `wakeIfPending` after A's confirm — the same primitive the arm's
-    /// tick invokes in production (the arm lands in B4's DeliveryArmTests).
-    @Test("a send that lands mid-relaunch is delivered once the first message's lease resolves")
-    func sendDuringRelaunchDeliveredOnRelease() async throws {
+    /// mid-`.relaunching`): `wake` defers on the being-born phase, so B remains durable. Once the seeded
+    /// relaunch lands, its opening turn is work in flight; B belongs to that turn's natural Stop drain,
+    /// not a second cold relaunch.
+    @Test("a send that lands mid-relaunch remains durable and drains at the resumed turn's Stop")
+    func sendDuringRelaunchDrainsAtStop() async throws {
         // .claudeCode: the wake-driven resume stays IN FLIGHT until its SessionStart(resume) hook lands, so
         // a second send genuinely arrives mid-relaunch (a `.relaunchLiveness` stub confirms too fast to race).
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))             // idle
+        await env.svc.testSetTurnStatus(card.id, .waiting())             // idle
         let name = env.sessions.sessionName(card.id)
 
         // send A wakes → resume-seed transitions `.relaunching` (A drained + folded into pendingSeed). Drive
@@ -271,39 +268,41 @@ struct RecoveryTests {
         let relaunchingA = try #require(await env.svc.store.get(card.id))
         async let steppingA: Void = RelaunchStepper().step(relaunchingA, ctx)
         try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
-        let ensureAfterA = env.sessions.ensureCount
 
         // send B lands mid-relaunch (card `.relaunching`, readiness pending) → wake defers, B stranded.
         // B3: A is not drained — it rides a HELD relaunchSeed lease (delivered in the seed, awaiting its
         // confirm), so both messages are still durable; A is leased, B is the stranded (claimable) one.
         try await env.svc.send(card.id, "B")
         await yieldBriefly()   // negative: a wrongful second resume's detached task gets its chance to run
-        #expect(env.sessions.ensureCount == ensureAfterA)                          // deferred: not resumed yet
         #expect(Set(try await env.svc.inboxPeek(card.id).map(\.text)) == ["A", "B"])   // A held on the seed, B stranded
 
         // Confirm resume #1 with the CURRENT generation stamped (a real SessionStart(resume) carries
         // ORCH_EPOCH) → `.signal` readiness → the stepper lands `.live` and THEN confirms A (removes it).
-        // The funnel's wake-on-live fires DURING that transition, while A's held lease is still live, so
-        // rung 3 correctly defers B. Once A is confirmed+removed there is no live lease, so a re-drive
-        // (the arm's tick in production; an explicit wakeIfPending here) resume-seeds #2, delivering B.
+        // The seeded launch lands with a top-level turn in flight, so B stays queued for that turn's Stop
+        // instead of causing a second relaunch.
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"), observedEpoch: relaunchingA.sessionEpoch)
         try await steppingA
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])   // A confirmed+removed; B stranded
-        await env.svc.wakeIfPending(card.id)                                  // the arm's re-drive, deterministic
-        try await pollUntil { await env.svc.store.get(card.id)?.phase.kind == .relaunching }   // B's resume-seed
-        let relaunchingB = try #require(await env.svc.store.get(card.id))
-        async let steppingB: Void = RelaunchStepper().step(relaunchingB, ctx)
-        // Deliver on WAITER-REGISTERED, not merely ensure-done: `finishLaunch` clears `pendingReadiness`
-        // at "start clean", so a signal landing after the ensure but before the waiter registers is
-        // wiped → the seed confirms via `.ticks` (held, not removed) instead of `.signal`, and B lingers
-        // in the inbox. Gating on `hasReadinessWaiter` closes that race (the pattern TestEnv documents).
-        try await pollUntil {
-            await env.svc.hasReadinessWaiter(card.id) && env.sessions.ensureCount > ensureAfterA
-        }
-        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"), observedEpoch: relaunchingB.sessionEpoch)   // confirm resume #2
-        try await steppingB
-        #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("B") == true)   // B rode the seed
-        #expect(try await env.svc.inboxPeek(card.id).isEmpty)                      // both confirmed + removed
+
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        let handed = await env.svc.handleHook(
+            card.shortId,
+            event: .stop,
+            report: nil,
+            source: nil,
+            observedEpoch: epoch,
+            stopHookActive: false
+        )
+        #expect(handed?.continuation?.contains("B") == true)
+        _ = await env.svc.handleHook(
+            card.shortId,
+            event: .stop,
+            report: nil,
+            source: nil,
+            observedEpoch: epoch,
+            stopHookActive: true
+        )
+        #expect(try await env.svc.inboxPeek(card.id).isEmpty)
     }
 
     @Test("wakeIfPending leaves a RUNNING card alone (its Stop-drain owns delivery)")
@@ -334,7 +333,7 @@ struct RecoveryTests {
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                      // idle
+        await env.svc.testSetTurnStatus(t.id, .waiting())                      // idle
 
         // Two overlapping resumes — both are intent-only and MUST return (never hang on a leaked continuation).
         async let r1: Task = env.svc.resume(t.id)
@@ -346,7 +345,7 @@ struct RecoveryTests {
         #expect(live.phaseDisplay != .dead)
 
         // And the card must remain wakeable: idle+resumable, no stuck claim, so a fresh send resume-seeds it.
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(t.id, .waiting())
         let ensureBefore = env.sessions.ensureCount
         try await env.svc.send(t.id, "PING-AFTER-LEAK")
         try await pollUntil { await env.svc.reconcile(); return env.sessions.ensureCount > ensureBefore }

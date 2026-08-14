@@ -72,13 +72,22 @@ extension OrchestraService {
             return .rejected(from: from, to: to)
         }
 
-        // 4 · One field-delta patch: phase + timestamp + epoch bump + companion writes, atomically.
+        // 4 · One field-delta patch: phase + status timestamp + epoch bump + companion writes,
+        //     atomically. Live activity and request snapshots are detail within the current status, so
+        //     they must not reset the user-facing Running/Waiting age.
         let updated: Task, rev: Int
         do {
             (updated, rev) = try await store.update(id) { t in
                 let transitionAt = Date()
+                let statusChanged: Bool
+                if case .live(let oldState) = t.phase,
+                   case .live(let newState) = to {
+                    statusChanged = oldState.turnStatus != newState.turnStatus
+                } else {
+                    statusChanged = true
+                }
                 t.phase = to
-                t.phaseChangedAt = transitionAt
+                if statusChanged { t.phaseChangedAt = transitionAt }
                 // Bump the generation on every (re)launch entry — spawn's `creatingWorktree`, reopen's
                 // `creatingWorktree`, and every `relaunching` entry INCLUDING the supersede self-edge.
                 // `launching` is intentionally omitted (the machine only enters it from the already-bumped
@@ -99,16 +108,12 @@ extension OrchestraService {
                 // THIS seam handles only a COMPLETED SESSION REPLACEMENT: a `.live` landing out of a
                 // bring-up phase, where the session that asked the question is provably gone. It is
                 // unconditional and correct precisely because it is a replacement (a blank restart even
-                // lands `.waiting(.humanTurn)`, which the turn-start rule would miss). Deliberately NOT on
+                // lands `.waiting`, which the turn-start rule would miss). Deliberately NOT on
                 // ENTRY to `.relaunching`/`.creatingWorktree`: `resume` persists that intent before any
                 // launch runs, so a failed bring-up would erase a question the agent never saw — and that
                 // card is now `.dead`, where the human needs the question more, not less.
-                //
-                // The OTHER proof — the next turn STARTING (waiting→running) — lives in `report()`, where
-                // the turn-start evidence's own timestamp is in scope: a Codex turn-start arrives by a
-                // polled rollout tail, so a line written before a declaration can be applied after it, and
-                // only `report()` can compare the two clocks. Keeping that comparison out of here leaves the
-                // sole-phase-writer reasoning about phases, not clocks.
+                // The other proof — the next normalized turn start — is applied by AgentObservation on a
+                // live-to-live transition. Keeping it there lets this lifecycle seam handle replacements only.
                 if t.pendingQuestion != nil,
                    to.kind == .live, [.relaunching, .launching, .creatingWorktree].contains(from.kind) {
                     t.pendingQuestion = nil
@@ -142,8 +147,8 @@ extension OrchestraService {
         emit(.taskUpserted(updated), rev: rev)
 
         // Structured observation follows the durable lifecycle edge. Entering/live churn converges to the
-        // exact endpoint + epoch + provider session; leaving live cancels the blocking source and discards
-        // its ephemeral snapshot. This remains dark until the single status-authority cutover.
+        // exact endpoint + epoch + provider session; leaving live cancels the blocking source. The live
+        // AgentState is part of `phase`, so leaving live discards the snapshot in the same transition.
         reconcileAgentObservation(updated)
 
         // 7 · Wake-on-live — the single structural release point for a message parked while the card

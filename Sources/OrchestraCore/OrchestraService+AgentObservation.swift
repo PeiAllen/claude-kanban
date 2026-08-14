@@ -10,10 +10,19 @@ private final class AgentObservationAttemptMarker: @unchecked Sendable {
 }
 
 extension OrchestraService {
-    /// Dark-state test seam. This intentionally has no event/broadcast counterpart: legacy `Phase.live`
-    /// remains the only externally visible status authority until the atomic cutover.
-    func shadowAgentState(_ id: UUID) -> AgentState? { runtime[id]?.shadowAgentState }
     func agentObservationActive(_ id: UUID) -> Bool { runtime[id]?.tasks[.agentObservation] != nil }
+
+    func invalidateAgentObservation(_ card: Task) async {
+        await applyAgentSignals(
+            [.init(sessionEpoch: card.sessionEpoch, kind: .observationLost)],
+            to: card
+        )
+    }
+
+    func receiveAgentSignals(cardId: UUID, signals: [AgentSignal]) async {
+        guard let card = await store.get(cardId) else { return }
+        await applyAgentSignals(signals, to: card)
+    }
 
     func preparedObservationEndpoint(for card: Task, adapter: any Adapter) -> AgentObservationEndpoint? {
         adapter.observationEndpoint(.init(
@@ -44,15 +53,10 @@ extension OrchestraService {
             sessionEpoch: observedEpoch,
             harnessSessionId: card.agentSessionId
         )
-        var state = runtime[cardId]?.shadowAgentState ?? AgentState(turnStatus: .unavailable)
-        for signal in adapter.agentSignals(from: raw, context: context) {
-            _ = AgentStateReducer.apply(
-                signal,
-                to: &state,
-                currentSessionEpoch: card.sessionEpoch
-            )
-        }
-        runtime[cardId]?.shadowAgentState = state
+        await applyAgentSignals(
+            adapter.agentSignals(from: raw, context: context),
+            to: card
+        )
     }
 
     /// Make the structured source match the card's current live session. Repeated calls with the same
@@ -61,17 +65,15 @@ extension OrchestraService {
     func reconcileAgentObservation(_ card: Task) {
         guard ensureRuntime(for: card) else { return }
         guard card.phase.kind == .live else {
-            stopAgentObservation(card.id, discardState: true)
+            stopAgentObservation(card.id)
             return
         }
 
-        let unavailable = AgentState(turnStatus: .unavailable)
         guard let adapter = try? registry.get(card.agentId),
               let endpoint = preparedObservationEndpoint(for: card, adapter: adapter),
               let sessionId = card.agentSessionId, !sessionId.isEmpty
         else {
-            stopAgentObservation(card.id, discardState: false)
-            runtime[card.id]?.shadowAgentState = unavailable
+            stopAgentObservation(card.id)
             return
         }
 
@@ -85,23 +87,20 @@ extension OrchestraService {
             return
         }
         if endpoint.isPushOnly {
-            stopAgentObservation(card.id, discardState: false)
+            stopAgentObservation(card.id)
             runtime[card.id]?.agentObservationIdentity = identity
-            runtime[card.id]?.shadowAgentState = unavailable
             return
         }
         guard let firstSource = adapter.makeObservationSource(
             endpoint: endpoint,
             harnessSessionId: sessionId
         ) else {
-            stopAgentObservation(card.id, discardState: false)
-            runtime[card.id]?.shadowAgentState = unavailable
+            stopAgentObservation(card.id)
             return
         }
 
-        stopAgentObservation(card.id, discardState: false)
+        stopAgentObservation(card.id)
         runtime[card.id]?.agentObservationIdentity = identity
-        runtime[card.id]?.shadowAgentState = unavailable
         _ = arm(card.id, .agentObservation) { token in
             _Concurrency.Task.detached { [weak self, clock] in
                 var source: (any AgentObservationSource)? = firstSource
@@ -182,30 +181,25 @@ extension OrchestraService {
             sessionEpoch: identity.sessionEpoch,
             harnessSessionId: identity.harnessSessionId
         )
-        var state = runtime[cardId]?.shadowAgentState ?? AgentState(turnStatus: .unavailable)
-        for signal in adapter.agentSignals(from: raw, context: context) {
-            _ = AgentStateReducer.apply(
-                signal,
-                to: &state,
-                currentSessionEpoch: card.sessionEpoch
-            )
-        }
-        runtime[cardId]?.shadowAgentState = state
+        await applyAgentSignals(
+            adapter.agentSignals(from: raw, context: context),
+            to: card
+        )
     }
 
     private func agentObservationDisconnected(
         cardId: UUID,
         identity: CardRuntime.AgentObservationIdentity,
         token: UInt64
-    ) {
-        guard observationStillOwns(cardId, identity: identity, token: token) else { return }
-        var state = runtime[cardId]?.shadowAgentState ?? AgentState(turnStatus: .unavailable)
-        _ = AgentStateReducer.apply(
-            .init(sessionEpoch: identity.sessionEpoch, kind: .observationLost),
-            to: &state,
-            currentSessionEpoch: identity.sessionEpoch
+    ) async {
+        guard observationStillOwns(cardId, identity: identity, token: token),
+              let card = await store.get(cardId),
+              observationStillOwns(cardId, identity: identity, token: token)
+        else { return }
+        await applyAgentSignals(
+            [.init(sessionEpoch: identity.sessionEpoch, kind: .observationLost)],
+            to: card
         )
-        runtime[cardId]?.shadowAgentState = state
     }
 
     private func observationStillOwns(
@@ -217,10 +211,50 @@ extension OrchestraService {
             && runtime[cardId]?.tasks[.agentObservation]?.token == token
     }
 
-    private func stopAgentObservation(_ id: UUID, discardState: Bool) {
+    private func stopAgentObservation(_ id: UUID) {
         disarm(id, .agentObservation)
         runtime[id]?.agentObservationIdentity = nil
-        if discardState { runtime[id]?.shadowAgentState = nil }
+    }
+
+    /// Apply a provider-neutral batch through the lifecycle transition funnel. The durable live value is
+    /// the only state copy: reducer output, Card broadcast, wake-on-waiting, and persistence happen on the
+    /// same `.live(old) → .live(new)` edge.
+    private func applyAgentSignals(_ signals: [AgentSignal], to card: Task) async {
+        guard !signals.isEmpty,
+              case .live(var state) = card.phase
+        else { return }
+
+        let before = state
+        for signal in signals {
+            _ = AgentStateReducer.apply(
+                signal,
+                to: &state,
+                currentSessionEpoch: card.sessionEpoch
+            )
+        }
+        guard state != before else { return }
+
+        let turnStarted = before.turnStatus != .running && state.turnStatus == .running
+        let result = await transition(
+            card.id,
+            to: .live(state),
+            observedEpoch: card.sessionEpoch,
+            expecting: .live
+        ) { task in
+            if turnStarted { task.pendingQuestion = nil }
+        }
+        guard result == .applied else { return }
+
+        if before.turnStatus != state.turnStatus,
+           let updated = await store.get(card.id) {
+            let word: String
+            switch state.turnStatus {
+            case .running:     word = "running"
+            case .waiting:     word = "waiting"
+            case .unavailable: word = "unavailable"
+            }
+            emitActivity(.statusChanged, updated, .agent, "agent \(word)")
+        }
     }
 
     private nonisolated static func agentObservationReconnectDelay(attempt: Int) -> Duration {

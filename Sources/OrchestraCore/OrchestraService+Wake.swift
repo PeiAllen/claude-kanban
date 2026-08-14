@@ -164,7 +164,8 @@ extension OrchestraService {
     /// so `deliveriesInFlight` is the one wake-vs-wake guard and every route decision is made once.
     ///
     /// The ladder, in order, and what each rung is FOR:
-    ///  1. **Deliverable + in-flight claim.** `.live(.waiting(.humanTurn))` or a revivable `.dead`;
+    ///  1. **Deliverable + in-flight claim.** a live ordinary wait (`workInFlight == false`) or a
+    ///     revivable `.dead`;
     ///     the claim is inserted with no suspension after the guard, so concurrent wakes serialize.
     ///  2. **CLI-wait defer** (`.nativeReinvoke` only) — the card's own `orchestra wait` process will
     ///     re-invoke the harness when it exits; relaunching would replace that live wait.
@@ -193,15 +194,15 @@ extension OrchestraService {
         if runtime[id]?.deliveryClaim == claim { runtime[id]?.deliveryClaim = nil }
     }
 
-    /// Is this card a legal delivery target right now? `.live(.waiting(.humanTurn))` — never
-    /// `.running` (its Stop hook owns delivery; this is also the background-work safety gate) and
-    /// never `.waiting(.permission)` (mid-turn; wake mechanisms only latch at turn-end). A
+    /// Is this card a legal delivery target right now? A live ordinary wait with no automatic resume —
+    /// never running, auto-resuming, or unavailable. A permission request is orthogonal and may coexist
+    /// with a running turn, so it cannot make a Card deliverable. A
     /// non-archived `.dead` card is deliverable too: the arm revives a resumable/provisional one
     /// through the resume intent (a send to a completed card is an explicit request for more work),
     /// and a non-resumable dead card is charged straight to stuck by the arm.
     func deliverable(_ t: Task) -> Bool {
         if t.archived { return false }
-        if case .live(.waiting(.humanTurn)) = t.phase { return true }
+        if case .live = t.phase, t.workInFlight == false { return true }
         if case .dead = t.phase { return true }
         return false
     }

@@ -5,7 +5,11 @@ import TestSupport
 
 @Suite("Agent observation source lifecycle")
 struct AgentObservationLifecycleTests {
-    @Test("launch carries the endpoint; live owns one dark observer and leaving live tears it down")
+    private func state(_ service: OrchestraService, _ id: UUID) async -> AgentState? {
+        await service.store.get(id)?.agentState
+    }
+
+    @Test("launch carries the endpoint; live owns one observer and leaving live tears it down")
     func liveLifecycle() async throws {
         let feed = ObservationTestFeed()
         let adapter = ObservationTestAdapter(feed: feed)
@@ -22,20 +26,19 @@ struct AgentObservationLifecycleTests {
             feed.source(at: 0)?.isStarted == true
         }
         #expect(feed.requests == [.init(endpoint: .unixSocket(path: endpoint), sessionId: "thread-1")])
-        #expect(await env.svc.shadowAgentState(card.id) == AgentState(turnStatus: .unavailable))
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
         #expect(await env.svc.agentObservationActive(card.id))
 
         let first = try #require(feed.source(at: 0))
         first.emit(.rpcNotification(method: "test/turn-completed", params: .object([:])))
-        try await pollUntil("completed turn to reach the dark reducer") {
-            await env.svc.shadowAgentState(card.id)?.turnStatus == .waiting()
+        try await pollUntil("completed turn to reach the durable reducer") {
+            await state(env.svc, card.id)?.turnStatus == .waiting()
         }
-        let legacy = try #require(await env.svc.store.get(card.id))
-        #expect(legacy.phase == .live(.running))
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
 
         first.disconnect()
         try await pollUntil("disconnect to make observation unavailable") {
-            await env.svc.shadowAgentState(card.id)?.turnStatus == .unavailable
+            await state(env.svc, card.id)?.turnStatus == .unavailable
         }
         try await pollUntil("observer to reconnect with a fresh source") {
             feed.source(at: 1)?.isStarted == true
@@ -43,12 +46,12 @@ struct AgentObservationLifecycleTests {
         let second = try #require(feed.source(at: 1))
         second.emit(.rpcNotification(method: "test/turn-started", params: .object([:])))
         try await pollUntil("reconnected source to restore running") {
-            await env.svc.shadowAgentState(card.id)?.turnStatus == .running
+            await state(env.svc, card.id)?.turnStatus == .running
         }
 
         _ = await env.svc.transition(card.id, to: .relaunching)
         try await pollUntil("leaving live to shut down the observer") { second.wasShutdown }
-        #expect(await env.svc.shadowAgentState(card.id) == nil)
+        #expect(await state(env.svc, card.id) == nil)
         #expect(!(await env.svc.agentObservationActive(card.id)))
     }
 
@@ -65,18 +68,18 @@ struct AgentObservationLifecycleTests {
         try await pollUntil { feed.source(at: 0)?.isStarted == true }
         let old = try #require(feed.source(at: 0))
         old.emit(.rpcNotification(method: "test/turn-completed", params: .object([:])))
-        try await pollUntil { await env.svc.shadowAgentState(card.id)?.turnStatus == .waiting() }
+        try await pollUntil { await state(env.svc, card.id)?.turnStatus == .waiting() }
 
         try await env.svc.report(card.id, StatusReport(sessionId: "thread-2"))
         try await pollUntil("new session observation source to replace the old one") {
             feed.source(at: 1)?.isStarted == true && old.wasShutdown
         }
         #expect(feed.requests.last?.sessionId == "thread-2")
-        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .unavailable)
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
 
         let replacement = try #require(feed.source(at: 1))
         replacement.emit(.rpcNotification(method: "test/turn-started", params: .object([:])))
-        try await pollUntil { await env.svc.shadowAgentState(card.id)?.turnStatus == .running }
+        try await pollUntil { await state(env.svc, card.id)?.turnStatus == .running }
     }
 
     @Test("boot adoption reconstructs a live card's observer from durable card and session identity")
@@ -103,7 +106,7 @@ struct AgentObservationLifecycleTests {
             feed.source(at: 0)?.isStarted == true
         }
         #expect(feed.requests.first?.sessionId == sessionId)
-        #expect(await restarted.svc.shadowAgentState(card.id)?.turnStatus == .unavailable)
+        #expect(await state(restarted.svc, card.id)?.turnStatus == .unavailable)
 
         _ = await restarted.svc.transition(card.id, to: .relaunching)
     }

@@ -22,38 +22,40 @@ final class PushCoreTests: XCTestCase {
     func testTransitionsMapToTriggers() {
         // running → waiting(permission) fires permission
         XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
-            task: card(phase: .live(.waiting(.permission)))), .permission)
+            task: card(phase: .live(.permissionRequested))), .permission)
         // running → waiting(humanTurn) fires needsYou
         XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
-            task: card(phase: .live(.waiting(.humanTurn)))), .needsYou)
+            task: card(phase: .live(.waiting))), .needsYou)
         // any → dead fires died
         XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
             task: card(phase: .dead(.agentExited))), .died)
-        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)),
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.waiting),
             task: card(phase: .dead(.sessionVanished))), .died)
     }
 
     func testFreshCardNeverFires() {
         // prev == nil: a freshly-appended card / post-reconnect wholesale set never fires.
-        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .live(.waiting(.permission)))))
+        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .live(.permissionRequested))))
         XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .dead(.agentExited))))
     }
 
-    func testNoTransitionWhenStatusUnchanged() {
-        // Already-waiting stays waiting → no repeat fire. Already-dead stays dead → no repeat fire.
-        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)),
-            task: card(phase: .live(.waiting(.permission)))))
+    func testIndependentRequestTransitionStillFires() {
+        // Turn status and requests are independent: a permission request opening while the previous
+        // snapshot was waiting is still a new permission edge and must fire.
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.waiting),
+            task: card(phase: .live(.permissionRequested))), .permission)
+        // Already-dead stays dead → no repeat fire.
         XCTAssertNil(AttentionTransition.trigger(prev: .dead(.agentExited),
             task: card(phase: .dead(.agentExited))))
     }
 
     func testBackgroundWaitProducesNoPush() {
-        // A card on a background task stays `.running` (no waitReason) — the adapters emit no waiting
-        // report. running → running is not a transition, so it never pushes. This is the bg-wait
-        // suppression the spec requires, asserted directly.
-        XCTAssertNil(AttentionTransition.trigger(prev: .live(.running), task: card(phase: .live(.running))))
+        // The turn is closed, but the provider has committed to resume automatically. Work remains in
+        // flight, so this is not a Needs-You edge even though the visible turn status is waiting.
+        let autoResume = AgentState(turnStatus: .waiting(.init(resume: .init())))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.running), task: card(phase: .live(autoResume))))
         // Even a genuinely-running card that was previously waiting (turn resumed) doesn't push.
-        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)), task: card(phase: .live(.running))))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting), task: card(phase: .live(.running))))
     }
 
     // MARK: AttentionTracker (stateful observer)
@@ -64,11 +66,11 @@ final class PushCoreTests: XCTestCase {
         // First sighting (prev == nil) never fires, even if already waiting.
         XCTAssertNil(tracker.observe(card(id: id, phase: .live(.running))))
         // running → waiting fires once…
-        let intent = tracker.observe(card(id: id, phase: .live(.waiting(.permission))))
+        let intent = tracker.observe(card(id: id, phase: .live(.permissionRequested)))
         XCTAssertEqual(intent?.trigger, .permission)
         XCTAssertEqual(intent?.cardId, id)
         // …and does not re-fire while it stays waiting.
-        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.waiting(.permission)))))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.permissionRequested))))
         // waiting → dead fires died.
         XCTAssertEqual(tracker.observe(card(id: id, phase: .dead(.agentExited)))?.trigger, .died)
     }
@@ -78,8 +80,8 @@ final class PushCoreTests: XCTestCase {
         let id = UUID()
         _ = tracker.observe(card(id: id, phase: .live(.running)))
         // Archiving reaps state; a later re-add is a fresh card (prev == nil) so it won't fire.
-        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.waiting(.permission)), archived: true)))
-        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.waiting(.permission)))))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.permissionRequested), archived: true)))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.permissionRequested))))
         // But the NEXT transition off that fresh baseline fires.
         XCTAssertNil(tracker.observe(card(id: id, phase: .live(.running))))
         XCTAssertEqual(tracker.observe(card(id: id, phase: .dead(.agentExited)))?.trigger, .died)
@@ -155,7 +157,7 @@ final class PushCoreTests: XCTestCase {
     /// A card carrying the arm's `deliveryStuckSince` flag and/or the merge-request loop's sticky
     /// `TreeStat.mergeStalled` flag. B5b RENDERS these — it never sets them.
     private func stuckCard(id: UUID = UUID(),
-                           phase: Phase = .live(.waiting(.humanTurn)),
+                           phase: Phase = .live(.waiting),
                            deliveryStuck: Bool = false,
                            mergeStalled: Bool = false,
                            treeState: TreeState = .inSync,
@@ -271,12 +273,12 @@ final class PushCoreTests: XCTestCase {
     }
 
     func testStuckTakesPrecedenceOverNeedsYouInOneObserve() {
-        // A single event that is BOTH a phase edge (→ waiting.humanTurn) AND a stuck rise fires the stuck
+        // A single event that is BOTH a turn edge (→ ordinary waiting) AND a stuck rise fires the stuck
         // trigger (more specific), not needsYou.
         let tracker = AttentionTracker()
         let id = UUID()
         _ = tracker.observe(stuckCard(id: id, phase: .live(.running)))
-        let intent = tracker.observe(stuckCard(id: id, phase: .live(.waiting(.humanTurn)), deliveryStuck: true))
+        let intent = tracker.observe(stuckCard(id: id, phase: .live(.waiting), deliveryStuck: true))
         XCTAssertEqual(intent?.trigger, .deliveryStuck)
     }
 
@@ -291,7 +293,7 @@ final class PushCoreTests: XCTestCase {
         let perm = AttentionTracker()
         let p = UUID()
         _ = perm.observe(stuckCard(id: p, phase: .live(.running)))
-        XCTAssertEqual(perm.observe(stuckCard(id: p, phase: .live(.waiting(.permission)), deliveryStuck: true))?.trigger,
+        XCTAssertEqual(perm.observe(stuckCard(id: p, phase: .live(.permissionRequested), deliveryStuck: true))?.trigger,
                        .permission)
     }
 

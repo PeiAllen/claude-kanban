@@ -18,40 +18,30 @@ struct ParseTests {
             wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .sandboxed, authMode: .subscription)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: tailCaps)
-        #expect(stub.parse(.fileTail(line: "hello")) == StatusReport(desc: "tail:hello", run: .running))
+        #expect(stub.parse(.fileTail(line: "hello")) == StatusReport(desc: "tail:hello"))
     }
 
-    // I12 / test_claude_report_unchanged — Claude push parse produces the SAME StatusReport the former
-    // `ReportHelper.map` did. Deterministic kinds are compared whole; statusline's `seq` is a wall-clock
-    // stamp (DispatchTime.now), so its fields are checked individually.
-    @Test("Claude push parse: hook payload → StatusReport byte-identical to the former ReportHelper.map")
-    func test_claude_report_unchanged() throws {
+    @Test("Claude hook parsing extracts metadata without duplicating agent state")
+    func test_claude_metadata_parse() throws {
         let a = ClaudeCodeAdapter()
 
         let tool = try JSONValue.parse(Data(#"{"tool_name":"Edit","tool_input":{"file_path":"/x/Foo.swift"}}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "pretool", payload: tool))
-                == StatusReport(desc: "Editing Foo.swift", run: .running))
+                == StatusReport(desc: "Editing Foo.swift"))
 
         let bash = try JSONValue.parse(Data(#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "posttool", payload: bash))
-                == StatusReport(desc: "Running: ls -la", run: .running))
+                == StatusReport(desc: "Running: ls -la"))
 
-        // notification/stop now also classify the wait reason. A bare Notification (no permission_prompt)
-        // → waiting/.humanTurn keeping its message; a bare Stop (no pending background work) →
-        // waiting/.humanTurn (no message field on the Stop hook).
         let notify = try JSONValue.parse(Data(#"{"message":"done"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "notification", payload: notify))
-                == StatusReport(desc: "done", run: .waiting(.humanTurn)))
-        #expect(a.parse(.hooksPush(kind: "stop", payload: notify))
-                == StatusReport(run: .waiting(.humanTurn)))
-        #expect(a.parse(.hooksPush(kind: "notification", payload: notify))?.snapshot?.turnCompleted != true)
-        #expect(a.parse(.hooksPush(kind: "stop", payload: notify))?.snapshot?.turnCompleted != true)
-        #expect(a.parse(.hooksPush(kind: "taskcompleted", payload: notify))
-                == StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+                == StatusReport(desc: "done"))
+        #expect(a.parse(.hooksPush(kind: "stop", payload: notify)) == nil)
+        #expect(a.parse(.hooksPush(kind: "taskcompleted", payload: notify)) == nil)
 
         let prompt = try JSONValue.parse(Data(#"{"prompt":"hi there"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "prompt", payload: prompt))
-                == StatusReport(run: .running, promptText: "hi there"))
+                == StatusReport(promptText: "hi there"))
 
         let session = try JSONValue.parse(Data(#"{"session_id":"sid","source":"resume"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "session", payload: session))
@@ -100,31 +90,37 @@ struct ParseTests {
         #expect(after.phaseDisplay == .running)
     }
 
-    // C1 — Codex PermissionRequest → the SAME Needs-You surface Claude uses. The Codex adapter parses
-    // the permission hooksPush into waiting/.permission, and service.report lands it on the card's
-    // waitReason on the wire (so M3's iOS queue renders the 🔐 row). Proves the daemon path is
-    // adapter-agnostic: Codex reaches .permission through its own parse, no `if agent==` in core.
-    @Test("Codex PermissionRequest → parse → service.report → card.waitReason == .permission")
+    // C1 — a Codex permission request is orthogonal to its still-open turn and reaches the same
+    // provider-neutral request list Needs You reads.
+    @Test("Codex PermissionRequest → AgentRequest.permission without closing the turn")
     func test_codex_permission_reaches_board() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Task", repo: repo, branch: "b"))
 
+        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
         let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
-        let report = try #require(CodexAdapter().parse(raw))
-        try await env.svc.report(t.id, report)
+        let signals = CodexAdapter().agentSignals(
+            from: raw,
+            context: .init(sessionEpoch: epoch, harnessSessionId: t.agentSessionId)
+        )
+        await env.svc.receiveAgentSignals(cardId: t.id, signals: signals)
 
         let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.waitReason != nil)
-        #expect(after.waitReason == .permission)
+        #expect(after.turnStatus == .running)
+        #expect(after.agentState?.hasRequest(kind: .permission) == true)
     }
 
-    // C1 non-regression — Claude's permission path is unchanged: a Notification with
-    // notification_type == permission_prompt still classifies as .permission (Codex is additive).
-    @Test("Claude Notification/permission_prompt still classifies .permission (unchanged)")
-    func test_claude_permission_path_unchanged() throws {
+    @Test("Claude Notification/permission_prompt maps to an independent permission request")
+    func test_claude_permission_path() throws {
         let payload = try JSONValue.parse(Data(#"{"notification_type":"permission_prompt","message":"Allow Bash?"}"#.utf8))
-        let r = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "notification", payload: payload)))
-        #expect(r == StatusReport(desc: "Allow Bash?", run: .waiting(.permission)))
+        let signals = ClaudeCodeAdapter().agentSignals(
+            from: .hooksPush(kind: "notification", payload: payload),
+            context: .init(sessionEpoch: 1, harnessSessionId: nil)
+        )
+        #expect(signals == [.init(
+            sessionEpoch: 1,
+            kind: .requests([.init(id: "permission", kind: .permission, prompt: "Allow Bash?")])
+        )])
     }
 }

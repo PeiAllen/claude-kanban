@@ -279,12 +279,12 @@ struct ModelReseatTests {
         #expect(a.contains("--read-only"))   // the launch is still locked down
     }
 
-    @Test("report() is a THIRD `.live` landing and must consume the re-seat, or it strands forever")
-    func reportLandingConsumesTheReseat() async throws {
+    @Test("reconcile adoption consumes a re-seat after readiness observation was missed")
+    func reconcileAdoptionConsumesTheReseat() async throws {
         // When a relaunch's readiness times out, the RelaunchStepper `break`s and LEAVES the card
-        // `.relaunching` even though the session came up, releasing its claim. The new session's own report
-        // is then what lands the card `.live` (a legal `.relaunching → .live` edge) — bypassing both
-        // steppers. If that landing doesn't consume `pendingModel`, it is stranded SET on a live card no
+        // `.relaunching` even though the session came up, releasing its claim. Reconciliation adopts the
+        // epoch-stamped session and lands the card `.live`, bypassing both steppers. If that landing doesn't
+        // consume `pendingModel`, it is stranded SET on a live card no
         // stepper will visit again, and the NEXT ordinary restart would silently relaunch on the stale
         // re-seat model. `grace: 0` forces exactly that timeout.
         let env = TestEnv.make(grace: 2)
@@ -293,21 +293,22 @@ struct ModelReseatTests {
         // The card is `.relaunching` with the re-seat staged and NO stepper holding the claim — exactly the
         // state a readiness timeout leaves behind (the stepper `break`s and `runStep` releases the claim,
         // while the session is actually up). We reproduce that state directly rather than racing a real
-        // timeout: the code under test is report()'s `.live` landing, not the stepper's clock.
+        // timeout: the code under test is reconciliation's adoption landing, not the stepper's clock.
         // The spawn's own bring-up step outlives its `.live` landing by a moment; wait it out, or this test
-        // races it and `bringUpOwnsLanding` suppresses the very landing we are here to exercise.
+        // races it and prevents the adoption path we are here to exercise.
         try await pollUntil { await !env.svc.hasStepInFlight(t.id) }
         _ = try await env.svc.restart(t.id, model: "m2")
         #expect(await !env.svc.hasStepInFlight(t.id))
 
-        // The NEW session reports itself running, stamped with the card's current generation (Claude's hooks
-        // carry the epoch) — that stamp is the proof the relaunch happened, and this is the landing.
+        // The session is alive with the card's current generation stamp. That is the proof reconciliation
+        // needs to adopt it; model telemetry remains a separate, non-lifecycle field update.
         let relaunching = try #require(await env.svc.list().first { $0.id == t.id })
-        try await env.svc.report(t.id, StatusReport(modelId: "m2", run: .running),
-                                 observedEpoch: relaunching.sessionEpoch)
+        env.sessions.setStampedEpoch(t.id, relaunching.sessionEpoch)
+        try await env.svc.report(t.id, StatusReport(modelId: "m2"), observedEpoch: relaunching.sessionEpoch)
+        await env.svc.reconcile()
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.phase.kind == .live)
-        #expect(after.pendingModel == nil)   // consumed by report()'s landing, not stranded
+        #expect(after.pendingModel == nil)   // consumed by adoption's landing, not stranded
         #expect(after.pendingSeed == nil)
 
         // Proof it isn't stranded: a plain restart (NO --model) must not replay the old re-seat. It relaunches
@@ -369,7 +370,7 @@ struct ModelReseatTests {
         _ = try await env.svc.resumeInCard(t.id, seed: "HANDOFF", model: "m2")
 
         // Unstamped (nil-epoch) report from the still-dying session, claiming to be running.
-        try await env.svc.report(t.id, StatusReport(modelId: "m1", run: .running))
+        try await env.svc.report(t.id, StatusReport(modelId: "m1"))
 
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.phase.kind == .relaunching)                 // NOT force-lived

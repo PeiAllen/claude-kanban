@@ -22,7 +22,7 @@ struct DeliveryStuckTests {
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         _ = try await env.svc.store.update(card.id) { $0.awaitingFirstPrompt = false }
         await env.svc.reconcile()   // graduate (no message yet ⇒ no charge)
         return card
@@ -117,7 +117,7 @@ struct DeliveryStuckTests {
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))
         env.adapter.writeTranscript(for: card.agentSessionId!)
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         await env.svc.reconcile()                                    // graduate (no message yet ⇒ no charge)
         try await env.svc.inbox.enqueue(card.id, "never confirms")   // stamped at clock t0
         // Spend the retry budget directly — the same shortcut `ackWithoutNotifyCannotSuppressStuck` uses;
@@ -147,7 +147,7 @@ struct DeliveryStuckTests {
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))
         env.adapter.writeTranscript(for: card.agentSessionId!)      // transcript retained ⇒ resumable even when dead
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         await env.svc.reconcile()                                   // graduate
         try await env.svc.inbox.enqueue(card.id, "never confirms")
         // Dead but resumable (transcript intact, session id retained) — the reviewer's "fifth relaunch

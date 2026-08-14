@@ -45,21 +45,21 @@ that lets an orchestrator card block until a watched child concludes (read from 
 Codex adapter + its rollout-tail telemetry**,
 have now landed too: the **second `Adapter` conformer** (registered alongside Claude), launching
 access-gated (default permissioning, or the read-only preset for a read-only card) with a discovered
-session id in Codex's native state, its live context %/status
+session id in Codex's native state, with context/model/detail metadata
 derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
 vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
-[chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
+[chapter 9](09-design-decisions.md#shipped-feature-history)). Turn state now comes from Codex app-server
+notifications, while hook observations carry permission requests. These are single forest PRs, not whole axes,
 so their rows stay in the roadmap below. An eighth forest PR, **C3 — F1 resume-in-card with a seed**
 has now landed too: the **third and final
 live-delivery function**, which resumes a card into a fresh process with clean context — keeping its
 session id (a *resume, not a blank restart*) — seeded with an authored handoff/fork context folded
 together with its pending inbox, delivered as the resumed session's opening turn (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). A ninth forest PR, **C4 — the Codex
-send-keys wake**, has now landed too:
-the `.sendKeys` `wakeTransport` C2 left as a no-op, so an idle Codex card (no `nativeReinvoke` push, no Stop
-hook) is woken by a fixed content-free TUI nudge, detect-and-defer gated on an idle, empty composer (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). With F1/F2/F3 all shipped **across both
-providers**, the **first surface that *calls* this seam has now landed too — PR D1, the `handoff`
+[chapter 9](09-design-decisions.md#shipped-feature-history)). A ninth forest PR, **C4**, originally added
+a Codex send-keys wake; that pane heuristic has since been retired. Idle Codex delivery now relaunches the
+same thread with a claimed inbox seed, while its Stop hook drains messages at a busy turn boundary. With
+F1/F2/F3 shipped across both providers, the **first surface that calls this seam has now landed too — PR
+D1, the `handoff`
 delegation tool**: a thin registry `Command`
 (auto-surfaced as an MCP tool) plus an `orchestra handoff` CLI verb that delegates to C3's `resumeInCard`,
 wiring the F1 *same-card* handoff topology into a callable tool (see
@@ -86,11 +86,10 @@ landed too**: the *new-card* handoff/fork/fan-out
 **UI + start-actions** (board/CLI **Fork**/**Fan-out** over a new defaulted `SpawnInput.seed`, plus the
 Handoff/Send card actions) **and** the app `SpawnSheet` trust control T2 deferred to it (backed by a new
 read-only `trustState` query) — so **all 15 forest PRs are merged** (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). What the forest did **not** ship — and what
-keeps axes 2 and 3 as roadmap rows below — is Codex **board-routed approval telemetry** (axis 2's live
-remainder — its launch is now access-gated like Claude, so write access is no longer clamped off)
-and the richer agent-integration surfaces (axis 3's structured sub-status and more agent-facing commands —
-though *auto-injecting the vendored delegation guidance on launch* has since shipped, skill-injection above).
+[chapter 9](09-design-decisions.md#shipped-feature-history)). At forest close, Codex board-routed approval
+telemetry and the richer agent-integration surfaces were still open. The provider-neutral status cutover
+has since closed the approval gap through hook-carried `AgentRequest.permission`; axis 3's structured
+sub-status and more agent-facing commands remain (while launch-time delegation guidance has shipped).
 Separately from the forest, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam,
 the persisted `Connection` model + a Connections settings pane, the Linux daemon port, and the app-managed
 SSH tunnel that runs the Mac board against a remote Linux `orchestrad` — built once so the phone client
@@ -103,7 +102,7 @@ The principle is to design every change *toward* these axes, never away from the
 | # | Axis | Slug | One-line goal |
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
-| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9), and is now **startable from the UI/CLI** (agent picker + model→adapter routing, `enable-codex`, ch. 9); board-routed approval telemetry is the live remainder. |
+| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with rollout-tail metadata, app-server turn observation, hook permission requests, relaunch-on-idle delivery, and Stop-hook busy delivery; it is startable from the UI/CLI through model→adapter routing and `enable-codex`. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads has **shipped** as vendored resources + a shared `AgentGuidance` assembler (D2, ch. 9), packaged on every launch as Claude project skills or Codex `developer_instructions` overrides, and a **column-aware SessionStart orientation** (each agent learns its live column/mode/self-id and is nudged to self-move) has **shipped** on the same hook channel for both agents (ch. 9); structured sub-status + more agent commands remain. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
@@ -268,7 +267,7 @@ Sequencing guidance from the design gates:
    report), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
    new `AgentModel.contextWindow`, from a per-adapter **offline model table**), and report wiring is
    `{files, env, argv}` + trust, not one `--settings` file. The L3 design refines report handling further:
-   the daemon owns only the **telemetry transport** (push / rollout-tail / pty-scrape, keyed by the
+   the daemon owns only the **metadata transport** (push / rollout-tail / pty-scrape, keyed by the
    capability descriptor), while the **parse** into a `StatusReport` is the **adapter's** own
    (agent-dependent) — so `ReportHelper.map` relocated out of the CLI target into `ClaudeCodeAdapter.parse`
    (✅ **landed** as A2). The whole build is sequenced as a **stacked-PR forest** (A1 capability-descriptor
@@ -329,9 +328,10 @@ A few decisions are explicitly deferred until the relevant axis is built:
   orchestrator card `wait`s on its children, each conclusion coalesces into its inbox and wakes it. The
   Claude wake is `nativeReinvoke` — for a watcher card the background `orchestra wait` process exiting is
   the wake, and a genuinely idle card with no live wait is resume-seeded (`send-wakes-idle-card`, ch. 9); the
-  Codex **send-keys** wake for an idle non-native card has since landed too (PR C4, ch. 9) — a fixed
-  content-free TUI nudge, detect-and-defer gated on an idle, empty composer. Conclusion is
-  read from real card state, never `git merge-base`.
+  Codex send-keys wake originally landed in PR C4, but the status cutover retired that pane heuristic.
+  Every ordinary idle card now takes the same resume-seed relaunch path; a watcher with a live
+  `orchestra wait` still wakes when that process exits. Conclusion is read from real card state, never
+  `git merge-base`.
 - **Archiving a parent with live forks** — hard-block + override, or warn-and-proceed?
 
 Because this manual is regenerated whenever `main` changes (see [chapter 11](11-doc-automation.md)),

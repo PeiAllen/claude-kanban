@@ -17,7 +17,7 @@ struct WakeLadderTests {
         let t = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         env.adapter.writeTranscript(for: t.agentSessionId!)
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(t.id, .waiting())
         return t
     }
 
@@ -45,7 +45,7 @@ struct WakeLadderTests {
             env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
-        try await env.svc.report(parent.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(parent.id, .waiting())
 
         try await env.svc.send(parent.id, "poke")
 
@@ -98,7 +98,7 @@ struct WakeLadderTests {
         // Prompted, no transcript written, not provisional → no route at all.
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         _ = try await env.svc.store.update(card.id) { $0.awaitingFirstPrompt = false }
         try await env.svc.send(card.id, "hello")
 

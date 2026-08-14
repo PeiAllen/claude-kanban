@@ -126,7 +126,7 @@ extension OrchestraService {
     /// Mark (or clear) the generation that owes a MACHINE opening turn — a launch whose flavor delivers a
     /// daemon-supplied positional (a spawn/handoff seed, or a wake-delivered inbox batch). That positional
     /// reaches the report path as a `promptText` just like a typed prompt, and a resume lands
-    /// `.waiting(.humanTurn)`, so the human-paced setter consumes this marker on the generation's first
+    /// `.waiting`, so the human-paced setter consumes this marker on the generation's first
     /// prompt rather than reading the seed as a human turn (see `CardRuntime.seedTurnEpoch`). Called by
     /// EVERY path that lands a seeded session `.live`: `finishLaunch` (the steppers) AND the reconciler's
     /// epoch-identity adopt, which jumps `.launching→.live` WITHOUT a stepper. A promptless blank launch

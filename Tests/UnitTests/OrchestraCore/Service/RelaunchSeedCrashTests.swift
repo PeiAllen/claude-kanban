@@ -54,10 +54,10 @@ struct RelaunchSeedCrashTests {
         let env2 = TestEnv.remake(base: env.base)
         #expect(try await env2.svc.inboxPeek(t.id).count == 1)   // the held lease reloaded
         // A replayed PRE-watermark line (below the persisted mark) must NEVER confirm.
-        try await env2.svc.report(t.id, StatusReport(run: .running), tail: ("/roll.jsonl", 50))
+        try await env2.svc.report(t.id, StatusReport(), tail: ("/roll.jsonl", 50))
         #expect(try await env2.svc.inboxPeek(t.id).count == 1)   // replay → retained, not falsely confirmed
         // A genuine post-watermark line confirms.
-        try await env2.svc.report(t.id, StatusReport(run: .running), tail: ("/roll.jsonl", 150))
+        try await env2.svc.report(t.id, StatusReport(), tail: ("/roll.jsonl", 150))
         #expect(try await env2.svc.inboxPeek(t.id).isEmpty)
     }
 
@@ -77,20 +77,24 @@ struct RelaunchSeedCrashTests {
         #expect(argv.contains { $0.contains("survive-restart") })   // delivered after the blank lands
     }
 
-    @Test("test_unstampedTailNeverLandsRelaunchingLive (D7): an unstamped snapshot can't land a relaunching card live")
-    func test_unstampedTailNeverLandsRelaunchingLive() async throws {
+    @Test("status telemetry never lands a relaunching card; epoch-stamped liveness adoption does")
+    func test_statusTelemetryNeverLandsRelaunchingLive() async throws {
         let env = TestEnv.make(grace: 30, capabilities: RelaunchSeedTests.codexStub)
         let t = try await Self.makeDeadResumable(env)
         _ = try await env.svc.restart(t.id)   // .relaunching, provisional, pendingSeed/pendingModel nil (owesLaunch was false)
         #expect(await env.svc.store.get(t.id)?.phase.kind == .relaunching)
 
-        // An UNSTAMPED (Codex file-tail) .running snapshot from the dying predecessor must NOT land it live.
-        try await env.svc.report(t.id, StatusReport(run: .running))
-        #expect(await env.svc.store.get(t.id)?.phase.kind == .relaunching)   // fence holds — still being born
+        // Neither unstamped nor stamped legacy status telemetry owns lifecycle landing.
+        try await env.svc.report(t.id, StatusReport(desc: "old session"))
+        #expect(await env.svc.store.get(t.id)?.phase.kind == .relaunching)
 
-        // A CURRENT-generation stamped report DOES land it (the legal .relaunching→.live edge).
         let e = try #require(await env.svc.store.get(t.id)).sessionEpoch
-        try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: e)
+        try await env.svc.report(t.id, StatusReport(desc: "new session"), observedEpoch: e)
+        #expect(await env.svc.store.get(t.id)?.phase.kind == .relaunching)
+
+        // The readiness/liveness path owns the legal relaunching→live edge.
+        env.sessions.setStampedEpoch(t.id, e)
+        await env.svc.reconcile()
         #expect(await env.svc.store.get(t.id)?.phase.kind == .live)
     }
 
