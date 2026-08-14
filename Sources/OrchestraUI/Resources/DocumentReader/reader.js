@@ -168,8 +168,9 @@
     // Re-anchor the highlights onto the rebuilt DOM. Every render throws the old elements away, so a
     // highlight that is not re-applied here simply vanishes while the agent is editing — which is the
     // one moment the reviewer most needs to see what they anchored to.
-    if (switchedDocument) highlights = [];        // a different document, so the anchors mean nothing
+    if (switchedDocument) { highlights = []; lastDetached = ""; lastVisible = null; }
     applyHighlights();
+    reportDetached();
 
     // Restore the reading position against the same block, if it survived the edit.
     if (anchor && anchor.hash) {
@@ -303,22 +304,70 @@
         if (span && !h.anchor) h.anchor = span;
       }
     }
+    // Document order, so the rail and `reportVisible` both read top to bottom.
+    highlights.sort((a, b) => (a.segments[0].index || 0) - (b.segments[0].index || 0));
   }
 
-  /// Replace the anchored passage. `segments` of `null` clears it.
-  function setHighlight(segments) {
+  // Add a passage and focus it. The PAGE mints the id, because the page is the only side that can hold
+  // the segments — Swift never sees a character offset. Swift stores the id on its comment and hands
+  // the set back through `setHighlights`, which is how the two stay agreed on what is live.
+  let nextHighlightID = 0;
+
+  function addHighlight(segments) {
+    const id = "h" + ++nextHighlightID;
+    highlights.push({ id: id, segments: segments, active: false });
+    focusHighlight(id);
+    return id;
+  }
+
+  function focusHighlight(id) {
+    for (const h of highlights) h.active = h.id === id;
     unwrapAll();
-    highlights = segments ? [{ id: "sel", segments: segments, active: true }] : [];
     applyHighlights();
+    reportDetached();
   }
 
-  // The PHONE anchors a whole block, because a tap picks a block rather than a range. A full-width
-  // block tint reads better there than a tint that stops at the last word.
-  function markBlock(i) {
-    document.querySelectorAll(".block.sel").forEach((e) => e.classList.remove("sel"));
-    const el = blockEl(i);
-    if (el) el.classList.add("sel");
+  // SWIFT DRIVES THE SET. `keep` is every comment still in the rail, and `active` is the focused one.
+  // Deliberately NOT part of the render payload: that would rebuild the DOM and re-lex the whole
+  // document every time the reviewer clicked a different card in the rail.
+  function setHighlights(opts) {
+    opts = opts || {};
+    const keep = new Set(opts.keep || []);
+    highlights = highlights.filter((h) => keep.has(h.id));
+    focusHighlight(opts.active);
   }
+
+  // Tell Swift which anchors the agent has rewritten out from under. Sent only when the set CHANGES,
+  // because `applyHighlights` runs on every render and a poll runs every couple of seconds.
+  let lastDetached = "";
+  function reportDetached() {
+    const ids = highlights.filter((h) => h.detached).map((h) => h.id);
+    const key = ids.join(",");
+    if (key === lastDetached) return;
+    lastDetached = key;
+    if (ids.length) post({ kind: "detached", ids: ids });
+  }
+
+  // Tell Swift which anchor is at the top of the viewport, so the rail can follow the reading position.
+  // Throttled, and sent only on a change: this rides the scroll event.
+  let lastVisible = null;
+  function reportVisible() {
+    let top = null;
+    for (const h of highlights) {
+      if (!h.anchor) continue;
+      const box = h.anchor.getBoundingClientRect();
+      if (box.bottom > 0) { top = h.id; break; }        // highlights are already in document order
+    }
+    if (top === lastVisible) return;
+    lastVisible = top;
+    if (top) post({ kind: "visible", highlight: top });
+  }
+
+  let visibleTimer = null;
+  window.addEventListener("scroll", () => {
+    if (visibleTimer) return;
+    visibleTimer = setTimeout(() => { visibleTimer = null; reportVisible(); }, 150);
+  }, { passive: true });
 
   // Turn a DOM Range into per-block segments. A DOM Range is always ordered, so its start container is
   // in the first block and its end container in the last.
@@ -352,12 +401,18 @@
       return;
     }
     // PHONE: tap a block. Native text interaction is disabled from Swift, so a tap is unambiguous.
+    // The anchor is the whole block, expressed as ONE segment covering all of its text — the same
+    // machinery the Mac's range uses, so there is only one kind of highlight to reason about.
     if (platform !== "ios") return;
     const el = blockElFrom(e.target);
     if (!el) return;
-    markBlock(+el.dataset.block);
-    post({ blockIndex: +el.dataset.block,
-           startLine: +el.dataset.lineStart, endLine: +el.dataset.lineEnd });
+    const i = +el.dataset.block;
+    if (!blocks[i]) return;
+    const len = textNodesIn(el).reduce((n, t) => n + t.data.length, 0);
+    const id = addHighlight([{ index: i, hash: blocks[i].hash, start: 0, end: len }]);
+    post({ kind: "selection", blockIndex: i, highlight: id,
+           startLine: +el.dataset.lineStart, endLine: +el.dataset.lineEnd,
+           text: el.textContent.slice(0, 4000) });
   });
 
   // MAC: arbitrary range. Report the START block's first line and the END block's last line, then
@@ -406,13 +461,20 @@
     // Paint the anchor. WebKit drops the native selection highlight as soon as focus moves to the
     // native compose field, so without this the user would compose against a passage with nothing on
     // screen showing which one it is.
-    setHighlight(segments);
+    const id = addHighlight(segments);
     // `text` is the rendered text the user picked. Swift does NOT trust it: it accepts the string as a
     // quote only after proving the same words occur in its own copy of these lines. See
     // `DocumentComment.capture`. So the bridge still cannot put words in the user's mouth — it can
     // only choose between quoting the exact selection and quoting the whole block.
-    post({ blockIndex: lo, startLine, endLine, text: text.slice(0, 4000) });
+    post({ kind: "selection", blockIndex: lo, highlight: id,
+           startLine: startLine, endLine: endLine, text: text.slice(0, 4000) });
   });
 
-  window.orchestra = { render };
+  // Scroll a passage into view, and flash it. The rail calls this when a comment card is clicked.
+  function reveal(id) {
+    const h = highlights.find((x) => x.id === id);
+    if (h && h.anchor) h.anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  window.orchestra = { render, setHighlights, reveal };
 })();

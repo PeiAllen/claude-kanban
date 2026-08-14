@@ -1455,6 +1455,36 @@ platforms.
 The poll lives inside the reader's `.task`, so it runs only while the view is on screen and SwiftUI
 cancels it on the way out. There is no timer to invalidate and nothing to leak.
 
+### A comment is a reading pass, and the rail is ordered rather than floating
+
+A comment used to be one-shot: select, type in a bar at the bottom, send, and nothing remained. That
+shape fights how review actually goes. You read a document top to bottom, you find four things, and
+having to send each one before you can note the next turns one review into four interruptions.
+
+So the reader holds a **pass**: several anchored passages at once, written in any order, sent
+individually or as one message. It lives as long as the document stays open and it is deliberately not
+durable — the same rule documents themselves follow. A sent card stays in the rail, because the pass is
+also a record of where you have been in a long document.
+
+**The rail is a column in document order, not cards floating beside their passages.** Floating them is
+the more obvious design and it is the wrong trade here: the rail is native SwiftUI and the document is
+a `WKWebView`, so pinning a card to a passage's exact `y` means chasing the webview's scroll position
+across a process boundary, frame by frame. That lags visibly on a fast scroll. The spatial cue it buys
+is one the page's own tint already gives. Instead the page reports which anchored passage is at the top
+of the viewport, throttled and only on a change, and the rail scrolls that card into view. One message
+every second or so replaces one per frame.
+
+The phone gets the same rail as a sheet, with background interaction enabled so the document keeps
+scrolling behind it. One comment model, two containers — a margin does not fit a phone, and the rule
+that the two platforms share one renderer and one selection model is worth more than a bespoke phone
+design.
+
+**The poll's hold narrowed with it.** It used to pause refresh for as long as any anchor existed, which
+was right when an anchor meant a compose field was open. For a pass it would mean sitting with three
+anchors and watching a frozen document. It now pauses only while a comment is half-written. That is safe
+because the two things the pause protected are both handled elsewhere: the quote freezes at capture, and
+a highlight re-anchors itself across a refresh.
+
 ### The reader's bridge reports a selection and nothing else
 
 A document can come from an agent, from git, or from `spawn --base origin/<branch>`, so its content is
@@ -1466,8 +1496,14 @@ name a path, because the compose field is native and never needs it to. The inva
 worst a compromised page can do is misreport WHICH lines the user picked.** Swift then quotes from its
 own copy of the file, so the message stays internally consistent.
 
-The payload is `{blockIndex, startLine, endLine, text}`. `text` is the rendered text the user dragged
-through, and it is the one field that is not a number — so it gets a proof rather than trust. Swift
+The page speaks three sentences and no others. A **selection**, which anchors a passage. A **detached**
+report, naming anchors the agent has rewritten out from under. A **visible** report, naming the topmost
+anchor in the viewport so the rail can follow the reading position. The last two carry only ids the page
+itself minted, and Swift validates their shape before echoing any of them back.
+
+A selection is `{blockIndex, startLine, endLine, text, highlight}`. `text` is the rendered text the user
+dragged through, and it is the one field that is not a number or a token — so it gets a proof rather
+than trust. Swift
 accepts it as the quote only when the words of the selection occur, in order and unbroken, in Swift's
 own copy of those lines. Markdown markers and link targets are punctuation between words, so
 `**poll**, not` in the file matches the rendered `poll, not`. Anything that changes the WORDS — an HTML

@@ -116,4 +116,21 @@ public struct DocumentComment: Equatable, Sendable {
         if !headingPath.isEmpty { head += " § " + headingPath.joined(separator: " › ") }
         return "\(head)\n\n\(excerpt)\n\n\(note)"
     }
+
+    /// A whole reading pass as ONE message: several comments, in document order.
+    ///
+    /// Each entry is byte-identical to what `message(note:)` produces on its own, and a pass of exactly
+    /// one comment IS that message with nothing added. So the format an agent has to read never changes
+    /// with the count — a batch is the single format repeated, plus a header that says how many.
+    ///
+    /// The path repeats in every entry even though the whole pass is about one document. That redundancy
+    /// is the point: an entry stays a complete, quotable anchor when the agent works through them one at
+    /// a time, or quotes one back in a reply.
+    public static func batchMessage(_ items: [(comment: DocumentComment, note: String)]) -> String {
+        guard let first = items.first else { return "" }
+        guard items.count > 1 else { return first.comment.message(note: first.note) }
+        let head = "\(items.count) comments on `\(first.comment.path)`"
+        let body = items.map { $0.comment.message(note: $0.note) }.joined(separator: "\n\n---\n\n")
+        return "\(head)\n\n\(body)"
+    }
 }

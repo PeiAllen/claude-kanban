@@ -401,9 +401,24 @@ around it in both appearances. The text column stops at a reading measure and ce
 prose set across a very wide inspector is hard to track from one line to the next. Tables, fenced code,
 and display math are exempt and scroll inside their own box. The page itself never scrolls sideways.
 
-**How you comment.** Select a passage, then type in the native field at the bottom. On the Mac you drag
-through any range. On the phone you tap a block. The comment becomes ONE message in the card's inbox. It
-is addressed to the agent that owns the document:
+**How you comment.** Select a passage, and a card appears in the rail beside the document, ready to
+type into. On the Mac you drag through any range. On the phone you tap a block, and the rail is a sheet
+you can keep reading behind.
+
+A comment belongs to a **reading pass**. Anchor as many passages as you want, write them in any order,
+and then either send one card at a time or send the whole pass as one message. Cards sit in document
+order, so the rail reads top to bottom the way the document does. Clicking a card scrolls to its
+passage, and scrolling the document brings that passage's card into view.
+
+A sent card stays in the rail, dimmed and marked. The pass is a record of what you said, so clearing it
+the moment a comment goes out would lose your place in a long document. The pass ends when you open
+another document — an anchor belongs to the document it came from. It is deliberately not durable,
+the same rule documents themselves follow.
+
+If the agent rewrites a passage you anchored, its card is marked **text moved**. The comment survives
+and can still be sent, because its quote froze when you selected. Only the tint is gone.
+
+One comment becomes ONE message in the card's inbox, addressed to the agent that owns the document:
 
 ```
 Comment on `docs/design.md:42-46` § Design › Level contract
@@ -413,13 +428,19 @@ Comment on `docs/design.md:42-46` § Design › Level contract
 Should this say "processes only"? An artifact isn't a running thing.
 ```
 
-The quote freezes when you select, not when you send. Live refresh also pauses while the field is open,
-so the text cannot move under you mid-sentence. The frozen quote stays a valid anchor after the line
-numbers shift.
+Sending a whole pass produces the same format repeated, under a count, with the entries in document
+order. So what an agent has to read never changes with the number of comments, and a pass of exactly
+one comment is that single message with nothing added.
+
+The quote freezes when you select, not when you send, so it stays a valid anchor after the line numbers
+shift. Live refresh pauses only while a comment is half-written — that is the case where text must not
+move under you mid-sentence. An anchor you have not written against yet does not hold the document
+still, because watching the agent work is the point of the reader.
 
 **What a drag highlights.** Exactly the range you dragged through, tinted in place, and it stays tinted
-after focus moves to the compose field. A selection that crosses several blocks tints the tail of the
-first, all of the middle ones, and the head of the last.
+after focus moves to the rail. A selection that crosses several blocks tints the tail of the first, all
+of the middle ones, and the head of the last. The passage whose card is focused is tinted more strongly
+than the others.
 
 The tint survives a refresh. Each anchored passage remembers the content of the block it sits in, so an
 agent that inserts a paragraph above your passage does not move your highlight off it. If the agent
