@@ -27,6 +27,11 @@ import Testing
         return m
     }
 
+    /// A selection as the page reports one: a line range plus the id of the tint it just painted.
+    private func sel(_ line: Int, _ highlight: String = "h1") -> DocumentSelection {
+        DocumentSelection(startLine: line, endLine: line, text: nil, highlightID: highlight)
+    }
+
     // MARK: - the poll
 
     @Test("the poll sends the validator it was last given")
@@ -56,16 +61,47 @@ import Testing
         #expect(sent == "C2")                          // the next poll asks against the NEW copy
     }
 
-    @Test("the poll does not move the text while someone is composing")
+    @Test("the poll does not move the text while someone is mid-sentence")
     func pollIsHeldWhileComposing() async {
         let m = await opened("# A\n\nfirst\n")
-        m.select(DocumentSelection(startLine: 3, endLine: 3))
-        m.draft = "why?"
+        let id = m.select(sel(3))!
+        m.draftBinding(id).wrappedValue = "why?"
         await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
         #expect(m.content?.contains("first") == true)   // untouched mid-sentence
 
-        // ...and the very next tick after the field closes picks it up. Deferred, not dropped.
-        m.cancelComment()
+        // ...and the very next tick after it goes out picks it up. Deferred, not dropped.
+        await m.send(id) { _ in true }
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("SECOND") == true)
+    }
+
+    /// An EMPTY card holds the document too. Anchoring is deliberate — you select, then you take the
+    /// offer — so an open card means someone is working on that passage. Without this there is a window
+    /// between taking the offer and typing the first character in which the agent can rewrite the
+    /// passage and detach a comment the reviewer had not begun.
+    @Test("an anchor with nothing written against it still holds the poll")
+    func anEmptyAnchorHoldsThePoll() async {
+        let m = await opened("# A\n\nfirst\n")
+        let id = m.select(sel(3))!
+        #expect(m.composing)
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("first") == true)
+
+        // Discarding it releases the hold — an abandoned card is one click from freeing the document.
+        m.discard(id)
+        #expect(!m.composing)
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("SECOND") == true)
+    }
+
+    /// A SENT comment never holds. Sending is exactly when you want to watch the agent act on it.
+    @Test("a sent comment does not hold the poll")
+    func aSentCommentDoesNotHoldThePoll() async {
+        let m = await opened("# A\n\nfirst\n")
+        let id = m.select(sel(3))!
+        m.draftBinding(id).wrappedValue = "look at this"
+        await m.send(id) { _ in true }
+        #expect(!m.composing)
         await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
         #expect(m.content?.contains("SECOND") == true)
     }
@@ -84,14 +120,14 @@ import Testing
     @Test("the quote is frozen at SELECTION, not re-derived at send")
     func theQuoteIsFrozenAtSelectionNotAtSend() async {
         let m = await opened("# H\n\noriginal line\n")
-        m.select(DocumentSelection(startLine: 3, endLine: 3))
-        m.draft = "is this right?"
+        let id = m.select(sel(3))!
+        m.draftBinding(id).wrappedValue = "is this right?"
 
         // The file moves underneath while the user is typing.
         await m.pollContent { _, _ in self.body("# H\n\ncompletely different\n", hash: "C2") }
 
         var sent: String?
-        await m.send { sent = $0; return true }
+        await m.send(id) { sent = $0; return true }
         // The message must quote what the user actually saw and selected.
         #expect(sent?.contains("> original line") == true)
         #expect(sent?.contains("completely different") == false)
@@ -100,11 +136,100 @@ import Testing
     @Test("the frozen quote carries its heading path and line range")
     func theQuoteCarriesItsAnchor() async {
         let m = await opened("# Design\n\n## Contract\n\nthe claim\n")
-        m.select(DocumentSelection(startLine: 5, endLine: 5))
-        m.draft = "source?"
+        let id = m.select(sel(5))!
+        m.draftBinding(id).wrappedValue = "source?"
         var sent: String?
-        await m.send { sent = $0; return true }
+        await m.send(id) { sent = $0; return true }
         #expect(sent?.hasPrefix("Comment on `docs/a.md:5-5` § Design › Contract") == true)
+    }
+
+    // MARK: - the reading pass
+
+    @Test("a selection with no highlight id is dropped")
+    func aSelectionWithoutAHighlightIsDropped() async {
+        let m = await opened("# A\n\nbody\n")
+        #expect(m.select(DocumentSelection(startLine: 3, endLine: 3)) == nil)
+        #expect(m.comments.isEmpty)
+    }
+
+    @Test("anchors accumulate, and the rail reads in DOCUMENT order")
+    func anchorsAccumulateInDocumentOrder() async {
+        let m = await opened("# A\n\none\n\ntwo\n\nthree\n")
+        m.select(sel(7, "h3"))                                     // anchored out of order
+        m.select(sel(3, "h1"))
+        m.select(sel(5, "h2"))
+        #expect(m.comments.map(\.highlightID) == ["h1", "h2", "h3"])
+        #expect(m.comments.count == 3)
+    }
+
+    @Test("two anchors on the same line keep their insertion order")
+    func sameLineAnchorsKeepInsertionOrder() async {
+        let m = await opened("# A\n\nbody\n")
+        m.select(sel(3, "h1"))
+        m.select(sel(3, "h2"))
+        m.select(sel(3, "h3"))
+        #expect(m.comments.map(\.highlightID) == ["h1", "h2", "h3"])
+    }
+
+    @Test("the newest anchor takes focus, and the page is told which passages are live")
+    func theNewestAnchorTakesFocus() async {
+        let m = await opened("# A\n\none\n\ntwo\n")
+        m.select(sel(3, "h1"))
+        let second = m.select(sel(5, "h2"))
+        #expect(m.activeComment == second)
+        #expect(m.liveHighlights == ["h1", "h2"])
+    }
+
+    @Test("discarding a comment drops it from the pass and from the page's live set")
+    func discardingDropsIt() async {
+        let m = await opened("# A\n\none\n\ntwo\n")
+        let first = m.select(sel(3, "h1"))!
+        m.select(sel(5, "h2"))
+        m.discard(first)
+        #expect(m.liveHighlights == ["h2"])
+    }
+
+    @Test("a rewritten passage marks its comment detached, and the comment survives")
+    func aRewrittenPassageDetachesItsComment() async {
+        let m = await opened("# A\n\nbody\n")
+        let id = m.select(sel(3, "h1"))!
+        m.draftBinding(id).wrappedValue = "still true"
+        m.setDetached(["h1"])
+        #expect(m.comments[0].detached)
+        #expect(m.comments[0].draft == "still true")               // the quote froze; it is not lost
+        #expect(m.canSend(id))                                     // and it can still be sent
+    }
+
+    /// The page reports the WHOLE detached set on every change, so an anchor that re-attaches clears
+    /// its badge. It was previously only ever set, which left a card saying "text moved" over a passage
+    /// the reader could plainly see tinted again.
+    @Test("an anchor that re-attaches clears its detached badge")
+    func reattachingClearsTheDetachedBadge() async {
+        let m = await opened("# A\n\none\n\ntwo\n")
+        m.select(sel(3, "h1"))
+        m.select(sel(5, "h2"))
+
+        m.setDetached(["h1", "h2"])
+        #expect(m.comments.allSatisfy { $0.detached })
+
+        // The agent restored one of the two passages.
+        m.setDetached(["h2"])
+        #expect(!m.comments[0].detached)
+        #expect(m.comments[1].detached)
+
+        // ...and then the other. An EMPTY report is the only thing that can say so.
+        m.setDetached([])
+        #expect(m.comments.allSatisfy { !$0.detached })
+    }
+
+    /// An anchor belongs to the document it came from, so opening another one ends the pass.
+    @Test("opening another document ends the pass")
+    func openingAnotherDocumentEndsThePass() async {
+        let m = await opened("# A\n\nbody\n")
+        m.select(sel(3, "h1"))
+        await m.open(doc("docs/b.md")) { _, _ in self.body("# B\n", hash: "C9") }
+        #expect(m.comments.isEmpty)
+        #expect(m.activeComment == nil)
     }
 
     // MARK: - send
@@ -112,34 +237,86 @@ import Testing
     @Test("send is disabled until there is both an anchor and a draft")
     func sendIsDisabledWithoutAnAnchorOrADraft() async {
         let m = await opened("# A\n\nbody\n")
-        #expect(!m.canSend)                                   // no selection
-        m.select(DocumentSelection(startLine: 3, endLine: 3))
-        #expect(!m.canSend)                                   // no draft
-        m.draft = "   "
-        #expect(!m.canSend)                                   // whitespace is not a comment
-        m.draft = "real"
-        #expect(m.canSend)
+        #expect(!m.canSend(UUID()))                                // no such comment
+        let id = m.select(sel(3))!
+        #expect(!m.canSend(id))                                    // no draft
+        m.draftBinding(id).wrappedValue = "   "
+        #expect(!m.canSend(id))                                    // whitespace is not a comment
+        m.draftBinding(id).wrappedValue = "real"
+        #expect(m.canSend(id))
     }
 
     @Test("a failed send keeps the draft so it can be retried")
     func aFailedSendKeepsTheDraft() async {
         let m = await opened("# A\n\nbody\n")
-        m.select(DocumentSelection(startLine: 3, endLine: 3))
-        m.draft = "keep me"
-        await m.send { _ in false }
-        #expect(m.draft == "keep me")
-        #expect(m.comment != nil)
+        let id = m.select(sel(3))!
+        m.draftBinding(id).wrappedValue = "keep me"
+        await m.send(id) { _ in false }
+        #expect(m.comments[0].draft == "keep me")
+        #expect(!m.comments[0].sent)
+        #expect(m.canSend(id))
     }
 
-    @Test("a successful send clears the anchor and the draft")
-    func aSuccessfulSendClears() async {
+    /// A sent card STAYS in the rail. The pass is a record of what you said, and clearing it the moment
+    /// a comment goes out would lose your place in a long document.
+    @Test("a successful send marks the card sent and keeps it on screen")
+    func aSuccessfulSendMarksItSent() async {
         let m = await opened("# A\n\nbody\n")
-        m.select(DocumentSelection(startLine: 3, endLine: 3))
-        m.draft = "done"
-        await m.send { _ in true }
-        #expect(m.draft.isEmpty)
-        #expect(m.comment == nil)
-        #expect(!m.composing)
+        let id = m.select(sel(3))!
+        m.draftBinding(id).wrappedValue = "done"
+        await m.send(id) { _ in true }
+        #expect(m.comments.count == 1)
+        #expect(m.comments[0].sent)
+        #expect(m.comments[0].draft == "done")
+        #expect(!m.composing)                                      // the poll is free to run again
+        #expect(!m.canSend(id))                                    // and it cannot be sent twice
+    }
+
+    @Test("send all delivers ONE message holding every written comment, in document order")
+    func sendAllDeliversOneMessageInOrder() async {
+        let m = await opened("# H\n\none\n\ntwo\n")
+        let a = m.select(sel(3, "h1"))!
+        let b = m.select(sel(5, "h2"))!
+        m.draftBinding(a).wrappedValue = "about one"
+        m.draftBinding(b).wrappedValue = "about two"
+
+        var messages: [String] = []
+        await m.sendAll { messages.append($0); return true }
+
+        #expect(messages.count == 1)                               // ONE message, not two
+        let sent = messages[0]
+        #expect(sent.hasPrefix("2 comments on `docs/a.md`"))
+        let one = sent.range(of: "about one")?.lowerBound
+        let two = sent.range(of: "about two")?.lowerBound
+        #expect(one != nil && two != nil && one! < two!)
+        #expect(m.comments.allSatisfy { $0.sent })
+    }
+
+    @Test("send all skips anchors with nothing written against them")
+    func sendAllSkipsEmptyAnchors() async {
+        let m = await opened("# H\n\none\n\ntwo\n")
+        let a = m.select(sel(3, "h1"))!
+        m.select(sel(5, "h2"))                                     // anchored, never written
+        m.draftBinding(a).wrappedValue = "only this one"
+
+        var sent: String?
+        await m.sendAll { sent = $0; return true }
+        // One written comment is the SINGLE format, byte for byte — no batch header appears.
+        #expect(sent?.hasPrefix("Comment on `docs/a.md:3-3`") == true)
+        #expect(m.comments[0].sent)
+        #expect(!m.comments[1].sent)                               // the empty anchor is untouched
+    }
+
+    @Test("a failed send-all leaves every comment unsent and retryable")
+    func aFailedSendAllKeepsEverything() async {
+        let m = await opened("# H\n\none\n\ntwo\n")
+        let a = m.select(sel(3, "h1"))!
+        let b = m.select(sel(5, "h2"))!
+        m.draftBinding(a).wrappedValue = "one"
+        m.draftBinding(b).wrappedValue = "two"
+        await m.sendAll { _ in false }
+        #expect(m.comments.allSatisfy { !$0.sent })
+        #expect(m.canSendAll)
     }
 
     // MARK: - load ordering

@@ -401,9 +401,44 @@ A document gets an `A` badge when git does not track it, or when the branch adde
 badge when the branch modified it. Most documents carry no badge, because git has nothing to say about
 a file that is committed and unchanged. That is correct, not missing data.
 
-**How you comment.** Select a passage, then type in the native field at the bottom. On the Mac you drag
-through any range. On the phone you tap a block. The comment becomes ONE message in the card's inbox. It
-is addressed to the agent that owns the document:
+**How it reads.** The page takes its colors from the app's theme, so a document matches the inspector
+around it in both appearances. The text column stops at a reading measure and centers itself, because
+prose set across a very wide inspector is hard to track from one line to the next. Tables, fenced code,
+and display math are exempt and scroll inside their own box. The page itself never scrolls sideways.
+
+**How you comment.** Selecting text does NOT create a comment. It offers one: a **Comment** button
+appears beside the selection, and the comment exists once you click it or press **⌘⇧M**. Press Escape,
+scroll, or select something else, and the offer goes away with nothing created. People drag through
+text constantly while reading, so a reader that turned every selection into a card would be unusable.
+
+On the Mac you drag through any range. On the phone you tap a block, which arms the same offer — a tap
+is easy to make by accident, and the phone's rail is a sheet that would otherwise rise over the
+document to greet it.
+
+Take the offer and a card appears in the rail beside the document, ready to type into. On the phone the
+rail is a sheet you can keep reading behind.
+
+A comment belongs to a **reading pass**. Anchor as many passages as you want, write them in any order,
+and then either send one card at a time or send the whole pass as one message. Cards sit in document
+order, so the rail reads top to bottom the way the document does. Clicking a card scrolls to its
+passage, and scrolling the document brings that passage's card into view.
+
+Sent comments collapse into a single **N sent** row at the bottom of the rail, which expands. They stay
+in the pass rather than disappearing, because the pass is a record of what you said — but a long review
+otherwise ends as a rail of dimmed cards, with the ones you are still writing pushed off the bottom.
+Their passages stay tinted in the document either way. Dismiss one with the `×` on its card.
+
+The pass ends when you open another document — an anchor belongs to the document it came from. It is
+deliberately not durable, the same rule documents themselves follow. On the phone, dismissing the sheet
+only HIDES the pass: a swipe down is far too cheap a gesture to destroy something you have written, and
+a bar at the bottom of the document brings it back.
+
+If the agent rewrites a passage you anchored, its card is marked **text moved**. The comment survives
+and can still be sent, because its quote froze when you selected. Only the tint is gone. Because an open
+card holds the refresh, this happens to comments you have already SENT — which is usually the agent
+acting on what you said. If it restores the text, the tint comes back and the mark clears.
+
+One comment becomes ONE message in the card's inbox, addressed to the agent that owns the document:
 
 ```
 Comment on `docs/design.md:42-46` § Design › Level contract
@@ -413,15 +448,40 @@ Comment on `docs/design.md:42-46` § Design › Level contract
 Should this say "processes only"? An artifact isn't a running thing.
 ```
 
-The quote freezes when you select, not when you send. Live refresh also pauses while the field is open,
-so the text cannot move under you mid-sentence. The frozen quote stays a valid anchor after the line
-numbers shift.
+Sending a whole pass produces the same format repeated, under a count, with the entries in document
+order. So what an agent has to read never changes with the number of comments, and a pass of exactly
+one comment is that single message with nothing added.
 
-A Mac drag anchors to the whole block, then narrows to the exact lines only when it can prove which
-lines you picked: the selected text must appear exactly once in the block's markdown, and the block must
-be plain markdown with no raw HTML and no entities. Rendered text and source differ — `**bold**` renders
-as `bold` — so falling back to the block is common and expected. It is also the right failure. A coarse
-quote is visibly coarse; a confidently wrong line is not.
+The quote freezes when you select, not when you send, so it stays a valid anchor after the line numbers
+shift. Live refresh also pauses while any comment is open, written into or not — an open card means you
+are working on that passage, and the text under it must not move. Sent comments never hold it: sending
+is exactly when you want to watch the agent act on what you said. An open card you abandon holds the
+document still until you discard or send it, and it is sitting right there in the rail.
+
+**What a drag highlights.** Exactly the range you dragged through, tinted in place, and it stays tinted
+for as long as its comment exists. A selection that crosses several blocks tints the tail of the first,
+all of the middle ones, and the head of the last. The passage whose card is focused is tinted more
+strongly than the others.
+
+An anchored passage has its own color, and it is never the selection color. The two mean different
+things — a selection is live and goes away, an anchor persists and belongs to a comment — so they must
+not look the same. The rail matches it: a card's quote bar and its focus ring use the anchor color,
+while the Send button keeps the accent, because that is an action rather than an anchor.
+
+The tint survives a refresh. Each anchored passage remembers the content of the block it sits in, so an
+agent that inserts a paragraph above your passage does not move your highlight off it. If the agent
+rewrites the passage ITSELF, the highlight drops rather than tinting words you never picked. The block
+flashes as changed instead, which is the honest answer.
+
+**What the comment quotes.** The exact words you selected, whenever Swift can prove they are really in
+the file at those lines. It compares the words of your selection against the words of the source, so
+markdown markers do not defeat the match: `**poll**, not` in the file matches the `poll, not` you saw.
+A link matches on its label.
+
+The line range itself is coarser, and deliberately so. It narrows past the block only when the selected
+text appears exactly once in the block's markdown and the block has no raw HTML and no entities.
+Falling back to the whole block is common and expected. It is also the right failure — a coarse anchor
+is visibly coarse, and a confidently wrong line is not.
 
 **How it stays fresh.** The reader asks. While it is on screen it re-checks the open document every
 couple of seconds and the document list every thirty, and each question carries a validator so an

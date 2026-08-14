@@ -16,6 +16,16 @@
   let prevHashes = null;    // multiset of the previous render's block hashes
   let prevDocKey = null;    // which document that multiset describes
 
+  // The anchored passages, as SEGMENTS rather than as a block range. One highlight is
+  // `{segments: [{index, hash, start, end}]}`, where `start`/`end` are character offsets into that
+  // block's RENDERED text. A selection that crosses three blocks is three segments.
+  //
+  // Offsets over rendered text, not over the markdown source, because that is the only coordinate the
+  // page can measure exactly. The source line range stays a separate, coarser answer — see the mouseup
+  // handler. Carrying `hash` with each segment is what lets a highlight survive a re-render: the block
+  // may move up or down as the agent edits above it, but its text is the same text.
+  let highlights = [];
+
   // MathML, not KaTeX's own HTML+CSS layout. WebKit lays math out natively against the system math
   // font (STIXTwoMath.otf, present on both macOS and iOS), so this drops KaTeX's stylesheet and all 20
   // of its webfonts — 80% of the vendored payload — with no loss of quality. KaTeX stays only as the
@@ -97,7 +107,8 @@
     // Flash means "this note changed under you", so the baseline is PER NOTE. Without this, switching
     // files diffs the new note against the previous document's hashes and flashes essentially everything.
     const docKey = opts.documentPath || "";
-    if (docKey !== prevDocKey) { prevHashes = null; prevDocKey = docKey; }
+    const switchedDocument = docKey !== prevDocKey;
+    if (switchedDocument) { prevHashes = null; prevDocKey = docKey; }
 
     const src = NORMALIZE(markdown);
     const laid = layout(src);
@@ -154,6 +165,13 @@
     for (const b of blocks) prevHashes.set(b.hash, (prevHashes.get(b.hash) || 0) + 1);
     document.body.dataset.platform = platform;
 
+    // Re-anchor the highlights onto the rebuilt DOM. Every render throws the old elements away, so a
+    // highlight that is not re-applied here simply vanishes while the agent is editing — which is the
+    // one moment the reviewer most needs to see what they anchored to.
+    if (switchedDocument) { highlights = []; lastDetached = ""; lastVisible = null; }
+    applyHighlights();
+    reportDetached();
+
     // Restore the reading position against the same block, if it survived the edit.
     if (anchor && anchor.hash) {
       const el = host.querySelector('.block[data-hash="' + anchor.hash + '"]');
@@ -174,12 +192,206 @@
     return n && n.dataset && n.dataset.block ? n : null;
   }
 
-  function markSelected(lo, hi) {
-    document.querySelectorAll(".block.sel").forEach((e) => e.classList.remove("sel"));
-    for (let i = lo; i <= hi; i++) {
-      const el = document.querySelector('.block[data-block="' + i + '"]');
-      if (el) el.classList.add("sel");
+  function blockEl(i) { return document.querySelector('.block[data-block="' + i + '"]'); }
+
+  // ── highlighting an exact range ───────────────────────────────────────────────────────────────
+  //
+  // The reader used to tint whole `.block` elements, and a block is one top-level markdown token — so
+  // dragging through three words lit up the entire paragraph, the entire list, or the entire table.
+  // These functions tint what the user actually picked.
+
+  // Every text node under `el`, in document order. MathML is EXCLUDED: WebKit lays `<math>` out
+  // natively, and inserting an HTML span inside it breaks that layout. Math is therefore invisible to
+  // both the offset arithmetic and the wrapping, which keeps the two consistent with each other.
+  function textNodesIn(el) {
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) =>
+        n.parentElement && n.parentElement.closest("math")
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    const out = [];
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n);
+    return out;
+  }
+
+  // Character offset of the boundary (node, offset) within `root`'s text.
+  //
+  // A selection boundary does NOT always land inside a text node. Drag past the end of an `<em>` and
+  // the boundary is an ELEMENT plus a child index. So when the walk never reaches the boundary node,
+  // compare positions instead of assuming zero.
+  function offsetIn(root, node, offset) {
+    const probe = document.createRange();
+    try { probe.setStart(node, offset); probe.collapse(true); } catch (e) { return 0; }
+    let total = 0;
+    for (const t of textNodesIn(root)) {
+      if (t === node) return total + offset;
+      try {
+        // The boundary sits before this text node, so it sits at the count so far.
+        if (probe.comparePoint(t, 0) > 0) return total;
+      } catch (e) { /* not comparable — keep counting */ }
+      total += t.data.length;
     }
+    return total;
+  }
+
+  // Wrap [start, end) of `el`'s text in `<span class="hl">`. Returns the first span, which is what the
+  // rail scrolls to. Wrapping never changes `textContent`, so the offsets stay valid afterwards.
+  function wrapSegment(el, start, end, id, active) {
+    if (!(end > start)) return null;
+    let pos = 0, first = null;
+    // Collect the nodes BEFORE mutating. Each wrap splits only the node it touches, so the rest of a
+    // pre-collected list stays valid, while a live walker would revisit the pieces it just made.
+    for (const t of textNodesIn(el)) {
+      const nodeStart = pos;
+      pos += t.data.length;
+      const a = Math.max(start, nodeStart), b = Math.min(end, pos);
+      if (b <= a) continue;
+      const r = document.createRange();
+      r.setStart(t, a - nodeStart);
+      r.setEnd(t, b - nodeStart);
+      const span = document.createElement("span");
+      span.className = active ? "hl hl-active" : "hl";
+      span.dataset.hl = id;
+      // The range lies inside ONE text node, so this can only fail on a DOM the sanitizer let through
+      // in an unexpected shape. A missing tint is the right failure — never a thrown handler.
+      try { r.surroundContents(span); } catch (e) { continue; }
+      if (!first) first = span;
+    }
+    return first;
+  }
+
+  // Take every highlight span back out, and re-join the text nodes the wrapping split. Without the
+  // `normalize()` a repeated select/clear cycle shatters the text into fragments, which costs nothing
+  // visually but makes the offset arithmetic progressively slower.
+  function unwrapAll() {
+    const spans = document.querySelectorAll("span.hl");
+    const parents = new Set();
+    spans.forEach((s) => {
+      const p = s.parentNode;
+      if (!p) return;
+      while (s.firstChild) p.insertBefore(s.firstChild, s);
+      p.removeChild(s);
+      parents.add(p);
+    });
+    parents.forEach((p) => p.normalize());
+  }
+
+  // Find the block a segment now lives in. The fast path is that nothing moved. Otherwise search by
+  // hash, claiming matches so two segments cannot both land on the same repeated paragraph.
+  function resolveSegment(seg, used) {
+    if (blocks[seg.index] && blocks[seg.index].hash === seg.hash) return seg.index;
+    for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i].hash === seg.hash && !used.has(i)) { used.add(i); return i; }
+    }
+    return -1;                                   // the agent rewrote this passage
+  }
+
+  // Paint every highlight onto the CURRENT DOM. Called after each render, so an anchored passage keeps
+  // its tint while the agent edits the document around it.
+  function applyHighlights() {
+    const used = new Set();
+    for (const h of highlights) {
+      h.detached = false;
+      h.anchor = null;
+      for (const seg of h.segments) {
+        const i = resolveSegment(seg, used);
+        if (i < 0) { h.detached = true; continue; }
+        seg.index = i;
+        const el = blockEl(i);
+        if (!el) { h.detached = true; continue; }
+        const span = wrapSegment(el, seg.start, seg.end, h.id, h.active);
+        if (span && !h.anchor) h.anchor = span;
+      }
+    }
+    // Document order, so the rail and `reportVisible` both read top to bottom.
+    highlights.sort((a, b) => (a.segments[0].index || 0) - (b.segments[0].index || 0));
+  }
+
+  // Add a passage and focus it. The PAGE mints the id, because the page is the only side that can hold
+  // the segments — Swift never sees a character offset. Swift stores the id on its comment and hands
+  // the set back through `setHighlights`, which is how the two stay agreed on what is live.
+  let nextHighlightID = 0;
+
+  function addHighlight(segments) {
+    const id = "h" + ++nextHighlightID;
+    highlights.push({ id: id, segments: segments, active: false });
+    focusHighlight(id);
+    return id;
+  }
+
+  function focusHighlight(id) {
+    for (const h of highlights) h.active = h.id === id;
+    unwrapAll();
+    applyHighlights();
+    reportDetached();
+  }
+
+  // SWIFT DRIVES THE SET. `keep` is every comment still in the rail, and `active` is the focused one.
+  // Deliberately NOT part of the render payload: that would rebuild the DOM and re-lex the whole
+  // document every time the reviewer clicked a different card in the rail.
+  function setHighlights(opts) {
+    opts = opts || {};
+    const keep = new Set(opts.keep || []);
+    highlights = highlights.filter((h) => keep.has(h.id));
+    focusHighlight(opts.active);
+  }
+
+  // Tell Swift which anchors the agent has rewritten out from under. Sent only when the set CHANGES,
+  // because `applyHighlights` runs on every render and a poll runs every couple of seconds.
+  let lastDetached = "";
+  function reportDetached() {
+    const ids = highlights.filter((h) => h.detached).map((h) => h.id);
+    const key = ids.join(",");
+    if (key === lastDetached) return;
+    lastDetached = key;
+    // The set is reported WHOLE, empty included. `applyHighlights` re-resolves every anchor on every
+    // render, so a passage the agent rewrote and then restored re-attaches and its tint comes back —
+    // and without an empty report the card would keep saying "text moved" over a passage that is
+    // plainly tinted again.
+    post({ kind: "detached", ids: ids });
+  }
+
+  // Tell Swift which anchor is at the top of the viewport, so the rail can follow the reading position.
+  // Throttled, and sent only on a change: this rides the scroll event.
+  let lastVisible = null;
+  function reportVisible() {
+    let top = null;
+    for (const h of highlights) {
+      if (!h.anchor) continue;
+      const box = h.anchor.getBoundingClientRect();
+      if (box.bottom > 0) { top = h.id; break; }        // highlights are already in document order
+    }
+    if (top === lastVisible) return;
+    lastVisible = top;
+    if (top) post({ kind: "visible", highlight: top });
+  }
+
+  let visibleTimer = null;
+  window.addEventListener("scroll", () => {
+    if (visibleTimer) return;
+    visibleTimer = setTimeout(() => { visibleTimer = null; reportVisible(); }, 150);
+  }, { passive: true });
+
+  // Turn a DOM Range into per-block segments. A DOM Range is always ordered, so its start container is
+  // in the first block and its end container in the last.
+  function segmentsFromRange(range) {
+    const first = blockElFrom(range.startContainer), last = blockElFrom(range.endContainer);
+    if (!first || !last) return null;
+    const lo = +first.dataset.block, hi = +last.dataset.block;
+    if (!(hi >= lo)) return null;
+    const segs = [];
+    for (let i = lo; i <= hi; i++) {
+      const el = blockEl(i);
+      if (!el || !blocks[i]) continue;
+      const len = textNodesIn(el).reduce((n, t) => n + t.data.length, 0);
+      const start = i === lo ? offsetIn(el, range.startContainer, range.startOffset) : 0;
+      const end = i === hi ? offsetIn(el, range.endContainer, range.endOffset) : len;
+      // A selection that stops at the very start of a block leaves an empty tail segment. Drop it, or
+      // the highlight claims a block it does not actually cover.
+      if (end > start) segs.push({ index: i, hash: blocks[i].hash, start: start, end: end });
+    }
+    return segs.length ? segs : null;
   }
 
   // In-document anchors are handled ENTIRELY here and never reach the navigation delegate, which
@@ -193,24 +405,86 @@
       return;
     }
     // PHONE: tap a block. Native text interaction is disabled from Swift, so a tap is unambiguous.
+    // The anchor is the whole block, expressed as ONE segment covering all of its text — the same
+    // machinery the Mac's range uses, so there is only one kind of highlight to reason about.
+    //
+    // A tap ARMS the offer, exactly as a drag does on the Mac. A tap is easy to make by accident while
+    // reading, and the phone's rail is a sheet that would rise over the document to greet it.
     if (platform !== "ios") return;
+    if (e.target === commentButton || commentButton.contains(e.target)) return;
     const el = blockElFrom(e.target);
-    if (!el) return;
-    markSelected(+el.dataset.block, +el.dataset.block);
-    post({ blockIndex: +el.dataset.block,
-           startLine: +el.dataset.lineStart, endLine: +el.dataset.lineEnd });
+    if (!el) { disarm(); return; }
+    const i = +el.dataset.block;
+    if (!blocks[i]) { disarm(); return; }
+    const len = textNodesIn(el).reduce((n, t) => n + t.data.length, 0);
+    arm({ segments: [{ index: i, hash: blocks[i].hash, start: 0, end: len }],
+          blockIndex: i,
+          startLine: +el.dataset.lineStart, endLine: +el.dataset.lineEnd,
+          text: el.textContent },
+        el.getBoundingClientRect());
   });
+
+  // ── selecting, then DECIDING to comment ──────────────────────────────────────────────────────
+  //
+  // Selecting text does NOT create a comment. People drag through text constantly while reading, and a
+  // reader that turned every one of those into a card would be unusable. A selection only ARMS the
+  // offer: a button appears beside it, and the comment exists once you click that button or press its
+  // shortcut. Everything measured at mouseup is held until then, because the DOM must be measured
+  // while the selection is still live.
+  let pending = null;
+
+  const commentButton = document.createElement("button");
+  commentButton.id = "orch-comment-btn";
+  commentButton.type = "button";
+  commentButton.hidden = true;
+  commentButton.append(document.createTextNode("Comment"));
+  const shortcutHint = document.createElement("span");
+  shortcutHint.className = "key";
+  shortcutHint.append(document.createTextNode("⌘⇧M"));
+  commentButton.append(shortcutHint);
+  document.body.appendChild(commentButton);
+
+  function disarm() {
+    pending = null;
+    commentButton.hidden = true;
+  }
+
+  /// Offer the button at the end of the selection, where the cursor already is.
+  function arm(measured, rect) {
+    pending = measured;
+    // Unhide FIRST: the button has no size while hidden, and its size decides where it fits.
+    commentButton.hidden = false;
+    const w = commentButton.offsetWidth, h = commentButton.offsetHeight;
+
+    // ABOVE the selection, not below. Below covers the next line — the text you are about to read on
+    // your way to deciding whether to comment at all. Falls back to below when the selection is close
+    // enough to the top of the document that above would be off the page.
+    let top = rect.top + window.scrollY - h - 6;
+    if (top < window.scrollY + 2) top = rect.bottom + window.scrollY + 6;
+    // Anchor the right edge to the selection's end, then keep it on the page.
+    let left = rect.right + window.scrollX - w;
+    left = Math.max(4, Math.min(left, document.documentElement.clientWidth - w - 4));
+
+    // CSSOM writes, never a `style` attribute: the page's CSP forbids inline styles, and setting the
+    // attribute would be blocked while these property assignments are not. Verified in a real
+    // WKWebView under the shipped CSP — the probe read the values back.
+    commentButton.style.left = Math.round(left) + "px";
+    commentButton.style.top = Math.round(top) + "px";
+  }
 
   // MAC: arbitrary range. Report the START block's first line and the END block's last line, then
   // refine within a single block when the selection can be located UNAMBIGUOUSLY in its source.
   document.addEventListener("mouseup", () => {
     if (platform === "ios") return;
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
-    const a = blockElFrom(sel.anchorNode), b = blockElFrom(sel.focusNode);
-    if (!a || !b) return;
-    const ia = +a.dataset.block, ib = +b.dataset.block;
-    const lo = Math.min(ia, ib), hi = Math.max(ia, ib);
+    if (!sel || sel.isCollapsed || !sel.rangeCount) { disarm(); return; }
+    const range = sel.getRangeAt(0);
+    const text = sel.toString();
+    if (!text.trim()) { disarm(); return; }
+    const segments = segmentsFromRange(range);
+    if (!segments) { disarm(); return; }
+    const lo = segments[0].index, hi = segments[segments.length - 1].index;
+    if (!blocks[lo] || !blocks[hi]) { disarm(); return; }
     let startLine = blocks[lo].start, endLine = blocks[hi].end;
 
     if (lo === hi) {
@@ -222,7 +496,6 @@
       // selecting the rendered second "same" finds the copy inside the bold markers on line 1 and
       // would quote the WRONG line. A wrong line is worse than a coarse one, because the user cannot
       // see that it is wrong.
-      const text = sel.toString();
       const raw = blocks[lo].raw;
       const first = raw.indexOf(text);
       const unique = first >= 0 && raw.indexOf(text, first + 1) === -1;
@@ -240,12 +513,64 @@
         endLine = startLine + within;
       }
     }
-    // Mark the anchored blocks. The native selection highlight can be dropped when focus moves to the
-    // native compose field, and there is deliberately no quote preview — so without this the user
-    // could compose against a quote with nothing on screen showing what it is.
-    markSelected(lo, hi);
-    post({ blockIndex: lo, startLine, endLine });
+    // Paint the anchor. WebKit drops the native selection highlight as soon as focus moves to the
+    // native compose field, so without this the user would compose against a passage with nothing on
+    // screen showing which one it is.
+    // ARMED, not committed. Nothing is created and nothing is reported until the offer is taken.
+    arm({ segments: segments, blockIndex: lo, startLine: startLine, endLine: endLine, text: text },
+        range.getBoundingClientRect());
   });
 
-  window.orchestra = { render };
+  /// Take the offer: tint the passage and tell Swift about it.
+  function commit() {
+    if (!pending) return;
+    const p = pending;
+    disarm();
+    // Re-anchor from the measurement taken while the selection was live. Wrapping mutates the DOM, so
+    // any older highlight has to come out first or the offsets shift under it.
+    unwrapAll();
+    const id = addHighlight(p.segments);
+    // `text` is the rendered text the user picked. Swift does NOT trust it: it accepts the string as a
+    // quote only after proving the same words occur in its own copy of these lines. See
+    // `DocumentComment.capture`. So the bridge still cannot put words in the user's mouth — it can
+    // only choose between quoting the exact selection and quoting the whole block.
+    post({ kind: "selection", blockIndex: p.blockIndex, highlight: id,
+           startLine: p.startLine, endLine: p.endLine, text: p.text.slice(0, 4000) });
+    const sel = window.getSelection();
+    if (sel) sel.removeAllRanges();                  // the tint replaces it, so two marks never overlap
+  }
+
+  commentButton.addEventListener("mousedown", (e) => {
+    e.preventDefault();                              // do not let the button steal the selection first
+    commit();
+  });
+  // The phone never sends `mousedown`, and its tap has to beat the document-level handler that would
+  // otherwise treat the button as a tap outside a block and retire the offer.
+  commentButton.addEventListener("click", (e) => { e.stopPropagation(); commit(); });
+
+  // ⌘⇧M, handled IN THE PAGE. The webview holds first responder while you are selecting in it, so a
+  // native SwiftUI shortcut would not fire — and the page already knows what is selected.
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey && e.shiftKey && (e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      disarm();
+    }
+  });
+
+  // Any new drag, or a scroll, retires a stale offer — the button must never sit somewhere the
+  // selection no longer is.
+  document.addEventListener("mousedown", (e) => {
+    if (e.target !== commentButton && !commentButton.contains(e.target)) disarm();
+  });
+  window.addEventListener("scroll", () => { if (pending) disarm(); }, { passive: true });
+
+  // Scroll a passage into view, and flash it. The rail calls this when a comment card is clicked.
+  function reveal(id) {
+    const h = highlights.find((x) => x.id === id);
+    if (h && h.anchor) h.anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  window.orchestra = { render, setHighlights, reveal };
 })();

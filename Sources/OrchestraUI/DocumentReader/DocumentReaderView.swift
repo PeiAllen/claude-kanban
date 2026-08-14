@@ -12,7 +12,8 @@ public struct DocumentReaderView: View {
     @Environment(\.theme) private var theme: Theme
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var reader = DocumentReaderModel()
-    @FocusState private var composeFocused: Bool
+    /// Phone only: whether the comment sheet is raised. The pass outlives it — see `phoneCommentBar`.
+    @State private var phoneSheetUp = false
 
     public init(task: Task) { self.task = task }
 
@@ -93,12 +94,95 @@ public struct DocumentReaderView: View {
                 if reader.browsing || reader.selected == nil {
                     documentList
                 } else {
-                    documentBody
-                    if reader.comment != nil { composeBar }
+                    readingSurface
                 }
             }
         }
     }
+
+    /// The document, plus the reading pass beside it.
+    ///
+    /// On the Mac the rail is a column. On the phone there is no room for one, so the same rail becomes
+    /// a sheet the document keeps scrolling behind — one comment model, two containers.
+    @ViewBuilder private var readingSurface: some View {
+        #if os(macOS)
+        HStack(spacing: 0) {
+            documentBody
+            if !reader.comments.isEmpty {
+                Divider().overlay(theme.hair)
+                rail.frame(width: Self.railWidth)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: reader.comments.isEmpty)
+        #else
+        documentBody
+            // Dismissing the sheet HIDES the pass, it does not end it. A swipe down is far too cheap a
+            // gesture to destroy something the reviewer has written, and the sheet covers the document
+            // they are commenting on — so wanting it out of the way is the common case, not a signal
+            // that they are finished. This bar brings it back.
+            .overlay(alignment: .bottom) {
+                if !phoneSheetUp && !reader.comments.isEmpty { phoneCommentBar }
+            }
+            .sheet(isPresented: $phoneSheetUp) {
+                rail
+                    .presentationDetents([.height(280), .large])
+                    // The reviewer must be able to keep reading — and keep tapping new passages —
+                    // while the sheet is up. Without this the sheet is a modal over the document it
+                    // is about.
+                    .presentationBackgroundInteraction(.enabled(upThrough: .height(280)))
+                    .presentationDragIndicator(.visible)
+            }
+            // A NEW anchor raises the sheet, so a tap goes straight to a field you can type in.
+            .onChange(of: reader.comments.count) { old, new in
+                if new > old { phoneSheetUp = true }
+            }
+        #endif
+    }
+
+    /// The phone's way back to a hidden pass. Counts the whole pass, and says how much of it is still
+    /// unsent — that is the part that would be lost if the reader walked away.
+    private var phoneCommentBar: some View {
+        Button { phoneSheetUp = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "text.bubble").font(.caption)
+                Text("\(reader.comments.count) comment\(reader.comments.count == 1 ? "" : "s")")
+                    .font(.footnote.weight(.semibold))
+                if !reader.unsent.isEmpty {
+                    Text("· \(reader.unsent.count) unsent")
+                        .font(.caption2).foregroundStyle(theme.amber.text)
+                }
+            }
+            .foregroundStyle(theme.text)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(theme.hair, lineWidth: 0.5))
+            .padding(.bottom, 14)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// How wide the rail is. A comment is a sentence or two, so this is sized for that rather than for
+    /// the document — it is a margin, not a second pane.
+    static let railWidth: CGFloat = 288
+
+    private var rail: some View {
+        DocumentCommentRail(
+            reader: reader,
+            send: { id in
+                _Concurrency.Task {
+                    // Report the REAL outcome: on failure the model keeps the anchor and the draft, so
+                    // a dropped link costs a retry rather than the user's comment.
+                    await reader.send(id) { message in await model.send(task.id, message) }
+                }
+            },
+            sendAll: {
+                _Concurrency.Task {
+                    await reader.sendAll { message in await model.send(task.id, message) }
+                }
+            })
+    }
+
 
     // MARK: - picking a document
 
@@ -218,10 +302,24 @@ public struct DocumentReaderView: View {
             DocumentWebView(markdown: body,
                         documentPath: doc.path,
                         theme: theme,
+                        highlights: DocumentHighlights(
+                            keep: reader.liveHighlights,
+                            active: reader.comments.first { $0.id == reader.activeComment }?.highlightID),
+                        reveal: reader.revealHighlight,
                         assetProvider: { asset in
                             await model.documentAsset(task.id, note: doc.path, asset: asset)
                         },
-                        onSelect: { reader.select($0); composeFocused = true })
+                        onSelect: { reader.select($0) },
+                        onDetached: { reader.setDetached($0) },
+                        // Follow the reading position. Only while nothing is half-written: yanking the
+                        // rail around under someone's cursor as they scroll to check a reference is
+                        // worse than the cue is worth.
+                        onVisible: { id in
+                            guard !reader.composing else { return }
+                            if let c = reader.comments.first(where: { $0.highlightID == id }) {
+                                reader.activeComment = c.id
+                            }
+                        })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if reader.loadingContent {
             centered { ProgressView() }
@@ -230,49 +328,6 @@ public struct DocumentReaderView: View {
                 Text("Couldn’t read this document.")
                     .font(.footnote).foregroundStyle(theme.text3)
             }
-        }
-    }
-
-    /// A NATIVE compose field. There is deliberately no quote preview: the selected block is already
-    /// highlighted in the page, so a preview would only duplicate it.
-    private var composeBar: some View {
-        VStack(spacing: 0) {
-            Divider().overlay(theme.hair)
-            HStack(spacing: 8) {
-                TextField("Comment on this passage…", text: $reader.draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...4)
-                    .focused($composeFocused)
-                    .font(.callout)
-                    .foregroundStyle(theme.text)
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(theme.field)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                Button("Cancel") { reader.cancelComment() }
-                    .buttonStyle(.plain).font(.footnote).foregroundStyle(theme.text2)
-
-                Button {
-                    _Concurrency.Task {
-                        // Report the REAL outcome: on failure the model keeps the anchor and the draft,
-                        // so a dropped link costs a retry rather than the user's comment.
-                        await reader.send { message in await model.send(task.id, message) }
-                    }
-                } label: {
-                    Text(reader.sending ? "Sending…" : "Send")
-                        .font(.footnote.weight(.semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 14).frame(height: 30)
-                        .background(theme.accent.opacity(reader.canSend ? 1 : 0.4))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-                // The ONLY double-send guard. A comment carries no dedup key on purpose: a deliberate
-                // re-send is meaningful and must never be silently swallowed.
-                .disabled(!reader.canSend)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .background(theme.card)
         }
     }
 

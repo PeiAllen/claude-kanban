@@ -5,6 +5,10 @@
  * inspector rather than only the OS appearance. Every property has a fallback, but the fallbacks are a
  * safety net, not the design: if Swift stops sending a theme, the page stays legible instead of drawing
  * near-black text on a dark panel.
+ *
+ * Swift sends every color through `Color.cssColor`, which KEEPS the color's own alpha. `--code` and
+ * `--hair` are translucent overlays that must composite against `--bg`. Do not treat either as an
+ * opaque fill, and do not add a token that a hex conversion could flatten.
  */
 
 :root { color-scheme: light dark; }
@@ -15,12 +19,27 @@ html, body { background: var(--bg, transparent); }
 
 body {
   margin: 0;
-  padding: 16px 18px 28px;
-  font: 15px/1.65 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  padding: 20px 20px 40px;
+  font: 15px/1.7 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   color: var(--text, #1d1d1f);
   -webkit-text-size-adjust: 100%;
   overflow-wrap: anywhere;
 }
+
+/* A READING MEASURE. The inspector can be dragged very wide, and prose set edge to edge across it is
+   hard to track from one line to the next. Long lines are the single biggest readability cost in a
+   resizable pane, so cap the column and center it. A narrow pane is unaffected — `max-width` only ever
+   removes width. Wide content (tables, fences, math) opts back out below.
+   `ch` is the width of "0", and the system font's digits are wide, so 64ch lands at roughly 75
+   characters of real prose — the top of the readable range. */
+#doc {
+  max-width: 64ch;
+  margin: 0 auto;
+}
+
+/* Native selection, themed. Otherwise WebKit draws the system highlight, which collides with the
+   accent tint the reader paints for an anchored comment. */
+::selection { background: var(--sel, rgba(10, 120, 255, 0.16)); }
 
 /* One block per top-level markdown token. The negative margin lets the selection tint bleed past the
    text without shifting layout when a block becomes selected. */
@@ -31,10 +50,52 @@ body {
   scroll-margin-top: 12px;
 }
 
-.block.sel {
-  background: var(--sel, rgba(10, 120, 255, 0.16));
-  box-shadow: inset 2px 0 0 var(--accent, #0a78ff);
+/* An anchored passage — a range that carries a COMMENT, tinted for as long as that comment exists.
+   Formerly this tinted the whole `.block`, so three words lit up a whole paragraph or a whole table.
+
+   ITS OWN HUE, never the selection color. A live selection and a committed anchor are different
+   things, and painting both in the accent made them indistinguishable: after the drag ended, nothing
+   on screen said whether the tint was a selection you could dismiss or a passage you had annotated.
+
+   NO border, NO radius, and vertical padding only. One highlight is usually SEVERAL spans, because a
+   range that crosses a `<strong>` or a link has to be wrapped once per text node. Any horizontal
+   decoration then draws a seam at every one of those joins, and an outline draws a box around each
+   fragment. A flat tint is the only treatment that reads as one continuous mark. */
+.hl {
+  background: var(--annoIdle, rgba(94, 92, 230, 0.14));
+  padding: 0.08em 0;
 }
+
+/* The passage whose comment card is focused in the rail. It wins on tint STRENGTH rather than on an
+   added edge, for the same reason. */
+.hl-active { background: var(--anno, rgba(94, 92, 230, 0.3)); }
+
+/* THE OFFER. Selecting text does not create a comment — it offers to. This button appears at the end
+   of a selection, and the comment exists only once it is taken. Its position is written through the
+   CSSOM rather than a `style` attribute, which the page's CSP forbids. */
+#orch-comment-btn {
+  position: absolute;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: none;
+  border-radius: 7px;
+  /* OPAQUE. It floats over body text, so any transparency lets the words underneath read straight
+     through the label. The anchor hue at full strength, which also previews what the passage is
+     about to be tinted with. */
+  background: var(--annoSolid, #5e5ce6);
+  color: #fff;
+  font: 600 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+#orch-comment-btn .key {
+  font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.72;
+}
+#orch-comment-btn[hidden] { display: none; }
 
 /* ~1s, matching the daemon's coalescing window closely enough that a burst of agent writes reads as
    one change rather than a strobe. */
@@ -47,48 +108,131 @@ body {
 /* On the phone a block is tapped, not dragged through, so suppress the text cursor affordance. */
 body[data-platform="ios"] .block { cursor: default; }
 
-h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.2em 0 0.5em; }
-h1 { font-size: 1.6em; } h2 { font-size: 1.35em; } h3 { font-size: 1.15em; }
+/* ── Vertical rhythm ───────────────────────────────────────────────────────────────────────────
+   Block spacing lives on the .block WRAPPER, not on the markdown elements inside it.
+   `.block` carries vertical padding for the selection tint, which stops adjacent paragraph margins
+   from collapsing the way they would in a plain document — so element margins alone produce double
+   the intended gap. Zeroing the outer edges inside each block and spacing the blocks themselves
+   makes one rule control one gap. Nested elements keep their own margins. */
 
-p, ul, ol, blockquote, table, pre { margin: 0.6em 0; }
-li { margin: 0.2em 0; }
+.block > :first-child { margin-top: 0; }
+.block > :last-child { margin-bottom: 0; }
+.block + .block { margin-top: 0.85em; }
 
-a { color: var(--accent, #0a78ff); }
+/* ── Headings ──────────────────────────────────────────────────────────────────────────────────
+   A real type scale, and asymmetric spacing: the gap ABOVE a heading is much larger than the gap
+   below it, so a heading groups with the text it introduces instead of floating between two blocks.
+   These rules must come AFTER `.block + .block`, which they override at equal specificity. */
+
+h1, h2, h3, h4, h5, h6 {
+  line-height: 1.25;
+  margin: 1.4em 0 0.5em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+h1 { font-size: 1.7em; letter-spacing: -0.02em; }
+h2 { font-size: 1.35em; }
+h3 { font-size: 1.13em; }
+h4, h5, h6 { font-size: 1em; }
+h5, h6 { color: var(--text2, inherit); }
+
+.block + .block:has(> h1) { margin-top: 1.7em; }
+.block + .block:has(> h2) { margin-top: 1.9em; }
+.block + .block:has(> h3) { margin-top: 1.6em; }
+.block:has(> h1), .block:has(> h2), .block:has(> h3) { margin-bottom: 0.15em; }
+
+/* A hairline under the top two levels gives the document a visible spine when you scroll it fast.
+   Deeper levels get none, or a long document turns into a stack of rules. */
+h1, h2 {
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--hair, rgba(127, 127, 127, 0.3));
+}
+
+/* ── Body ──────────────────────────────────────────────────────────────────────────────────── */
+
+p, ul, ol, blockquote, table, pre { margin: 0.75em 0; }
+ul, ol { padding-left: 1.5em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin: 0.25em 0; }
+/* A bullet is decoration, so it recedes. An ordered list's NUMBER is content — you cite step 3 — so
+   it keeps the body color. */
+ul > li::marker { color: var(--text3, inherit); }
+
+/* Task lists read as a list of states, so the box must not sit on the text baseline. */
+li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.2em; }
+input[type="checkbox"] { margin-right: 0.5em; vertical-align: -0.08em; accent-color: var(--accent, #0a78ff); }
+
+strong { font-weight: 650; }
+
+a {
+  color: var(--accent, #0a78ff);
+  text-decoration-color: color-mix(in srgb, var(--accent, #0a78ff) 35%, transparent);
+  text-underline-offset: 0.18em;
+}
+a:hover { text-decoration-color: var(--accent, #0a78ff); }
+
+/* ── Code ──────────────────────────────────────────────────────────────────────────────────────
+   `--code` is a translucent overlay (about 5% black on a light card, 8% white on a dark one), so both
+   forms below read as a faint tint of the page rather than as a slab. A fenced block adds a hairline
+   because a tint that light needs an edge to hold its shape. */
 
 code {
-  font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 0.86em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
   background: var(--code, rgba(127, 127, 127, 0.12));
-  padding: 0.12em 0.34em;
+  padding: 0.14em 0.36em;
   border-radius: 4px;
 }
 
 /* Wide content scrolls INSIDE its own box; the page itself must never scroll horizontally. */
 pre {
   overflow-x: auto;
-  padding: 10px 12px;
+  padding: 11px 13px;
   border-radius: 8px;
   background: var(--code, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--hair, rgba(127, 127, 127, 0.3));
+  line-height: 1.55;
 }
-pre code { background: none; padding: 0; }
+pre code { background: none; padding: 0; font-size: 0.85em; }
 
 blockquote {
   margin-left: 0;
-  padding-left: 12px;
-  border-left: 3px solid var(--accent, #0a78ff);
+  padding: 0.1em 0 0.1em 14px;
+  border-left: 3px solid color-mix(in srgb, var(--accent, #0a78ff) 45%, transparent);
   color: var(--text2, inherit);
-  opacity: 0.9;
 }
+blockquote > :first-child { margin-top: 0; }
+blockquote > :last-child { margin-bottom: 0; }
 
-table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
-th, td { border: 1px solid var(--hair, rgba(127, 127, 127, 0.3)); padding: 5px 9px; text-align: left; }
-th { background: var(--code, rgba(127, 127, 127, 0.1)); }
+/* ── Tables ────────────────────────────────────────────────────────────────────────────────────
+   Horizontal rules only. A full grid puts a line between every cell, which fights the text at the
+   density a reference document is usually written at. */
+
+table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 0.95em;
+}
+th, td {
+  border-bottom: 1px solid var(--hair, rgba(127, 127, 127, 0.3));
+  padding: 7px 11px;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: var(--code, rgba(127, 127, 127, 0.1));
+  font-weight: 600;
+  white-space: nowrap;
+}
+tr:last-child td { border-bottom: none; }
 
 img { max-width: 100%; height: auto; border-radius: 6px; }
 
-hr { border: none; border-top: 1px solid var(--hair, rgba(127, 127, 127, 0.3)); margin: 1.4em 0; }
+hr { border: none; border-top: 1px solid var(--hair, rgba(127, 127, 127, 0.3)); margin: 2em 0; }
 
-/* KaTeX display math can overflow on a phone; give it its own scroller rather than the page. */
 /* Display math. KaTeX's MathML output wraps it as `<span class="katex"><math display="block">`, and the
    inline span defeats the block-level centring the `display` attribute would otherwise get. */
 .block .katex:has(math[display="block"]) { display: block; text-align: center; }
+/* KaTeX display math can overflow on a phone; give it its own scroller rather than the page. */
 math[display="block"] { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }

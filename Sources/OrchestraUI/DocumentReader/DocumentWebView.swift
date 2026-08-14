@@ -16,6 +16,32 @@ import UIKit
 public struct DocumentSelection: Equatable, Sendable {
     public let startLine: Int
     public let endLine: Int
+    /// The RENDERED text the user dragged through, as the page measured it — and untrusted, like
+    /// everything else the page says. `DocumentComment.capture` quotes it only after proving the same
+    /// words occur in Swift's own copy of these lines, and otherwise quotes the whole line range.
+    ///
+    /// It exists because the line range alone is coarse. Source and rendered text differ, so the page
+    /// can rarely prove which lines a selection fell on, and the quote then covered a whole paragraph
+    /// when the user had picked four words.
+    public let text: String?
+    /// The page's own id for the tint it just painted. Swift never interprets it — it stores the id on
+    /// the comment and hands the set back, so both sides agree on which passages are still anchored.
+    /// The page mints it because the page holds the character offsets, which never cross the bridge.
+    public let highlightID: String?
+
+    public init(startLine: Int, endLine: Int, text: String? = nil, highlightID: String? = nil) {
+        self.startLine = startLine
+        self.endLine = endLine
+        self.text = text
+        self.highlightID = highlightID
+    }
+}
+
+/// What the reader tells the page about the rail: which passages still have a comment, and which one
+/// the reviewer is looking at.
+struct DocumentHighlights: Equatable {
+    var keep: [String] = []
+    var active: String?
 }
 
 /// The shared WKWebView that renders a document on BOTH platforms.
@@ -37,8 +63,17 @@ struct DocumentWebView {
     let markdown: String
     let documentPath: String
     let theme: Theme
+    /// Which passages the rail still holds a comment for, and which is focused.
+    let highlights: DocumentHighlights
+    /// A passage to scroll into view, changed by the rail when a card is clicked. Carrying it as state
+    /// rather than as an imperative call keeps this a value type that SwiftUI can diff.
+    let reveal: String?
     let assetProvider: @Sendable (String) async -> DocumentAsset?
     let onSelect: (DocumentSelection) -> Void
+    /// The agent rewrote these anchored passages, so their tints could not be re-placed.
+    let onDetached: ([String]) -> Void
+    /// The topmost anchored passage in the viewport, so the rail can follow the reading position.
+    let onVisible: (String) -> Void
 
     /// `WKUserContentController` retains its handler STRONGLY. Registering the coordinator directly
     /// leaks the webview AND the coordinator for the app's lifetime, so a weak proxy sits between them.
@@ -56,10 +91,14 @@ struct DocumentWebView {
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var onSelect: (DocumentSelection) -> Void
+        var onDetached: ([String]) -> Void
+        var onVisible: (String) -> Void
         /// The most recent payload, held until the page is ready. `evaluateJavaScript` routinely races
         /// the initial load — `window.orchestra` does not exist until reader.js has executed — so the
         /// first render is queued and flushed from `didFinish`.
         private var pending: String?
+        private var pendingHighlights: String?
+        private var pendingReveal: String?
         private var loaded = false
         /// The last payload actually handed to the page. SwiftUI re-runs `body` for ANY published
         /// change — a keystroke in the compose field, a filter edit, or any board tick, since the view
@@ -67,8 +106,20 @@ struct DocumentWebView {
         /// class, so pushing unconditionally erases the user's selection highlight on the first
         /// keystroke, and re-lexes the whole document several times a second on a busy board.
         private var lastSent: String?
+        private var lastHighlights: String?
+        private var lastReveal: String?
 
-        init(onSelect: @escaping (DocumentSelection) -> Void) { self.onSelect = onSelect }
+        /// Hard cap on the selected text the page may report. Comfortably above the excerpt cap the
+        /// comment applies later, so the cap never truncates a quote a user could actually have made.
+        static let selectedTextCap = 4000
+
+        init(onSelect: @escaping (DocumentSelection) -> Void,
+             onDetached: @escaping ([String]) -> Void,
+             onVisible: @escaping (String) -> Void) {
+            self.onSelect = onSelect
+            self.onDetached = onDetached
+            self.onVisible = onVisible
+        }
 
         func push(_ payload: [String: Any], into web: WKWebView) {
             guard let json = Self.encode(payload) else { return }
@@ -76,6 +127,29 @@ struct DocumentWebView {
             lastSent = json
             guard loaded else { pending = json; return }
             evaluate(json, in: web)
+        }
+
+        /// The rail's state, pushed on its OWN channel rather than inside the render payload.
+        ///
+        /// Folding it into the payload would rebuild the DOM and re-lex the whole document every time
+        /// the reviewer clicked a different card — and rebuilding is exactly what drops the tints.
+        func pushHighlights(_ state: DocumentHighlights, into web: WKWebView) {
+            let payload: [String: Any] = state.active
+                .map { ["keep": state.keep, "active": $0] } ?? ["keep": state.keep]
+            guard let json = Self.encode(payload), json != lastHighlights else { return }
+            lastHighlights = json
+            guard loaded else { pendingHighlights = json; return }
+            web.evaluateJavaScript("window.orchestra.setHighlights(\(json))")
+        }
+
+        /// Scroll a passage into view. Driven by a changing value, so clicking the SAME card twice does
+        /// nothing — which is correct: the passage is already where the reviewer put it.
+        func pushReveal(_ id: String?, into web: WKWebView) {
+            guard let id, id != lastReveal else { return }
+            lastReveal = id
+            guard loaded else { pendingReveal = id; return }
+            guard let json = Self.encode(["id": id]) else { return }
+            web.evaluateJavaScript("(function(o){window.orchestra.reveal(o.id);})(\(json))")
         }
 
         private static func encode(_ payload: [String: Any]) -> String? {
@@ -91,19 +165,64 @@ struct DocumentWebView {
             web.evaluateJavaScript("(function(o){window.orchestra.render(o.markdown,o);})(\(json))")
         }
 
+        /// Render FIRST, then the rail state — `setHighlights` needs blocks to attach to.
         func webView(_ web: WKWebView, didFinish _: WKNavigation!) {
             loaded = true
             if let p = pending { pending = nil; evaluate(p, in: web) }
+            if let h = pendingHighlights {
+                pendingHighlights = nil
+                web.evaluateJavaScript("window.orchestra.setHighlights(\(h))")
+            }
+            if let r = pendingReveal {
+                pendingReveal = nil
+                lastReveal = nil                          // re-push through the normal path
+                pushReveal(r, into: web)
+            }
         }
 
         func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-            // SELECTION-ONLY. Anything that is not exactly this shape is dropped on the floor.
-            guard m.name == "orchestraSelection", let d = m.body as? [String: Any],
-                  let block = d["blockIndex"] as? Int,
+            // The page speaks three sentences and no others. Every one of them carries ids, indices,
+            // and line numbers — never a path, never a request, and never content the app acts on
+            // without proving it first. Anything not exactly one of these shapes is dropped.
+            guard m.name == "orchestraSelection", let d = m.body as? [String: Any] else { return }
+            switch d["kind"] as? String {
+            case "selection":  handleSelection(d)
+            case "detached":   handleDetached(d)
+            case "visible":    handleVisible(d)
+            default:           return
+            }
+        }
+
+        private func handleSelection(_ d: [String: Any]) {
+            guard let block = d["blockIndex"] as? Int,
                   let start = d["startLine"] as? Int,
                   let end = d["endLine"] as? Int,
-                  block >= 0, start >= 1, end >= start else { return }
-            onSelect(DocumentSelection(startLine: start, endLine: end))
+                  let highlight = d["highlight"] as? String,
+                  block >= 0, start >= 1, end >= start,
+                  Self.isHighlightID(highlight) else { return }
+            // Capped here as well as in the page. The page's own cap is a courtesy, and a bridge must
+            // not size a buffer from a number the other side chose.
+            let text = (d["text"] as? String).map { String($0.prefix(Self.selectedTextCap)) }
+            onSelect(DocumentSelection(startLine: start, endLine: end, text: text, highlightID: highlight))
+        }
+
+        /// The WHOLE detached set, empty included — an empty report is how a re-attached anchor clears
+        /// its badge, so it must not be filtered out as "nothing to say".
+        private func handleDetached(_ d: [String: Any]) {
+            guard let ids = d["ids"] as? [String] else { return }
+            onDetached(ids.filter(Self.isHighlightID))
+        }
+
+        private func handleVisible(_ d: [String: Any]) {
+            guard let id = d["highlight"] as? String, Self.isHighlightID(id) else { return }
+            onVisible(id)
+        }
+
+        /// A highlight id is echoed back into JavaScript inside `setHighlights`, so it is validated on
+        /// arrival rather than trusted. It is serialized as JSON there, which already escapes it — this
+        /// is the second layer, and it keeps the id a token instead of a string of unknown shape.
+        static func isHighlightID(_ s: String) -> Bool {
+            s.count <= 16 && s.first == "h" && s.dropFirst().allSatisfy(\.isNumber) && s.count > 1
         }
 
         /// A jetsammed content process leaves the page blank and every later `evaluateJavaScript` a
@@ -111,6 +230,8 @@ struct DocumentWebView {
         func webViewWebContentProcessDidTerminate(_ web: WKWebView) {
             loaded = false
             lastSent = nil
+            lastHighlights = nil
+            lastReveal = nil
             web.load(URLRequest(url: DocumentSchemeHandler.pageURL))
         }
 
@@ -140,7 +261,9 @@ struct DocumentWebView {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onSelect: onSelect) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSelect: onSelect, onDetached: onDetached, onVisible: onVisible)
+    }
 
     fileprivate func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -179,15 +302,38 @@ struct DocumentWebView {
     fileprivate func payload() -> [String: Any] {
         // Map the app's Theme onto the custom properties reader.css consumes. These names must stay in
         // sync with the `var(--…)` fallbacks in the stylesheet.
+        //
+        // `cssColor` throughout, never a hex form: `chip` and `hair` are translucent OVERLAYS, and a
+        // conversion that drops their alpha paints solid black code blocks on a white card.
+        //
+        // The reader renders PROSE, so it takes the theme's PRIMARY text color. It previously took
+        // `text2`, which is the secondary color the app uses for labels and captions, and a whole
+        // document set in it read as muted chrome rather than as something to read.
         let colors: [String: String] = [
-            "bg": theme.card.cssHex,
-            "text": theme.text2.cssHex,
-            "text2": theme.text3.cssHex,
-            "accent": theme.accent.cssHex,
-            "sel": theme.accent.cssRGBA(0.16),
+            "bg": theme.card.cssColor,
+            "text": theme.text.cssColor,
+            "text2": theme.text2.cssColor,
+            "text3": theme.text3.cssColor,
+            "accent": theme.accent.cssColor,
+            // THE LIVE SELECTION keeps the accent, because that is what a selection looks like
+            // everywhere else in the app.
+            "sel": theme.accent.cssRGBA(0.22),
+            // AN ANCHORED PASSAGE gets its own hue. It is a different thing from a selection — it
+            // persists, it belongs to a comment, and it stays on screen after the drag is over — so it
+            // must not be the same color. Indigo is the one semantic hue left unclaimed here: the
+            // accent is selection, amber is the change flash, and green and red are status.
+            //
+            // Two strengths, and only strengths. A highlight shows focus by WEIGHT and never gains a
+            // border: one anchored passage is several spans whenever it crosses inline markup, and an
+            // edge would draw a seam at every join.
+            "anno": theme.indigo.dot.cssRGBA(0.30),
+            "annoIdle": theme.indigo.dot.cssRGBA(0.14),
+            // The same hue at full strength, for the one thing that floats OVER body text and so
+            // cannot be transparent — the "Comment" offer.
+            "annoSolid": theme.indigo.dot.cssColor,
             "flash": theme.amber.dot.cssRGBA(0.38),
-            "code": theme.chip.cssHex,
-            "hair": theme.hair.cssHex,
+            "code": theme.chip.cssColor,
+            "hair": theme.hair.cssColor,
         ]
         return [
             "markdown": markdown,
@@ -214,7 +360,11 @@ extension DocumentWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.onSelect = onSelect
+        context.coordinator.onDetached = onDetached
+        context.coordinator.onVisible = onVisible
         context.coordinator.push(payload(), into: web)
+        context.coordinator.pushHighlights(highlights, into: web)
+        context.coordinator.pushReveal(reveal, into: web)
     }
 }
 #else
@@ -222,7 +372,11 @@ extension DocumentWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.onSelect = onSelect
+        context.coordinator.onDetached = onDetached
+        context.coordinator.onVisible = onVisible
         context.coordinator.push(payload(), into: web)
+        context.coordinator.pushHighlights(highlights, into: web)
+        context.coordinator.pushReveal(reveal, into: web)
     }
 }
 #endif

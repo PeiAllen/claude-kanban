@@ -1327,6 +1327,26 @@ and a link behavior are three such questions. The two answers can then silently 
 The page is vendored, never fetched: marked, KaTeX, and DOMPurify ship inside the app. Offline rendering
 matters on a phone, and a CDN cannot be trusted to stay available.
 
+### The page takes the app's theme, and the conversion keeps alpha
+
+The reader sits inside the inspector, so it matches the app's `Theme` rather than the OS appearance
+alone. Swift sends the theme as CSS custom properties, and the stylesheet consumes only those.
+
+One rule governs the conversion, and it is load-bearing: **every color goes through `Color.cssColor`,
+which keeps the color's own alpha.** Half of `Theme` is translucent OVERLAY colors that composite
+against the surface under them. `chip` is black at 5% on a white card. `hair` is black at 9%. A
+`#rrggbb` conversion drops that alpha silently and turns both into `#000000`, which is why the reader
+once painted a solid black slab behind every inline code span, every fenced block, and every table
+header, and solid white in dark mode. There is deliberately no hex conversion left to reach for.
+
+The page also takes the theme's PRIMARY text color. It is a reading surface, and a whole document set
+in the secondary label color reads as chrome rather than as prose.
+
+The stylesheet caps the text column at a reading measure and centers it. The inspector can be dragged
+very wide, and prose set edge to edge across it is hard to track from line to line. Tables, fenced
+blocks, and display math opt back out and scroll inside their own box, because the page itself must
+never scroll horizontally.
+
 ### Documents belong to the working directory, not to the card
 
 A document is any markdown file a reviewer might read during a card's life. Orchestra does not care who
@@ -1435,16 +1455,116 @@ platforms.
 The poll lives inside the reader's `.task`, so it runs only while the view is on screen and SwiftUI
 cancels it on the way out. There is no timer to invalidate and nothing to leak.
 
+### Selecting text offers a comment; it does not create one
+
+Reading and annotating use the same gesture. People drag through a sentence to hold their place, to
+re-read it, or to copy it, and only sometimes to say something about it. A reader that created a card
+on every selection would spend most of its time being dismissed.
+
+So a selection ARMS an offer. A **Comment** button appears beside it, and the comment exists only when
+you take that offer — by clicking, or by pressing ⌘⇧M. Escape, a scroll, or a new drag retires it, and
+nothing was created. Until then the page has reported nothing to Swift at all, which also keeps the
+bridge quiet during ordinary reading.
+
+The shortcut is handled INSIDE the page, not as a SwiftUI `keyboardShortcut`. The webview holds first
+responder while you are selecting in it, so a native shortcut would not fire — and the page is the side
+that knows what is selected.
+
+The phone arms the same offer from a block tap, for the same reason plus a sharper one: its rail is a
+sheet, so an accidental tap would raise a panel over the document it is about.
+
+The button is positioned through the CSSOM, never a `style` attribute. The page's CSP forbids inline
+styles, and setting the attribute is blocked while assigning `element.style.left` is not. That was
+verified in a real WKWebView under the shipped CSP rather than assumed.
+
+### A comment is a reading pass, and the rail is ordered rather than floating
+
+A comment used to be one-shot: select, type in a bar at the bottom, send, and nothing remained. That
+shape fights how review actually goes. You read a document top to bottom, you find four things, and
+having to send each one before you can note the next turns one review into four interruptions.
+
+So the reader holds a **pass**: several anchored passages at once, written in any order, sent
+individually or as one message. It lives as long as the document stays open and it is deliberately not
+durable — the same rule documents themselves follow. A sent card stays in the rail, because the pass is
+also a record of where you have been in a long document.
+
+**The rail is a column in document order, not cards floating beside their passages.** Floating them is
+the more obvious design and it is the wrong trade here: the rail is native SwiftUI and the document is
+a `WKWebView`, so pinning a card to a passage's exact `y` means chasing the webview's scroll position
+across a process boundary, frame by frame. That lags visibly on a fast scroll. The spatial cue it buys
+is one the page's own tint already gives. Instead the page reports which anchored passage is at the top
+of the viewport, throttled and only on a change, and the rail scrolls that card into view. One message
+every second or so replaces one per frame.
+
+Sent comments collapse into one row. They stay in the pass — it is a record of what you said, and their
+passages stay tinted — but a long review otherwise ends as a rail of dimmed cards with the ones you are
+still writing pushed off the bottom. Collapsing costs them their place in document order, which is the
+right trade: a finished comment's position in the rail matters less than its being out of the way. The
+focus-follow skips a card that is collapsed out of view, so scrolling the document never focuses
+something you cannot see.
+
+The phone gets the same rail as a sheet, with background interaction enabled so the document keeps
+scrolling behind it. One comment model, two containers — a margin does not fit a phone, and the rule
+that the two platforms share one renderer and one selection model is worth more than a bespoke phone
+design.
+
+Dismissing that sheet HIDES the pass rather than ending it. A swipe down is far too cheap a gesture to
+destroy writing, and the sheet covers the document being commented on — so wanting it out of the way is
+the common case, not a signal of being finished. A bar at the bottom of the document says how many
+comments are held and how many are unsent, and brings the sheet back.
+
+**The poll holds while any comment is open**, written into or not. Anchoring is a deliberate act — you
+select, then you take the offer — so an open card means someone is working on that passage and the text
+under it must not move. Covering the empty card matters: without it there is a window between taking the
+offer and typing the first character in which the agent can rewrite the passage and detach a comment the
+reviewer had not begun.
+
+Sent comments never hold. Sending is exactly when you want to watch the agent act on what you said, and
+it is the reason "text moved" is normally something you see on a SENT card rather than a warning about
+work in progress. The residual cost is an abandoned empty card holding the document still, which is
+visible in the rail and one click from being discarded.
+
+**A detached anchor can re-attach.** The page re-resolves every anchor on every render and reports the
+whole detached set, empty included, so a passage the agent rewrote and then restored comes back tinted
+and its card stops saying "text moved". Reporting only the non-empty set left a badge that could be set
+and never cleared, contradicting a highlight the reader could plainly see.
+
 ### The reader's bridge reports a selection and nothing else
 
 A document can come from an agent, from git, or from `spawn --base origin/<branch>`, so its content is
 untrusted. A webview runs whatever HTML that content contains, in the app's process, with no prompt and no log.
 That is a different audit path from a shell command, which stays visible in the terminal.
 
-The page therefore reports `{blockIndex, startLine, endLine}` and nothing else. It cannot request
-anything, write anything, or name a path, because the compose field is native and never needs it to. The
-worst a compromised page can do is misreport WHICH lines the user picked. Swift then quotes those lines
-from its own copy of the file, so the message stays internally consistent.
+The page therefore reports a selection and nothing else. It cannot request anything, write anything, or
+name a path, because the compose field is native and never needs it to. The invariant is that **the
+worst a compromised page can do is misreport WHICH lines the user picked.** Swift then quotes from its
+own copy of the file, so the message stays internally consistent.
+
+The page speaks three sentences and no others. A **selection**, which anchors a passage. A **detached**
+report, naming anchors the agent has rewritten out from under. A **visible** report, naming the topmost
+anchor in the viewport so the rail can follow the reading position. The last two carry only ids the page
+itself minted, and Swift validates their shape before echoing any of them back.
+
+A selection is `{blockIndex, startLine, endLine, text, highlight}`. `text` is the rendered text the user
+dragged through, and it is the one field that is not a number or a token — so it gets a proof rather
+than trust. Swift
+accepts it as the quote only when the words of the selection occur, in order and unbroken, in Swift's
+own copy of those lines. Markdown markers and link targets are punctuation between words, so
+`**poll**, not` in the file matches the rendered `poll, not`. Anything that changes the WORDS — an HTML
+entity, an attribute value, a string the page invented — fails the proof, and the quote falls back to
+the whole line range.
+
+That keeps the invariant exactly as it was. The page still cannot put words in the user's mouth. It can
+only choose between two quotes that both come out of the real file: the precise selection, or the whole
+block. The field earns its place because the line range alone is coarse — source and rendered text
+differ, so the page can rarely prove which lines a selection fell on, and a comment about four words
+used to quote the entire paragraph.
+
+The page tints the exact range instead of the enclosing block, which is a readability fix rather than a
+security one. It anchors each highlight to the CONTENT of its block, not to the block's position, so a
+passage keeps its tint while the agent edits above it. When the anchored text itself is rewritten, the
+highlight is dropped rather than re-placed. Tinting words the user did not choose is the same class of
+error as quoting a line they did not pick.
 
 Two layers back that up. DOMPurify sanitizes the rendered HTML, and a strict CSP with no remote loads
 catches anything sanitization misses — script gets no inline or eval grant. The page is served over a private scheme, not `file://` or `loadHTMLString`. An opaque origin makes CSP
