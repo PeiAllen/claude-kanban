@@ -179,15 +179,23 @@ struct DocumentWebView {
     fileprivate func payload() -> [String: Any] {
         // Map the app's Theme onto the custom properties reader.css consumes. These names must stay in
         // sync with the `var(--…)` fallbacks in the stylesheet.
+        //
+        // `cssColor` throughout, never a hex form: `chip` and `hair` are translucent OVERLAYS, and a
+        // conversion that drops their alpha paints solid black code blocks on a white card.
+        //
+        // The reader renders PROSE, so it takes the theme's PRIMARY text color. It previously took
+        // `text2`, which is the secondary color the app uses for labels and captions, and a whole
+        // document set in it read as muted chrome rather than as something to read.
         let colors: [String: String] = [
-            "bg": theme.card.cssHex,
-            "text": theme.text2.cssHex,
-            "text2": theme.text3.cssHex,
-            "accent": theme.accent.cssHex,
+            "bg": theme.card.cssColor,
+            "text": theme.text.cssColor,
+            "text2": theme.text2.cssColor,
+            "text3": theme.text3.cssColor,
+            "accent": theme.accent.cssColor,
             "sel": theme.accent.cssRGBA(0.16),
             "flash": theme.amber.dot.cssRGBA(0.38),
-            "code": theme.chip.cssHex,
-            "hair": theme.hair.cssHex,
+            "code": theme.chip.cssColor,
+            "hair": theme.hair.cssColor,
         ]
         return [
             "markdown": markdown,

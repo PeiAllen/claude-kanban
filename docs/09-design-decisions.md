@@ -1327,6 +1327,26 @@ and a link behavior are three such questions. The two answers can then silently 
 The page is vendored, never fetched: marked, KaTeX, and DOMPurify ship inside the app. Offline rendering
 matters on a phone, and a CDN cannot be trusted to stay available.
 
+### The page takes the app's theme, and the conversion keeps alpha
+
+The reader sits inside the inspector, so it matches the app's `Theme` rather than the OS appearance
+alone. Swift sends the theme as CSS custom properties, and the stylesheet consumes only those.
+
+One rule governs the conversion, and it is load-bearing: **every color goes through `Color.cssColor`,
+which keeps the color's own alpha.** Half of `Theme` is translucent OVERLAY colors that composite
+against the surface under them. `chip` is black at 5% on a white card. `hair` is black at 9%. A
+`#rrggbb` conversion drops that alpha silently and turns both into `#000000`, which is why the reader
+once painted a solid black slab behind every inline code span, every fenced block, and every table
+header, and solid white in dark mode. There is deliberately no hex conversion left to reach for.
+
+The page also takes the theme's PRIMARY text color. It is a reading surface, and a whole document set
+in the secondary label color reads as chrome rather than as prose.
+
+The stylesheet caps the text column at a reading measure and centers it. The inspector can be dragged
+very wide, and prose set edge to edge across it is hard to track from line to line. Tables, fenced
+blocks, and display math opt back out and scroll inside their own box, because the page itself must
+never scroll horizontally.
+
 ### Documents belong to the working directory, not to the card
 
 A document is any markdown file a reviewer might read during a card's life. Orchestra does not care who

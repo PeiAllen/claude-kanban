@@ -396,6 +396,11 @@ A document gets an `A` badge when git does not track it, or when the branch adde
 badge when the branch modified it. Most documents carry no badge, because git has nothing to say about
 a file that is committed and unchanged. That is correct, not missing data.
 
+**How it reads.** The page takes its colors from the app's theme, so a document matches the inspector
+around it in both appearances. The text column stops at a reading measure and centers itself, because
+prose set across a very wide inspector is hard to track from one line to the next. Tables, fenced code,
+and display math are exempt and scroll inside their own box. The page itself never scrolls sideways.
+
 **How you comment.** Select a passage, then type in the native field at the bottom. On the Mac you drag
 through any range. On the phone you tap a block. The comment becomes ONE message in the card's inbox. It
 is addressed to the agent that owns the document:
