@@ -26,6 +26,30 @@ public struct ClaudeCodeAdapter: Adapter {
          "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD": "1000000"]
     }
 
+    public func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        let url = setup.traceHTTPBaseURL.map {
+            "\($0)/v1/traces/\(setup.cardId.uuidString.lowercased())/\(setup.sessionEpoch)"
+        }
+        return .pushed(otlpHTTPURL: url)
+    }
+
+    public func launchEnvironment(_ context: AdapterContext) -> [String: String] {
+        var result = env
+        guard let endpoint = context.observationEndpoint?.otlpHTTPURL else { return result }
+        // Traces are the narrow structured fallback for the Ctrl-C path where Claude omits its Stop hook.
+        // Metrics/logs remain disabled, and privacy-expanding OTEL_LOG_* flags stay at their defaults.
+        result["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+        result["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] = "1"
+        result["OTEL_TRACES_EXPORTER"] = "otlp"
+        result["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] = "http/json"
+        result["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = endpoint
+        result["OTEL_EXPORTER_OTLP_TRACES_COMPRESSION"] = "none"
+        result["OTEL_METRICS_EXPORTER"] = "none"
+        result["OTEL_LOGS_EXPORTER"] = "none"
+        result["OTEL_TRACES_EXPORT_INTERVAL"] = "250"
+        return result
+    }
+
     /// Allow tests to inject a fake binary (the fake-agent fixture) without spawning real Claude.
     let binOverride: String?
     /// Test-only home injection for the opt-in global MCP installer; production reads the user's HOME.

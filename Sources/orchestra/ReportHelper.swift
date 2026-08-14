@@ -28,10 +28,11 @@ enum ReportHelper {
             writeStdout(Data(renderStatusLine(payload: payload, raw: raw).utf8))
         }
 
-        // THE EDGE: resolve this card's adapter from the baked `--agent`, convert the raw payload to typed
-        // telemetry, and send a typed `hook` to the daemon. Raw agent JSON never leaves this process; the
-        // daemon dispatches on the typed HookEvent (adapter-free). No agent identity in the wire beyond
-        // the event vocabulary. Missing task/agent/unknown event → bail (best-effort; always exits 0).
+        // THE EDGE: resolve this card's adapter from the baked `--agent`, convert the raw payload to the
+        // legacy typed report, and send a typed `hook` to the daemon. During the replacement-status shadow
+        // migration only the two turn-boundary payloads also ride locally to Core, where the card's current
+        // provider session can fence them before the same adapter normalizes them into `AgentSignal`s.
+        // Tool/input payloads remain edge-only. Missing task/agent/unknown event → bail (best-effort).
         guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty,
               let event = HookEvent(rawValue: kind),
               let agentId = flags.value("agent"),
@@ -49,9 +50,11 @@ enum ReportHelper {
         //  - `stopHookActive` = the raw Stop hook's `stop_hook_active` loop-guard flag, read straight off
         //    the payload (NOT via `parse`), so it rides even when `report` is nil (Codex report-less Stop /
         //    Claude bg-hold) and a background-yielding continuation still confirms its prior stop-drain lease.
+        let observationPayload = (event == .userPrompt || event == .stop) ? payload : nil
         let params = JSONValue.object(HookRPC.hookFields(
             ref: taskId, event: kind, report: reportJSON, source: source?.rawValue,
-            epoch: env["ORCH_EPOCH"].flatMap(Int.init), stopHookActive: HookRPC.stopHookActive(payload)))
+            epoch: env["ORCH_EPOCH"].flatMap(Int.init), stopHookActive: HookRPC.stopHookActive(payload),
+            observationPayload: observationPayload))
 
         // statusLine never yields a response → pure fire-and-forget send (~50ms; snapshot self-heals).
         // Every other event awaits a possible HookResponse (~2s; the agent waits) and encodes it to stdout.

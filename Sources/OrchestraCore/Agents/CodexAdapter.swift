@@ -35,9 +35,9 @@ public struct CodexAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
-    public func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint? {
-        .unixSocket(path: (runtimeStateDir as NSString)
-            .appendingPathComponent("codex-\(cardRef).sock"))
+    public func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        .unixSocket(path: (setup.runtimeStateDir as NSString)
+            .appendingPathComponent("codex-\(setup.cardRef).sock"))
     }
 
     public func makeObservationSource(

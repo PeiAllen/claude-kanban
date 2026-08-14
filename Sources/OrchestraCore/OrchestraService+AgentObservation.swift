@@ -15,6 +15,46 @@ extension OrchestraService {
     func shadowAgentState(_ id: UUID) -> AgentState? { runtime[id]?.shadowAgentState }
     func agentObservationActive(_ id: UUID) -> Bool { runtime[id]?.tasks[.agentObservation] != nil }
 
+    func preparedObservationEndpoint(for card: Task, adapter: any Adapter) -> AgentObservationEndpoint? {
+        adapter.observationEndpoint(.init(
+            cardId: card.id,
+            cardRef: card.shortId,
+            sessionEpoch: card.sessionEpoch,
+            runtimeStateDir: config.runtimeStateDir,
+            traceHTTPBaseURL: traceHTTPBaseURL
+        ))
+    }
+
+    /// Apply one ephemeral push (hook or local OTLP receiver) against the card identity that exists now.
+    /// Unlike a held observation source, a push has no source token to fence, so the launch epoch is
+    /// mandatory and the adapter checks the provider-native session carried inside the raw event.
+    public func receivePushedAgentObservation(
+        cardId: UUID,
+        observedEpoch: Int?,
+        raw: RawTelemetry
+    ) async {
+        guard let observedEpoch,
+              let card = await store.get(cardId),
+              card.phase.kind == .live,
+              card.sessionEpoch == observedEpoch,
+              let adapter = try? registry.get(card.agentId)
+        else { return }
+
+        let context = AgentSignalContext(
+            sessionEpoch: observedEpoch,
+            harnessSessionId: card.agentSessionId
+        )
+        var state = runtime[cardId]?.shadowAgentState ?? AgentState(turnStatus: .unavailable)
+        for signal in adapter.agentSignals(from: raw, context: context) {
+            _ = AgentStateReducer.apply(
+                signal,
+                to: &state,
+                currentSessionEpoch: card.sessionEpoch
+            )
+        }
+        runtime[cardId]?.shadowAgentState = state
+    }
+
     /// Make the structured source match the card's current live session. Repeated calls with the same
     /// identity are no-ops, so boot adoption, phase transitions, and session-id binding can all converge
     /// through this one function without reconnect churn.
@@ -27,10 +67,7 @@ extension OrchestraService {
 
         let unavailable = AgentState(turnStatus: .unavailable)
         guard let adapter = try? registry.get(card.agentId),
-              let endpoint = adapter.observationEndpoint(
-                  cardRef: card.shortId,
-                  runtimeStateDir: config.runtimeStateDir
-              ),
+              let endpoint = preparedObservationEndpoint(for: card, adapter: adapter),
               let sessionId = card.agentSessionId, !sessionId.isEmpty
         else {
             stopAgentObservation(card.id, discardState: false)
@@ -44,7 +81,13 @@ extension OrchestraService {
             harnessSessionId: sessionId
         )
         if runtime[card.id]?.agentObservationIdentity == identity,
-           runtime[card.id]?.tasks[.agentObservation] != nil {
+           (endpoint.isPushOnly || runtime[card.id]?.tasks[.agentObservation] != nil) {
+            return
+        }
+        if endpoint.isPushOnly {
+            stopAgentObservation(card.id, discardState: false)
+            runtime[card.id]?.agentObservationIdentity = identity
+            runtime[card.id]?.shadowAgentState = unavailable
             return
         }
         guard let firstSource = adapter.makeObservationSource(

@@ -482,7 +482,7 @@ extension OrchestraService {
             // healthy retried session down and relaunches it, losing the agent's context), and its hooks
             // report with `observedEpoch == nil`, which skips the funnel's generation fence entirely — a
             // stale report from it can then land `.live` on a card a newer relaunch already owns.
-            let env = withEpoch(adapter.env, live.sessionEpoch)
+            let env = withEpoch(adapter.launchEnvironment(ctx), live.sessionEpoch)
             let argv = adapter.start(ctx)
             let launchTask = t
             do {

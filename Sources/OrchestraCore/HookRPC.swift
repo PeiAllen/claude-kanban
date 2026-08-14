@@ -9,6 +9,10 @@ public enum HookRPC {
     /// The sibling field carrying the Stop hook's `stop_hook_active` loop-guard flag. Camel-case on the
     /// wire like `epoch`/`ref`/`event`; referenced by BOTH `hookFields` and the `ControlServer` decode.
     public static let stopHookActiveKey = "stopHookActive"
+    /// The raw payload for the two turn-boundary hooks consumed by the replacement adapter reducer.
+    /// Tool/input payloads stay at the edge until their independent activity/request reconciliation is
+    /// implemented, so this field does not turn the hook channel into a general raw-event mirror.
+    public static let observationPayloadKey = "observationPayload"
 
     /// Extract the Stop hook's `stop_hook_active` flag from the RAW agent stdin JSON, at the edge — never
     /// via `Adapter.parse` (structurally impossible for Codex's report-less Stop; dropped by Claude's
@@ -23,12 +27,14 @@ public enum HookRPC {
     /// `stopHookActive` is read from the raw payload and rides even when `report` is nil (Codex's
     /// report-less Stop, Claude's bg-hold), so a continuation that yields to background work still confirms.
     public static func hookFields(ref: String, event: String, report: JSONValue?, source: String?,
-                                  epoch: Int?, stopHookActive: Bool?) -> [String: JSONValue] {
+                                  epoch: Int?, stopHookActive: Bool?,
+                                  observationPayload: JSONValue? = nil) -> [String: JSONValue] {
         var fields: [String: JSONValue] = ["ref": .string(ref), "event": .string(event)]
         if let report { fields["report"] = report }
         if let source { fields["source"] = .string(source) }
         if let epoch { fields["epoch"] = .int(epoch) }
         if let stopHookActive { fields[stopHookActiveKey] = .bool(stopHookActive) }
+        if let observationPayload { fields[observationPayloadKey] = observationPayload }
         return fields
     }
 }

@@ -4,10 +4,42 @@ import Foundation
 /// provider-neutral even though the first source (Codex app-server) uses a Unix domain socket.
 public enum AgentObservationEndpoint: Sendable, Equatable {
     case unixSocket(path: String)
+    /// Provider observations pushed into Orchestra. Hooks use the existing control socket; the optional
+    /// URL is the daemon's local OTLP trace receiver for providers with a missing terminal hook.
+    case pushed(otlpHTTPURL: String?)
 
     public var unixSocketPath: String? {
         guard case .unixSocket(let path) = self else { return nil }
         return path
+    }
+
+    public var otlpHTTPURL: String? {
+        guard case .pushed(let url) = self else { return nil }
+        return url
+    }
+
+    var isPushOnly: Bool {
+        if case .pushed = self { return true }
+        return false
+    }
+}
+
+/// Card/session identity and daemon observation infrastructure offered to an adapter. Core allocates the
+/// infrastructure; the adapter decides whether and how its provider consumes it.
+public struct AgentObservationSetup: Sendable, Equatable {
+    public let cardId: UUID
+    public let cardRef: String
+    public let sessionEpoch: Int
+    public let runtimeStateDir: String
+    public let traceHTTPBaseURL: String?
+
+    public init(cardId: UUID, cardRef: String, sessionEpoch: Int, runtimeStateDir: String,
+                traceHTTPBaseURL: String? = nil) {
+        self.cardId = cardId
+        self.cardRef = cardRef
+        self.sessionEpoch = sessionEpoch
+        self.runtimeStateDir = runtimeStateDir
+        self.traceHTTPBaseURL = traceHTTPBaseURL
     }
 }
 
@@ -84,7 +116,7 @@ public protocol Adapter: Sendable {
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal]
     /// The launch-local endpoint this adapter needs for structured observation, if any. Core only
     /// allocates and carries the endpoint; provider-specific launch and connection details stay here.
-    func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint?
+    func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint?
     /// Build one fresh connection attempt for an endpoint + provider session. Core may call this again
     /// after a disconnect; returning nil means this adapter has no structured source for that endpoint.
     func makeObservationSource(
@@ -109,6 +141,9 @@ public protocol Adapter: Sendable {
     /// DEFAULT nil (additive): an adapter that writes no such file opts out for free.
     var cardFile: CardFileSpec? { get }
     var env: [String: String] { get }
+    /// Context-dependent launch environment. The default preserves the original static `env` seam; an
+    /// adapter uses this only when its prepared observation endpoint must be handed to the provider.
+    func launchEnvironment(_ context: AdapterContext) -> [String: String]
 }
 
 public extension Adapter {
@@ -117,12 +152,13 @@ public extension Adapter {
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }
-    func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint? { nil }
+    func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? { nil }
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,
         harnessSessionId: String
     ) -> (any AgentObservationSource)? { nil }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
+    func launchEnvironment(_ context: AdapterContext) -> [String: String] { env }
     func sessionSource(_ payload: JSONValue) -> SessionSource? {
         payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other
     }

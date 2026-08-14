@@ -33,6 +33,9 @@ public actor OrchestraService {
     /// Absolute path of the bundled MCP server, injected alongside the hook binary for deterministic
     /// launch configuration and tests.
     let orchestraMCPBin: String
+    /// Loopback-only daemon receiver offered to adapters that need pushed trace completion. The receiver
+    /// itself is process infrastructure owned by `orchestrad`; Core only carries its unguessable base URL.
+    let traceHTTPBaseURL: String?
     var worktrees: WorktreeRegistry
     var sessions: any SessionManaging
     let launcher: Launcher
@@ -210,6 +213,7 @@ public actor OrchestraService {
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra"),
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
+                traceHTTPBaseURL: String? = nil,
                 clock: any Clock<Duration> = ContinuousClock(),
                 now: @escaping @Sendable () -> Date = { Date() },
                 // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
@@ -226,6 +230,7 @@ public actor OrchestraService {
         self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin
         self.orchestraMCPBin = orchestraMCPBin
+        self.traceHTTPBaseURL = traceHTTPBaseURL
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
@@ -1091,7 +1096,8 @@ public actor OrchestraService {
     /// there is nothing to send back.
     public func handleHook(_ ref: String, event: HookEvent,
                            report: StatusReport?, source: SessionSource?,
-                           observedEpoch: Int? = nil, stopHookActive: Bool = false) async -> HookResponse? {
+                           observedEpoch: Int? = nil, stopHookActive: Bool = false,
+                           observationPayload: JSONValue? = nil) async -> HookResponse? {
         guard let task = try? await resolveRef(ref) else { return nil }
 
         // STOP: claim/confirm the stopDrain BEFORE applying the Stop's own report. A real Claude Stop
@@ -1106,10 +1112,24 @@ public actor OrchestraService {
         if event == .stop {
             let continuation = await payloadForStop(task.id, observedEpoch: observedEpoch, stopHookActive: stopHookActive)
             if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
+            if let observationPayload {
+                await receivePushedAgentObservation(
+                    cardId: task.id,
+                    observedEpoch: observedEpoch,
+                    raw: .hooksPush(kind: event.rawValue, payload: observationPayload)
+                )
+            }
             return continuation.map { HookResponse(continuation: $0) }
         }
 
         if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
+        if let observationPayload {
+            await receivePushedAgentObservation(
+                cardId: task.id,
+                observedEpoch: observedEpoch,
+                raw: .hooksPush(kind: event.rawValue, payload: observationPayload)
+            )
+        }
         if event == .sessionStart, let source, source != .startup, source != .compact,
            report?.event?.sessionSource == nil {
             try? await self.report(task.id, StatusReport(sessionSource: source.rawValue), observedEpoch: observedEpoch)

@@ -206,8 +206,8 @@ private struct ObservationTestAdapter: Adapter {
         AgentSessionInfo(agentId: id, sessionId: current, transcriptPath: nil,
                          priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
     }
-    func observationEndpoint(cardRef: String, runtimeStateDir: String) -> AgentObservationEndpoint? {
-        .unixSocket(path: "\(runtimeStateDir)/observed-\(cardRef).sock")
+    func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        .unixSocket(path: "\(setup.runtimeStateDir)/observed-\(setup.cardRef).sock")
     }
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,

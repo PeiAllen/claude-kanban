@@ -166,12 +166,12 @@ extension OrchestraService {
         }
         let epoch = task.sessionEpoch
         let grace = config.revivalGraceSeconds
-        let env = withEpoch(adapter.env, epoch)   // stamp the current generation into the session env
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
         runtime[id]?.pendingReadiness = nil   // start clean so only THIS bring-up's signal can confirm it
         markSeedTurn(id, flavor: flavor, epoch: epoch)   // this generation may owe a machine opening turn
 
         let argv: [String]
+        let launchContext: AdapterContext
         // Startup-abort retry spec (folded from spawn-startup-abort-classification): captured only for a
         // fresh spawn's blank launch so a bounded retry can re-`ensure` the SAME session + cwd.
         var armCtx: AdapterContext? = nil
@@ -186,10 +186,7 @@ extension OrchestraService {
         // right here, and the re-seat would relaunch on the model it was trying to leave. `pendingModel` is
         // never touched by report() (it is absent from `applyReportFields`), so it survives that window.
         let launchModel = task.pendingModel ?? task.model.id
-        let observationEndpoint = adapter.observationEndpoint(
-            cardRef: task.shortId,
-            runtimeStateDir: config.runtimeStateDir
-        )
+        let observationEndpoint = preparedObservationEndpoint(for: task, adapter: adapter)
         switch flavor {
         case .blank(_, let prompt):
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
@@ -202,6 +199,7 @@ extension OrchestraService {
             let a = adapter, c = ctx
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = adapter.start(ctx)
+            launchContext = ctx
             armCtx = ctx
         case .resume(let seed):
             // Every card-derived launch flag the `.blank` ctx carries must be carried HERE too. Both were
@@ -238,7 +236,11 @@ extension OrchestraService {
             if adapter.capabilities.telemetry == .fileTail { tailWatermarkPath = resolvedTranscript }
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = resumeArgv
+            launchContext = ctx
         }
+        // The endpoint is launch-local provider input, so adapters derive their environment from the exact
+        // context whose argv is being launched. Core adds only its provider-neutral generation stamp.
+        let env = withEpoch(adapter.launchEnvironment(launchContext), epoch)
         // PRE-ARM THE SESSION-NAME MIRROR with the `--name` this argv just captured. It has to happen HERE,
         // before the session can exist: `ensure` returns the moment tmux has the session, so the new agent
         // can emit its first statusline before any later write lands — and if a `set-title` arrived while

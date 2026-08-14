@@ -137,7 +137,8 @@ struct CodexAdapterArgvTests {
 
     @Test("Codex declares one short per-card Unix endpoint for its app-server observer")
     func observationEndpoint() {
-        #expect(adapter.observationEndpoint(cardRef: "abc12345", runtimeStateDir: "/runtime") ==
+        #expect(adapter.observationEndpoint(.init(cardId: UUID(), cardRef: "abc12345", sessionEpoch: 2,
+                                                  runtimeStateDir: "/runtime")) ==
                 .unixSocket(path: "/runtime/codex-abc12345.sock"))
     }
 
@@ -577,7 +578,8 @@ struct CodexSpawnWiringTests {
         #expect(t.agentId == "codex")
         let name = sessions.sessionName(t.id)
         let argv = try #require(sessions.ensureArgv[name])
-        #expect(argv.first == "fake-codex")
+        #expect(argv.first == "/bin/bash")                         // tmux owns the app-server/TUI wrapper
+        #expect(argv.contains("fake-codex"))                       // both server + stock TUI use the adapter binary
         #expect(argv.contains("read-only"))
         #expect(argv.contains("never"))
         // The service still stamps its own launch epoch, but Codex chooses its own native home.
@@ -642,7 +644,8 @@ struct CodexModelRoutingTests {
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
-        #expect(argv.first == "fake-codex")                         // launched the Codex adapter's argv
+        #expect(argv.first == "/bin/bash")                         // launched the app-server/TUI wrapper
+        #expect(argv.contains("fake-codex"))                       // whose provider binary is Codex
         #expect(!argv.contains("read-only"))                        // default card = Codex's own permissioning
         try? FileManager.default.removeItem(atPath: base)
     }

@@ -23,16 +23,19 @@ struct HookRPCTests {
 
     @Test("hookFields carries stopHookActive under the shared key, and only when present")
     func builderCarriesStopHookActive() {
+        let payload: JSONValue = .object(["session_id": .string("claude-session")])
         let on = HookRPC.hookFields(ref: "c", event: "stop", report: nil, source: nil,
-                                    epoch: 7, stopHookActive: true)
+                                    epoch: 7, stopHookActive: true, observationPayload: payload)
         #expect(on[HookRPC.stopHookActiveKey] == .bool(true))   // rides under the ONE shared key
         #expect(on["epoch"] == .int(7))
         #expect(on["ref"] == .string("c"))
+        #expect(on[HookRPC.observationPayloadKey] == payload)
 
         // Rides ONLY when present (like epoch): a nil flag omits the key, so the daemon default applies.
         let off = HookRPC.hookFields(ref: "c", event: "session", report: nil, source: "startup",
-                                     epoch: nil, stopHookActive: nil)
+                                     epoch: nil, stopHookActive: nil, observationPayload: nil)
         #expect(off[HookRPC.stopHookActiveKey] == nil)
+        #expect(off[HookRPC.observationPayloadKey] == nil)
         #expect(off["epoch"] == nil)
         #expect(off["source"] == .string("startup"))
     }

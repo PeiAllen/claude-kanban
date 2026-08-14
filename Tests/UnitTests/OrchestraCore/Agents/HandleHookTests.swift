@@ -77,10 +77,124 @@ import Foundation
         #expect(after.waitReason != nil)   // the report landed
     }
 
+    @Test("fresh hook payloads update the replacement state without changing its provider-neutral reducer")
+    func hookPayloadUpdatesShadowAgentState() async throws {
+        let adapter = HookSignalTestAdapter()
+        let env = TestEnv.make(
+            registry: AgentRegistry(adapters: [adapter]),
+            traceHTTPBaseURL: "http://127.0.0.1:43181/test-token"
+        )
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "hook-shadow", agentId: adapter.id)
+        )
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .unavailable)
+        let launchEnv = try #require(env.sessions.ensureEnv[env.sessions.sessionName(card.id)])
+        #expect(launchEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] ==
+                "http://127.0.0.1:43181/test-token/v1/traces/\(card.id.uuidString.lowercased())/\(epoch)")
+
+        let prompt: JSONValue = .object(["session_id": .string("hook-session")])
+        _ = await env.svc.handleHook(
+            card.shortId, event: .userPrompt, report: StatusReport(run: .running), source: nil,
+            observedEpoch: epoch, observationPayload: prompt
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+
+        _ = await env.svc.handleHook(
+            card.shortId, event: .statusLine, report: StatusReport(ctxPct: 12), source: nil,
+            observedEpoch: epoch
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .traceSpanEnded(
+                name: "claude_code.interaction",
+                attributes: .object(["session.id": .string("hook-session")])
+            )
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .waiting())
+
+        _ = await env.svc.handleHook(
+            card.shortId, event: .userPrompt, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: prompt
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+
+        let stop: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "background_tasks": .array([.object(["id": .string("job-1")])]),
+        ])
+        _ = await env.svc.handleHook(
+            card.shortId, event: .stop, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: stop
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .waiting(.init(resume: .init())))
+    }
+
+    @Test("hook observations are fenced by both launch epoch and current harness session")
+    func hookPayloadIdentityFences() async throws {
+        let adapter = HookSignalTestAdapter()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "hook-fences", agentId: adapter.id)
+        )
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        let prompt: JSONValue = .object(["session_id": .string("hook-session")])
+        _ = await env.svc.handleHook(
+            card.shortId, event: .userPrompt, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: prompt
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+
+        let wrongSession: JSONValue = .object(["session_id": .string("old-session")])
+        _ = await env.svc.handleHook(
+            card.shortId, event: .stop, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: wrongSession
+        )
+        _ = await env.svc.handleHook(
+            card.shortId, event: .stop, report: nil, source: nil,
+            observedEpoch: epoch + 1, observationPayload: prompt
+        )
+        #expect(await env.svc.shadowAgentState(card.id)?.turnStatus == .running)
+    }
+
     @Test("unknown ref returns nil, never throws")
     func unknownRef() async {
         let (svc, _, _, _, _, _) = TestEnv.make()
         let r = await svc.handleHook("no-such-card", event: .stop, report: nil, source: nil)
         #expect(r == nil)
+    }
+}
+
+private struct HookSignalTestAdapter: Adapter {
+    let id = "hook-signals"
+    let name = "Hook signals"
+    let icon = "bolt"
+    let bin = "fake-hook-agent"
+    let enabled = true
+    let capabilities = AgentCapabilities.stub
+
+    func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+    func newSessionId() -> String? { "hook-session" }
+    func start(_ ctx: AdapterContext) -> [String] { [bin] }
+    func resume(_ ctx: AdapterContext) -> [String]? { nil }
+    func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
+        AgentSessionInfo(agentId: id, sessionId: current, transcriptPath: nil,
+                         priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
+    }
+    func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
+        ClaudeCodeAdapter().agentSignals(from: raw, context: context)
+    }
+    func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        ClaudeCodeAdapter().observationEndpoint(setup)
+    }
+    func launchEnvironment(_ context: AdapterContext) -> [String: String] {
+        ClaudeCodeAdapter().launchEnvironment(context)
     }
 }

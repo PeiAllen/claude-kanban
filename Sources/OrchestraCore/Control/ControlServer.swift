@@ -167,8 +167,10 @@ public final class ControlServer: @unchecked Sendable {
             // The Stop hook's loop-guard flag rides as a sibling field (decoded via the SHARED key so it
             // can't drift from the ReportHelper builder). Default false — a pre-upgrade / non-Stop hook.
             let stopHookActive = p.optBool(HookRPC.stopHookActiveKey) ?? false
+            let observationPayload = p[HookRPC.observationPayloadKey]
             let resp = await service.handleHook(ref, event: event, report: report, source: source,
-                                                observedEpoch: observedEpoch, stopHookActive: stopHookActive)
+                                                observedEpoch: observedEpoch, stopHookActive: stopHookActive,
+                                                observationPayload: observationPayload)
             if let resp { return .object(["response": try JSONValue(encodable: resp)]) }
             return .object(["response": .null])
         case "diffText":
