@@ -519,6 +519,9 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// rather than per pixel moved. Cleared on mouse-up so the next drag always reports its first cell.
     private var lastDragCell: Position?
 
+    /// The terminal a left-button drag started in. Weak: a card closing mid-drag must not be pinned.
+    fileprivate static weak var dragOwner: ScrollableTerminalView?
+
     /// Own OSC 52 — the clipboard escape — instead of leaving it to SwiftTerm's built-in handler.
     ///
     /// Selection inside these terminals belongs to tmux, which copies by writing OSC 52 to this view.
@@ -593,7 +596,18 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     static func installScrollMonitorIfNeeded() {
         guard !monitorInstalled else { return }
         monitorInstalled = true
-        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .leftMouseDown, .leftMouseUp]) { event in
+        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .leftMouseDown,
+                                                    .leftMouseUp, .leftMouseDragged]) { event in
+            // A drag that wanders outside the terminal's bounds must keep extending the selection, so
+            // the gesture belongs to the view the PRESS landed in — not to whatever the pointer is over
+            // now (the board, another card). Hit-testing every motion would drop those events silently.
+            if event.type == .leftMouseDragged, let owner = dragOwner {
+                return owner.handleDragMotion(event) ? nil : event
+            }
+            if event.type == .leftMouseUp, let owner = dragOwner {
+                owner.endDragMotion()
+                dragOwner = nil
+            }
             guard let hit = event.window?.contentView?.hitTest(event.locationInWindow) else { return event }
             var view: NSView? = hit
             while let cur = view {
@@ -610,6 +624,7 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
                         // exception: keep both its down/up out of tmux so a preview never becomes a
                         // provider-TUI click.
                         term.onBecameFirstResponder?()
+                        dragOwner = term
                         return term.hasCommandLink(at: event) ? nil : event
                     case .leftMouseUp:
                         // SwiftTerm handles explicit OSC 8 links itself under `.alwaysWithModifier`.
@@ -630,26 +645,27 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     ///
     /// SwiftTerm's `mouseDragged` forwards motion only when the program asked to be told about motion
     /// at ALL times (DECSET 1003 / `.anyEvent`), and otherwise returns without starting a native
-    /// selection. tmux asks for `1000;1002;1006`: `1002` is `.buttonEventTracking`, "report motion WHILE
-    /// a button is down". So nothing sent the motion, tmux saw a press and a release but never a drag,
-    /// `MouseDrag1Pane` never fired, and dragging selected nothing at all. (A double-click needs no
-    /// motion, which is why it still flashed a word.) SwiftTerm's own `sendButtonTracking()` is the
-    /// right predicate but is internal, so match on the public mode instead.
+    /// selection either. tmux asks for `1000;1002;1006`: `1002` is `.buttonEventTracking`, "report motion
+    /// WHILE a button is down". So nothing sent the motion, tmux saw a press and a release but never a
+    /// drag, `MouseDrag1Pane` never fired, and dragging selected nothing at all. (A double-click needs no
+    /// motion, which is why it still flashed a word.) SwiftTerm's own `sendButtonTracking()` is the right
+    /// predicate but is internal, so match on the public mode instead.
     ///
-    /// Motion is emitted once per CELL, not per pixel: a drag across the pane is otherwise hundreds of
-    /// identical events down the pty, and tmux only acts on cell changes.
-    override func mouseDragged(with event: NSEvent) {
+    /// This rides the shared event monitor rather than a `mouseDragged` override: SwiftTerm declares its
+    /// mouse handlers `public`, not `open`, so a subclass outside that module cannot override them — the
+    /// same constraint that put the click handling in the monitor.
+    ///
+    /// Motion is emitted once per CELL crossed, not per pixel: a drag across the pane is otherwise
+    /// hundreds of identical events down the pty, and tmux only acts on cell changes.
+    /// Returns `true` when it consumed the event.
+    func handleDragMotion(_ event: NSEvent) -> Bool {
         guard terminal != nil, allowMouseReporting,
               TerminalMouseInteractionPolicy.hostMustForwardDragMotion(
                   appRequestedMotionWhileButtonDown: terminal.mouseMode == .buttonEventTracking,
                   terminalForwardsMotionItself: terminal.mouseMode.sendMotionEvent())
-        else {
-            lastDragCell = nil
-            super.mouseDragged(with: event)
-            return
-        }
+        else { return false }
         let (col, row) = gridLocation(of: event)
-        guard lastDragCell != Position(col: col, row: row) else { return }
+        guard lastDragCell != Position(col: col, row: row) else { return true }
         lastDragCell = Position(col: col, row: row)
         // Button 0 held; `sendMotion` adds the motion bit itself.
         let flags = terminal.encodeButton(button: 0, release: false,
@@ -659,12 +675,11 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
         let point = convert(event.locationInWindow, from: nil)
         terminal.sendMotion(buttonFlags: flags, x: col, y: row,
                             pixelX: Int(point.x), pixelY: Int(bounds.height - point.y))
+        return true
     }
 
-    override func mouseUp(with event: NSEvent) {
-        lastDragCell = nil
-        super.mouseUp(with: event)
-    }
+    /// The drag finished — the next one must report its first cell even if it starts where this ended.
+    func endDragMotion() { lastDragCell = nil }
 
     /// Forward the wheel to the running program as mouse-wheel events. Returns `true` if it consumed
     /// the event (alternate buffer with mouse reporting on), `false` to let SwiftTerm scroll natively.
