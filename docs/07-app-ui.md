@@ -438,9 +438,14 @@ move under you mid-sentence. An anchor you have not written against yet does not
 still, because watching the agent work is the point of the reader.
 
 **What a drag highlights.** Exactly the range you dragged through, tinted in place, and it stays tinted
-after focus moves to the rail. A selection that crosses several blocks tints the tail of the first, all
-of the middle ones, and the head of the last. The passage whose card is focused is tinted more strongly
-than the others.
+for as long as its comment exists. A selection that crosses several blocks tints the tail of the first,
+all of the middle ones, and the head of the last. The passage whose card is focused is tinted more
+strongly than the others.
+
+An anchored passage has its own color, and it is never the selection color. The two mean different
+things — a selection is live and goes away, an anchor persists and belongs to a comment — so they must
+not look the same. The rail matches it: a card's quote bar and its focus ring use the anchor color,
+while the Send button keeps the accent, because that is an action rather than an anchor.
 
 The tint survives a refresh. Each anchored passage remembers the content of the block it sits in, so an
 agent that inserts a paragraph above your passage does not move your highlight off it. If the agent

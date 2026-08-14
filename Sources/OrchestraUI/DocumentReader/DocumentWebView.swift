@@ -315,11 +315,19 @@ struct DocumentWebView {
             "text2": theme.text2.cssColor,
             "text3": theme.text3.cssColor,
             "accent": theme.accent.cssColor,
-            // Two strengths of the same tint. A highlight only ever changes WEIGHT to show focus,
-            // never gains a border — one anchored passage is several spans whenever it crosses inline
-            // markup, and an edge would then draw a seam at every join.
+            // THE LIVE SELECTION keeps the accent, because that is what a selection looks like
+            // everywhere else in the app.
             "sel": theme.accent.cssRGBA(0.22),
-            "selIdle": theme.accent.cssRGBA(0.10),
+            // AN ANCHORED PASSAGE gets its own hue. It is a different thing from a selection — it
+            // persists, it belongs to a comment, and it stays on screen after the drag is over — so it
+            // must not be the same color. Indigo is the one semantic hue left unclaimed here: the
+            // accent is selection, amber is the change flash, and green and red are status.
+            //
+            // Two strengths, and only strengths. A highlight shows focus by WEIGHT and never gains a
+            // border: one anchored passage is several spans whenever it crosses inline markup, and an
+            // edge would draw a seam at every join.
+            "anno": theme.indigo.dot.cssRGBA(0.30),
+            "annoIdle": theme.indigo.dot.cssRGBA(0.14),
             "flash": theme.amber.dot.cssRGBA(0.38),
             "code": theme.chip.cssColor,
             "hair": theme.hair.cssColor,

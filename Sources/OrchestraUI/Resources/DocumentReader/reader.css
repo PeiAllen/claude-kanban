@@ -50,21 +50,25 @@ body {
   scroll-margin-top: 12px;
 }
 
-/* An anchored passage, tinted at the EXACT range the user dragged through. The reader used
-   to tint the whole `.block`, which meant three words lit up a whole paragraph or a whole table.
+/* An anchored passage — a range that carries a COMMENT, tinted for as long as that comment exists.
+   Formerly this tinted the whole `.block`, so three words lit up a whole paragraph or a whole table.
+
+   ITS OWN HUE, never the selection color. A live selection and a committed anchor are different
+   things, and painting both in the accent made them indistinguishable: after the drag ended, nothing
+   on screen said whether the tint was a selection you could dismiss or a passage you had annotated.
 
    NO border, NO radius, and vertical padding only. One highlight is usually SEVERAL spans, because a
    range that crosses a `<strong>` or a link has to be wrapped once per text node. Any horizontal
    decoration then draws a seam at every one of those joins, and an outline draws a box around each
    fragment. A flat tint is the only treatment that reads as one continuous mark. */
 .hl {
-  background: var(--selIdle, rgba(10, 120, 255, 0.09));
+  background: var(--annoIdle, rgba(94, 92, 230, 0.14));
   padding: 0.08em 0;
 }
 
 /* The passage whose comment card is focused in the rail. It wins on tint STRENGTH rather than on an
    added edge, for the same reason. */
-.hl-active { background: var(--sel, rgba(10, 120, 255, 0.2)); }
+.hl-active { background: var(--anno, rgba(94, 92, 230, 0.3)); }
 
 /* ~1s, matching the daemon's coalescing window closely enough that a burst of agent writes reads as
    one change rather than a strobe. */

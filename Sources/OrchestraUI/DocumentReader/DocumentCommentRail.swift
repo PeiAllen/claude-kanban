@@ -84,7 +84,7 @@ struct DocumentCommentRail: View {
         .background(theme.card)
         .overlay(
             RoundedRectangle(cornerRadius: 9)
-                .stroke(active ? theme.accent.opacity(0.55) : theme.cardBorder,
+                .stroke(active ? theme.indigo.dot.opacity(0.6) : theme.cardBorder,
                         lineWidth: active ? 1.2 : 0.5))
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .opacity(comment.sent ? 0.62 : 1)
@@ -132,7 +132,9 @@ struct DocumentCommentRail: View {
 
     private func quote(_ comment: PendingComment) -> some View {
         HStack(alignment: .top, spacing: 7) {
-            Rectangle().fill(theme.accent.opacity(0.45)).frame(width: 2)
+            // The same hue the page tints the passage with, so a card and its passage read as one
+            // thing. The Send button keeps the accent, because that is an action, not an anchor.
+            Rectangle().fill(theme.indigo.dot.opacity(0.55)).frame(width: 2)
             Text(plainQuote(comment.anchor.excerpt))
                 .font(.caption)
                 .foregroundStyle(theme.text2)
