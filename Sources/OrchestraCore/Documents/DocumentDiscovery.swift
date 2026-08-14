@@ -13,14 +13,6 @@ public enum DocumentDiscovery {
     /// formats it cannot lay out would list documents that open blank.
     public static let documentExtensions: Set<String> = ["md", "markdown"]
 
-    /// Dot-directories that DO hold documents a reviewer wants.
-    ///
-    /// Hidden entries are skipped by default, which is right for `.git` and `.build` but wrong for
-    /// these: a card whose only markdown change is `.claude/skills/foo.md` would otherwise show an
-    /// empty reader and seed no Obsidian tabs. The old Obsidian path named `.claude/skills`
-    /// explicitly, so excluding them here was a regression.
-    public static let allowedDotDirectories: Set<String> = [".claude", ".github", ".orchestra"]
-
     /// Directory names pruned wholesale. Pruning at the DIRECTORY level is what makes this cheap:
     /// `node_modules` costs one comparison, not forty thousand stats.
     ///
@@ -41,9 +33,17 @@ public enum DocumentDiscovery {
     }
 
     /// True when a DIRECTORY should not be descended into.
+    ///
+    /// EVERY dot-directory is pruned, with no exceptions. The dot prefix marks machine-owned config, not
+    /// a document a human reviews, so this is fail-safe against tools the reader has never heard of —
+    /// `.cursor/rules/*.md`, `.github/copilot-instructions.md`, an agent's injected `.claude/skills`. An
+    /// exception list cannot do that, because it has to know the name first.
+    ///
+    /// The cost is real and accepted: a card whose only markdown sits in `.claude/skills` or `.github`
+    /// shows an empty reader. That is rarer than the noise the exception list let through, and the diff
+    /// still shows the change.
     public static func isPrunedDirectory(_ name: String) -> Bool {
-        if denyDirectories.contains(name) { return true }
-        return name.hasPrefix(".") && !allowedDotDirectories.contains(name)
+        denyDirectories.contains(name) || name.hasPrefix(".")
     }
 
     /// True when any component of `relativePath` is pruned, or the file itself is hidden. The watcher
@@ -62,9 +62,9 @@ public enum DocumentDiscovery {
     /// Blocking I/O — call it off the actor.
     public static func walk(root: String, cap: Int = resultCap) -> [String] {
         let rootURL = URL(fileURLWithPath: root, isDirectory: true)
-        // Hidden entries are NOT skipped by the enumerator, because `.claude/skills` and `.github`
-        // legitimately hold documents. Pruning happens per-directory below instead, which keeps the
-        // dot-directory allowlist and the deny list in ONE decision.
+        // Hidden entries are NOT skipped by the enumerator. Pruning happens per-directory below instead,
+        // which keeps the dot rule and the deny list in ONE decision that `isPruned` can mirror for the
+        // watcher.
         guard let en = FileManager.default.enumerator(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
