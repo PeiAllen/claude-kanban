@@ -515,6 +515,10 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     var onBecameFirstResponder: (() -> Void)?
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
 
+    /// The last cell a drag motion was reported for, so one event goes down the pty per cell crossed
+    /// rather than per pixel moved. Cleared on mouse-up so the next drag always reports its first cell.
+    private var lastDragCell: Position?
+
     /// Own OSC 52 — the clipboard escape — instead of leaving it to SwiftTerm's built-in handler.
     ///
     /// Selection inside these terminals belongs to tmux, which copies by writing OSC 52 to this view.
@@ -620,6 +624,46 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
             }
             return event   // not over a terminal — leave board/list scrolling alone
         }
+    }
+
+    /// Send the drag motion SwiftTerm withholds, so a press-and-drag actually selects.
+    ///
+    /// SwiftTerm's `mouseDragged` forwards motion only when the program asked to be told about motion
+    /// at ALL times (DECSET 1003 / `.anyEvent`), and otherwise returns without starting a native
+    /// selection. tmux asks for `1000;1002;1006`: `1002` is `.buttonEventTracking`, "report motion WHILE
+    /// a button is down". So nothing sent the motion, tmux saw a press and a release but never a drag,
+    /// `MouseDrag1Pane` never fired, and dragging selected nothing at all. (A double-click needs no
+    /// motion, which is why it still flashed a word.) SwiftTerm's own `sendButtonTracking()` is the
+    /// right predicate but is internal, so match on the public mode instead.
+    ///
+    /// Motion is emitted once per CELL, not per pixel: a drag across the pane is otherwise hundreds of
+    /// identical events down the pty, and tmux only acts on cell changes.
+    override func mouseDragged(with event: NSEvent) {
+        guard terminal != nil, allowMouseReporting,
+              TerminalMouseInteractionPolicy.hostMustForwardDragMotion(
+                  appRequestedMotionWhileButtonDown: terminal.mouseMode == .buttonEventTracking,
+                  terminalForwardsMotionItself: terminal.mouseMode.sendMotionEvent())
+        else {
+            lastDragCell = nil
+            super.mouseDragged(with: event)
+            return
+        }
+        let (col, row) = gridLocation(of: event)
+        guard lastDragCell != Position(col: col, row: row) else { return }
+        lastDragCell = Position(col: col, row: row)
+        // Button 0 held; `sendMotion` adds the motion bit itself.
+        let flags = terminal.encodeButton(button: 0, release: false,
+                                          shift: event.modifierFlags.contains(.shift),
+                                          meta: event.modifierFlags.contains(.option),
+                                          control: event.modifierFlags.contains(.control))
+        let point = convert(event.locationInWindow, from: nil)
+        terminal.sendMotion(buttonFlags: flags, x: col, y: row,
+                            pixelX: Int(point.x), pixelY: Int(bounds.height - point.y))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        lastDragCell = nil
+        super.mouseUp(with: event)
     }
 
     /// Forward the wheel to the running program as mouse-wheel events. Returns `true` if it consumed

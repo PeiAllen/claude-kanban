@@ -1289,16 +1289,29 @@ enables its own mouse capture and makes drags unreachable, the answer is a **use
 (the shape the phone already uses — it also stops forwarding the wheel, so the frozen screen and the
 selection agree), not a per-agent default that silently trades a correct selection for a scrollable one.
 
-Two details make tmux ownership feel right rather than merely correct. tmux's default drag-end is
-`copy-selection-and-cancel`, which copies and then drops the highlight the instant the button comes up —
-the behavior originally read as "dragging doesn't select anything", and the reason the native selector
-looked like a fix. The embedded config keeps the highlight instead when the user is **reading history**
-(already scrolled up, so the pane is already frozen) and keeps the cancel at the **live bottom**, so a
-running agent's pane can never appear frozen. And the app registers its own **OSC 52** handler over
-SwiftTerm's: the built-in performs the copy, but it also answers the *read* form from
-`clipboardRead` — which `LocalProcessTerminalView` implements as the real `NSPasteboard` — so any program
-in a terminal could exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies
-and never answers a query.
+Handing the pointer back is necessary but not sufficient: **the host has to send the drag itself.** A
+drag is a press, then motion while the button is down, then a release, and tmux only treats a gesture as
+a drag — only starts a selection — once it sees that motion. SwiftTerm forwards motion only when the
+program asks to hear about motion at ALL times (DECSET 1003), and otherwise returns without starting a
+native selection either. tmux asks for `1000;1002;1006`, where `1002` is "report motion WHILE a button is
+down" — so nothing sent the motion, tmux saw a press and a release but never a drag, and **dragging
+selected nothing at all**. A double-click needs no motion, which is why it still flashed a word: the
+exact pair of symptoms first reported. `ScrollableTerminalView` overrides `mouseDragged` to send the
+motion (once per cell crossed, not per pixel) whenever the view will not.
+
+Drag-end keeps tmux's default `copy-selection-and-cancel`, which copies and leaves copy mode. Holding the
+highlight with `copy-selection-no-clear` was tried and reverted: it strands the pane in copy mode, where
+the view is frozen on old text and typed keys go to copy mode instead of the agent, and no click gets you
+out. A pane that returns to live is worth more than a highlight that lingers.
+
+The app also registers its own **OSC 52** handler over SwiftTerm's, which makes host copy independent of
+which SwiftTerm the app resolves — it tracks `from: 1.2.0`, and two builds on one machine resolved two
+different revisions with materially different behavior. The older revision accepts only `c;<base64>` and
+silently drops tmux's spelling (an empty selection field), so a copy reached no pasteboard at all. The
+newer one accepts both, but answers the *read* form from `clipboardRead` — which
+`LocalProcessTerminalView` implements as the real `NSPasteboard` — so any program in a terminal could
+exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies, accepts tmux's
+spelling, and never answers a query, on every revision.
 
 ## Shipped feature history
 
