@@ -1364,6 +1364,12 @@ two seconds. The document SET is re-asked about every thirty. Both send a valida
 answered conditionally, so a question that finds nothing transfers nothing — this is HTTP's
 `ETag` / `If-None-Match` / `304`, and `readDocument` and `listDocuments` implement exactly that.
 
+A validator has to cover everything its answer depends on, which for the list is more than the files.
+It is built from each document's path and stat stamp AND from the branch base the `M`/`A` status is
+derived against — because a base that moves under an unchanged tree (a rebase, a retargeted parent)
+re-dates every badge without touching a single file. Leaving it out would have made the list answer
+"unchanged" indefinitely, with the only repair being a gesture nobody knows to make.
+
 The two rates exist because the two questions cost wildly different amounts. Statting a file is about
 5 microseconds. Walking the tree for the document set is about 80 milliseconds on a large repo, and
 deriving each document's `M`/`A` status costs two `git` forks on top. Coupling them meant paying the

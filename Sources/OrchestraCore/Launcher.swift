@@ -102,10 +102,13 @@ public struct Launcher: Sendable {
     /// track is `.added`, in ANY directory, which is the same rule stated generally. The scan was also
     /// wrong outside a repo, where it marked `notes/*.md` as added while the stated rule is that nothing
     /// is changed without git.
-    func changedMarkdown(worktree: String, parentRef: String?) -> [ChangedNote] {
+    ///
+    /// Takes an ALREADY-RESOLVED base so a caller that also needs it — the conditional list, which puts
+    /// it in the validator — resolves it once rather than forking `git merge-base` twice.
+    func changedMarkdown(worktree: String, base: String?) -> [ChangedNote] {
         var gitAdded: [String: Bool] = [:]        // path -> is-an-add-vs-base
         var gitOrder: [String] = []
-        if let base = mergeBase(worktree: worktree, parentRef: parentRef) {
+        if let base {
             for c in changedFiles(worktree: worktree, base: base)
             where c.status != .deleted && c.newPath.lowercased().hasSuffix(".md") {
                 if gitAdded[c.newPath] == nil { gitOrder.append(c.newPath) }
@@ -231,7 +234,11 @@ public struct Launcher: Sendable {
     /// to the default-branch merge-base, exactly like `DiffBaseline.range(.parent)`. `nil` when neither
     /// resolves or git fails. Base-ref resolution (local default branch preferred over a stale
     /// `origin/main`) is shared with the board diffstat via `DiffBaseline.defaultBaseRef`.
-    private func mergeBase(worktree: String, parentRef: String?) -> String? {
+    /// The commit this card's work is measured against. Internal rather than private because the
+    /// document list folds it into its validator: `status` is derived vs this SHA, so a base that moved
+    /// under an unchanged tree (a rebase, a retargeted parent) re-dates every badge without touching a
+    /// file. A validator that did not cover it would answer "unchanged" forever.
+    func mergeBase(worktree: String, parentRef: String?) -> String? {
         if let parentRef, !parentRef.isEmpty,
            let r = try? Proc.run(["git", "merge-base", "HEAD", parentRef], cwd: worktree), r.ok {
             let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)

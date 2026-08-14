@@ -83,6 +83,28 @@ struct DocumentStatusTests {
         #expect(docs.allSatisfy { $0.status == nil })
     }
 
+    @Test("the list validator covers the BASE, not just the files")
+    func theValidatorNoticesTheBaseMoving() async throws {
+        // The case a path-and-stamp validator misses completely. `status` is derived against the branch
+        // base, so when the base moves — a rebase, a parent merge, a retarget — every badge is re-dated
+        // while no markdown file is touched and no stamp changes. A validator built from the tree alone
+        // would answer "unchanged" from then on, and the only repair would be reopening the picker.
+        let (env, t) = try await card()
+        let before = try await env.svc.listDocuments(t.id, ifNoneMatch: nil)
+        // Same validator, immediately: nothing has moved, so the daemon sends no documents.
+        #expect(try await env.svc.listDocuments(t.id, ifNoneMatch: before.hash).documents == nil)
+
+        // Advance the base by committing a NON-markdown file. Every document keeps its path, its size,
+        // and its mtime — only the commit the diff is measured against is different.
+        try "x\n".write(toFile: t.cwd + "/other.txt", atomically: true, encoding: .utf8)
+        #expect(try Proc.run(["git", "add", "other.txt"], cwd: t.cwd).ok)
+        #expect(try Proc.run(["git", "commit", "-q", "-m", "unrelated"], cwd: t.cwd).ok)
+
+        let after = try await env.svc.listDocuments(t.id, ifNoneMatch: before.hash)
+        #expect(after.hash != before.hash)
+        #expect(after.documents != nil)          // ...so the reader re-fetches and re-derives its badges
+    }
+
     @Test("changed documents sort ahead of untouched ones")
     func changedSortFirst() async throws {
         let (env, t) = try await card()

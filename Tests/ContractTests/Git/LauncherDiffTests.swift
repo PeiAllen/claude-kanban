@@ -134,7 +134,7 @@ struct LauncherDiffTests {
     func changedMarkdownFiltering() throws {
         let (wt, launcher) = try makeNotesWorktree()
         // Vault-relative paths — the form workspace.json leaf `file` entries use.
-        let got = Set(launcher.changedMarkdown(worktree: wt, parentRef: nil).map(\.path))
+        let got = Set(launcher.changedMarkdown(worktree: wt, base: launcher.mergeBase(worktree: wt, parentRef: nil)).map(\.path))
         let expected: Set<String> = [
             "notes/keep.md",            // committed modify
             "notes/added.md",           // untracked add
@@ -150,7 +150,7 @@ struct LauncherDiffTests {
     func changedMarkdownNonGit() throws {
         let dir = IntegrationSupport.tempDir("ln0")
         let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
-        #expect(launcher.changedMarkdown(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
+        #expect(launcher.changedMarkdown(worktree: PathResolver.canonical(dir), base: launcher.mergeBase(worktree: PathResolver.canonical(dir), parentRef: nil)).isEmpty)
     }
 
     /// A repo whose worktree is a CHILD branch stacked on a `parent` branch: main(base) →
@@ -194,9 +194,9 @@ struct LauncherDiffTests {
         let (wt, launcher) = try makeStackedWorktree()
 
         // Parent baseline: only the child's own doc.
-        #expect(Set(launcher.changedMarkdown(worktree: wt, parentRef: "parent").map(\.path)) == ["docs/child.md"])
+        #expect(Set(launcher.changedMarkdown(worktree: wt, base: launcher.mergeBase(worktree: wt, parentRef: "parent")).map(\.path)) == ["docs/child.md"])
         // Default (nil) baseline vs main: the parent's doc is included too.
-        #expect(Set(launcher.changedMarkdown(worktree: wt, parentRef: nil).map(\.path))
+        #expect(Set(launcher.changedMarkdown(worktree: wt, base: launcher.mergeBase(worktree: wt, parentRef: nil)).map(\.path))
                 == ["docs/parent.md", "docs/child.md"])
 
         // Zed "View changes": the parent-baselined multi-diff carries only the child's file.

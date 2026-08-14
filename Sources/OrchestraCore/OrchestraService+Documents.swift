@@ -31,9 +31,11 @@ extension OrchestraService {
     /// The two git forks behind `status` run ONLY when that digest moves, which is the whole point: a
     /// poll that finds nothing spends no subprocesses at all.
     ///
-    /// One case the validator cannot see is the branch BASE moving under an unchanged tree (a rebase, a
-    /// parent merge), which re-dates every status without touching a file. Opening the picker forces an
-    /// unconditional refresh, which is the repair.
+    /// The BASE is folded in for the same reason: `status` is derived against it, so a base that moved
+    /// under an unchanged tree — a rebase, a retargeted parent — re-dates every badge while every path
+    /// and stamp stays put. Without it the validator would answer "unchanged" indefinitely and the only
+    /// repair would be reopening the picker, which is a gesture nobody knows to make. It costs one
+    /// `git merge-base` per poll, and the caller hands it straight to `decorate`, so no fork is repeated.
     public func listDocuments(_ id: UUID, ifNoneMatch: String?) async throws -> DocumentList {
         let t = try await require(id)
         let l = launcher, cwd = t.cwd
@@ -55,11 +57,16 @@ extension OrchestraService {
                     fingerprint += "\(rel)\u{1}?\n"
                 }
             }
+            // The BASE, folded in. `status` is derived against it, so a base that moved under an
+            // unchanged tree re-dates every badge while every path and stamp stays put. Without this the
+            // validator would keep answering "unchanged" and the only repair would be reopening the
+            // picker — a gesture nobody knows to make.
+            let base = l.mergeBase(worktree: cwd, parentRef: parentRef)
+            fingerprint += "\u{2}base\u{1}\(base ?? "-")\n"
             let digest = DocumentContentHash.hex(Data(fingerprint.utf8))
             guard digest != ifNoneMatch else { return DocumentList(hash: digest, documents: nil) }
             return DocumentList(hash: digest,
-                                documents: Self.decorate(discovered, launcher: l, cwd: cwd,
-                                                         parentRef: parentRef))
+                                documents: Self.decorate(discovered, launcher: l, cwd: cwd, base: base))
         }
     }
 
@@ -79,7 +86,8 @@ extension OrchestraService {
         let l = launcher, cwd = t.cwd
         let parentRef = resolvedParentRef(t)
         return try await offActor {
-            Self.decorate(DocumentDiscovery.walk(root: cwd), launcher: l, cwd: cwd, parentRef: parentRef)
+            Self.decorate(DocumentDiscovery.walk(root: cwd), launcher: l, cwd: cwd,
+                          base: l.mergeBase(worktree: cwd, parentRef: parentRef))
         }
     }
 
@@ -87,10 +95,10 @@ extension OrchestraService {
     /// the expensive half of a list, which is why the conditional endpoint skips them when its validator
     /// matches.
     static func decorate(_ discovered: [String], launcher l: Launcher,
-                         cwd: String, parentRef: String?) -> [DocRef] {
+                         cwd: String, base: String?) -> [DocRef] {
         // Git's opinion, where it has one — the walk already found the files regardless.
         let statuses = Dictionary(
-            l.changedMarkdown(worktree: cwd, parentRef: parentRef)
+            l.changedMarkdown(worktree: cwd, base: base)
                 .map { ($0.path, $0.added ? DocumentStatus.added : .modified) },
             uniquingKeysWith: { a, _ in a })
         // A discovered document git does NOT TRACK was created in this workspace. That one rule covers
