@@ -51,7 +51,7 @@ public enum KeyIntent: Equatable, Sendable {
     case newCard                    // Cmd-N — open the spawn sheet
     case archive                    // a — archive the selected card
     case openInZed                  // o — View changes in Zed
-    case openNotes                  // O — open the card's worktree as an Obsidian vault, on its changed notes
+    case openInObsidian             // O — open the card's working directory as an Obsidian vault
     case toggleDiff                 // d — toggle Agent/Diff inspector view
     case openInbox                  // I — open the inbox editor
     case copy(CopyTarget)           // yc/yt/yp/yi — yank

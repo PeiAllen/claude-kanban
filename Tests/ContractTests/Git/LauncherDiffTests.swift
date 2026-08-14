@@ -93,16 +93,6 @@ struct LauncherDiffTests {
         #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt), parentRef: nil) == nil)
     }
 
-    @Test("openNotes refuses a worktree outside the allowlist before touching Obsidian")
-    func openNotesRejectsUnallowedWorktree() throws {
-        // An empty allowlist means every path is out of bounds — the security gate must fire on the
-        // worktree target before the vault script is ever resolved or run.
-        let launcher = Launcher(resolver: PathResolver(allowedRoots: []))
-        #expect(throws: OrchestraError.pathNotAllowed("/not/allowed/worktree")) {
-            _ = try launcher.openNotes("/not/allowed/worktree", parentRef: nil)
-        }
-    }
-
     /// A repo on `main`, plus a worktree whose branch changes a mix of markdown and non-markdown
     /// files across several dirs: a committed `.md` modify, untracked `.md` adds under `notes/` and
     /// `docs/superpowers/`, a deleted `.md`, and a non-`.md` change.
@@ -140,11 +130,11 @@ struct LauncherDiffTests {
         return (PathResolver.canonical(wt), Launcher(resolver: PathResolver(config: config)))
     }
 
-    @Test("changedNotes returns only changed .md (across dirs, untracked included), excludes deletes & non-md")
-    func changedNotesFiltering() throws {
+    @Test("changedMarkdown returns only changed .md (across dirs, untracked included), excludes deletes & non-md")
+    func changedMarkdownFiltering() throws {
         let (wt, launcher) = try makeNotesWorktree()
         // Vault-relative paths — the form workspace.json leaf `file` entries use.
-        let got = Set(launcher.changedNotes(worktree: wt, parentRef: nil))
+        let got = Set(launcher.changedMarkdown(worktree: wt, base: launcher.mergeBase(worktree: wt, parentRef: nil)).map(\.path))
         let expected: Set<String> = [
             "notes/keep.md",            // committed modify
             "notes/added.md",           // untracked add
@@ -156,41 +146,11 @@ struct LauncherDiffTests {
         #expect(!got.contains("main.swift"))
     }
 
-    @Test("changedNotes is empty for a non-git directory (no base)")
-    func changedNotesNonGit() throws {
+    @Test("changedMarkdown is empty for a non-git directory (no base)")
+    func changedMarkdownNonGit() throws {
         let dir = IntegrationSupport.tempDir("ln0")
         let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
-        #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
-    }
-
-    @Test("changedNoteFiles returns each changed .md with correct M/A status + live content")
-    func changedNoteFilesContent() throws {
-        let (wt, launcher) = try makeNotesWorktree()
-        // Keyed by path so the assertion doesn't depend on git's enumeration order.
-        let byPath = Dictionary(uniqueKeysWithValues:
-            launcher.changedNoteFiles(worktree: wt, parentRef: nil).map { ($0.path, $0) })
-
-        #expect(Set(byPath.keys) == ["notes/keep.md", "notes/added.md", "docs/superpowers/spec.md"])
-
-        // committed modify → M, content is the branch (live) version.
-        #expect(byPath["notes/keep.md"]?.status == .modified)
-        #expect(byPath["notes/keep.md"]?.content == "feature\n")
-        // untracked adds → A, with their live content.
-        #expect(byPath["notes/added.md"]?.status == .added)
-        #expect(byPath["notes/added.md"]?.content == "new\n")
-        #expect(byPath["docs/superpowers/spec.md"]?.status == .added)
-        #expect(byPath["docs/superpowers/spec.md"]?.content == "spec\n")
-
-        // gone.md was deleted (nothing to show); main.swift is not markdown — both excluded.
-        #expect(byPath["docs/gone.md"] == nil)
-        #expect(byPath["main.swift"] == nil)
-    }
-
-    @Test("changedNoteFiles is empty for a non-git directory (no base)")
-    func changedNoteFilesNonGit() throws {
-        let dir = IntegrationSupport.tempDir("lnf0")
-        let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
-        #expect(launcher.changedNoteFiles(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
+        #expect(launcher.changedMarkdown(worktree: PathResolver.canonical(dir), base: launcher.mergeBase(worktree: PathResolver.canonical(dir), parentRef: nil)).isEmpty)
     }
 
     /// A repo whose worktree is a CHILD branch stacked on a `parent` branch: main(base) →
@@ -229,14 +189,14 @@ struct LauncherDiffTests {
         return (PathResolver.canonical(wt), Launcher(resolver: PathResolver(config: config)))
     }
 
-    @Test("a parentRef baselines changedNotes + branchDiffDirs against the parent (child's own work only)")
+    @Test("a parentRef baselines changedMarkdown + branchDiffDirs against the parent (child's own work only)")
     func parentBaselineExcludesParentWork() throws {
         let (wt, launcher) = try makeStackedWorktree()
 
         // Parent baseline: only the child's own doc.
-        #expect(Set(launcher.changedNotes(worktree: wt, parentRef: "parent")) == ["docs/child.md"])
+        #expect(Set(launcher.changedMarkdown(worktree: wt, base: launcher.mergeBase(worktree: wt, parentRef: "parent")).map(\.path)) == ["docs/child.md"])
         // Default (nil) baseline vs main: the parent's doc is included too.
-        #expect(Set(launcher.changedNotes(worktree: wt, parentRef: nil))
+        #expect(Set(launcher.changedMarkdown(worktree: wt, base: launcher.mergeBase(worktree: wt, parentRef: nil)).map(\.path))
                 == ["docs/parent.md", "docs/child.md"])
 
         // Zed "View changes": the parent-baselined multi-diff carries only the child's file.
@@ -249,52 +209,6 @@ struct LauncherDiffTests {
     /// A worktree whose gitignored `notes/` vault holds plans + a nested design vault — the production
     /// setup after notes/ was untracked. git's diff/ls-files never report ignored paths, so Open-notes /
     /// the phone must scan them off disk; a tracked `.md` change alongside confirms the git set still works.
-    @Test("changedNotes surfaces gitignored notes/ files (incl. nested) that git's diff never reports")
-    func gitignoredNotesScannedOffDisk() throws {
-        let root = IntegrationSupport.tempDir("lgn")
-        let repo = root + "/repo"
-        let fm = FileManager.default
-        try fm.createDirectory(atPath: repo, withIntermediateDirectories: true)
-        try git(repo, "init", "-q", "-b", "main")
-        try git(repo, "config", "user.email", "t@t.t")
-        try git(repo, "config", "user.name", "T")
-        try "/notes/\n".write(toFile: repo + "/.gitignore", atomically: true, encoding: .utf8)
-        try "x\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
-        try git(repo, "add", ".")
-        try git(repo, "commit", "-q", "-m", "base")
-
-        let wt = root + "/wt"
-        try git(repo, "worktree", "add", "-q", "-b", "feature", wt)
-        // A card writes plans + a nested design vault into its gitignored notes/ — git sees none of it.
-        try fm.createDirectory(atPath: wt + "/notes/plans", withIntermediateDirectories: true)
-        try fm.createDirectory(atPath: wt + "/notes/designs/slug", withIntermediateDirectories: true)
-        try "p\n".write(toFile: wt + "/notes/plans/p1.md", atomically: true, encoding: .utf8)
-        try "d\n".write(toFile: wt + "/notes/designs/slug/01-design.md", atomically: true, encoding: .utf8)
-        // A dotdir under notes/ (e.g. Obsidian's own) must be skipped, not opened as a note.
-        try fm.createDirectory(atPath: wt + "/notes/.obsidian", withIntermediateDirectories: true)
-        try "{}\n".write(toFile: wt + "/notes/.obsidian/app.md", atomically: true, encoding: .utf8)
-        // A tracked doc change, to confirm the git set still works alongside the disk scan.
-        try "spec\n".write(toFile: wt + "/spec.md", atomically: true, encoding: .utf8)
-
-        let config = Config(reposRoot: PathResolver.canonical(root),
-                            worktreesRoot: PathResolver.canonical(root),
-                            scratchRoot: PathResolver.canonical(root) + "/scratch",
-                            runtimeStateDir: PathResolver.canonical(root) + "/state")
-        let launcher = Launcher(resolver: PathResolver(config: config))
-        let cwt = PathResolver.canonical(wt)
-
-        let notes = Set(launcher.changedNotes(worktree: cwt, parentRef: nil))
-        #expect(notes.contains("notes/plans/p1.md"))                    // gitignored plan, found off disk
-        #expect(notes.contains("notes/designs/slug/01-design.md"))      // nested vault file, found
-        #expect(notes.contains("spec.md"))                              // tracked git change still included
-        #expect(!notes.contains("notes/.obsidian/app.md"))              // dot component skipped
-
-        // The phone's content path sees the gitignored notes too (read off the daemon host's disk).
-        let byPath = Dictionary(uniqueKeysWithValues:
-            launcher.changedNoteFiles(worktree: cwt, parentRef: nil).map { ($0.path, $0) })
-        #expect(byPath["notes/plans/p1.md"]?.status == .added)
-        #expect(byPath["notes/plans/p1.md"]?.content == "p\n")
-    }
 
     @Test("seedWorkspaceTabs writes a valid Obsidian layout: one leaf tab per note, in order")
     func seedWorkspaceTabsFormat() throws {

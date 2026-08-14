@@ -49,7 +49,7 @@ final class KeybindingsTests: XCTestCase {
     func test_board_verbs() {
         XCTAssertEqual(map(KeyChord("c"), .board), .spawn)
         XCTAssertEqual(map(KeyChord("a"), .board), .archive)
-        XCTAssertEqual(map(KeyChord("o"), .board), .openNotes)
+        XCTAssertEqual(map(KeyChord("o"), .board), .openInObsidian)
         XCTAssertEqual(map(KeyChord("O", .shift), .board), .openInZed)
         XCTAssertEqual(map(KeyChord("d"), .board), .toggleDiff)
         XCTAssertEqual(map(KeyChord("i"), .board), .enterTerminal)

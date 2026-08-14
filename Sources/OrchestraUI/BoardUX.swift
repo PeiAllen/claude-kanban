@@ -5,7 +5,15 @@ import OrchestraKit
 /// desktop `InspectorView`. A pure value type in the board's public API (`CopyTarget`/`GoTarget` are the
 /// OrchestraKit-side siblings); folded here from the former 6-line BoardModelTypes.swift. Left outside the
 /// `#if os(macOS)` fence to preserve its unconditional visibility.
-public enum InspectorMode { case agent, diff }
+/// The inspector's pane: the live agent terminal, the read-only diff, or the document reader.
+public enum InspectorMode: CaseIterable { case agent, diff, documents
+
+    /// `d` CYCLES rather than toggles. With three panes a two-way toggle strands one of them — from
+    /// `.notes` it would land on `.agent` and no key would ever reach the reader.
+    public var next: InspectorMode {
+        switch self { case .agent: .diff; case .diff: .documents; case .documents: .agent }
+    }
+}
 
 // The DESKTOP-ONLY UX layer split out of the old 1,159-line BoardModel (Lens-1 HIGH). `BoardStore` is the
 // cross-platform daemon sync core; `BoardUX` adds the macOS keyboard navigation, command palette, link
@@ -247,7 +255,7 @@ public final class BoardUX: BoardStore {
     /// A card's title by id (searches board + archived), for confirm-dialog copy. "" if unknown.
     public func cardTitle(_ id: UUID) -> String { (tasks + archived).first { $0.id == id }?.title ?? "" }
     public func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
-    public func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
+    public func openInObsidianSelected() { if let id = selectedId { _Concurrency.Task { await openInObsidian(id) } } }
 
     /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path / card reference).
     public func copySelected(_ target: CopyTarget) {
@@ -564,7 +572,7 @@ public final class BoardUX: BoardStore {
         [
             .init(title: "New card", keys: "c") { [self] in spawnDefaultColumn = .plan; showSpawn = true },
             .init(title: "Search cards", keys: "/") { [self] in searchQuery = "" },
-            .init(title: "Toggle Agent / Diff view", keys: "d") { [self] in inspectorMode = inspectorMode == .agent ? .diff : .agent },
+            .init(title: "Cycle Agent / Diff / Docs", keys: "d") { [self] in inspectorMode = inspectorMode.next },
             .init(title: "Archive card", keys: "a") { [self] in archiveSelected() },
             .init(title: "View changes in Zed", keys: "o") { [self] in openZedSelected() },
             .init(title: "Open inbox editor", keys: "I") { [self] in requestInboxOpen = true },

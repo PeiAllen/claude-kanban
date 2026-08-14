@@ -121,7 +121,7 @@ public struct VimKeybindings: Keybindings {
         case "I": return .openInbox
         case "c": return .spawn
         case "a": return .archive
-        case "o": return .openNotes
+        case "o": return .openInObsidian
         case "O": return .openInZed
         case "d": return .toggleDiff
         case "t": return .newShell

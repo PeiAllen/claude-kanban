@@ -337,7 +337,7 @@ instead of getting a fresh count on every retry.
 `RPCRequest` and dispatches:
 
 1. **Built-in methods** handled inline: `ping`, `version`, `subscribe`, `getConfig`, `setConfig`,
-   `models`, `agents`, `archivedList`, `openInZed`, `openNotes`, `report`, and the app-only `diffText`/`diffStat`
+   `models`, `agents`, `archivedList`, `openInZed`, `openInObsidian`, `report`, and the app-only `diffText`/`diffStat`/`listDocuments`/`readDocument`
    (the [code-review diff](05-command-reference.md#server-only-built-in-methods), axis 7).
 2. **Registry commands** looked up in the `CommandRegistry` and run via `registry.dispatch(command, service,
    params, source)` — the single chokepoint that, for any non-`Query` verb naming a target card, checks the
@@ -389,8 +389,9 @@ vocabulary lives), the app's color comes from `Theme.statusColor(statusKey)`, an
 by looping `CommandCatalog.all` for schemas whose `phaseGate` admits the phase's `Phase.Kind` — never a
 hand-copied per-surface table, so a verb's gate can't quietly drift from what the UI offers. A
 disconnected link (`connection != .live`) empties `validActions` of every daemon verb and sets `isStale`.
-That includes `.openNotes`: opening a card's notes is **not** a local file op but a daemon RPC
-(`BoardStore.openNotes → client.call`, which reaches `Launcher.openNotes` to open Obsidian on the *host*),
+That includes `.openInObsidian`: opening a card's documents is **not** a local file op but a daemon RPC
+(`BoardStore.openInObsidian → client.call`, which reaches `Launcher.openInObsidian` to open Obsidian on
+the *host*),
 so it is gated inside the live link like every other action and additionally requires a materialized
 worktree cwd (a being-born or spawn-failed card has none).
 `dead(.spawnFailed)` — like every other dead reason — maps through `Phase.displayKey` to the `.dead` key

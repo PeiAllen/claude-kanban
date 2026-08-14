@@ -19,7 +19,7 @@ extension Verb {
     public static let inspect = Verb("inspect")
     public static let mergeRequest = Verb("merge-request")
     // UI-only extra (no catalog verb): opening the worktree notes is a local file op.
-    public static let openNotes = Verb("openNotes")
+    public static let openInObsidian = Verb("openInObsidian")
 }
 
 /// The ONE render contract every surface consumes (mac, iOS, CLI). Pure + `Equatable` → table-tested.
@@ -52,11 +52,11 @@ public func displayState(phase: Phase?, connection: ConnectionState) -> DisplayS
         for schema in CommandCatalog.all where schema.phaseGate.contains(kind) {
             actions.insert(Verb(schema.name))
         }
-        // "Open notes" is NOT a local file op — it's a daemon RPC (`BoardStore.openNotes` → `client.call`)
+        // "Open in Obsidian" is NOT a local file op — it's a daemon RPC (`BoardStore.openInObsidian` → `client.call`)
         // that fails link-down — so it belongs INSIDE the connected gate like every other action (the
         // contract is "validActions empty when the link is down"). It also needs a materialized cwd: a
         // being-born card has no worktree yet; a spawn-failed card never got one.
-        if cwdMaterialized(phase) { actions.insert(.openNotes) }
+        if cwdMaterialized(phase) { actions.insert(.openInObsidian) }
     }
 
     let busy = (key == .starting || key == .launching || key == .relaunching)

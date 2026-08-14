@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<!--
+  NO REMOTE LOADS AT ALL. Every asset is bundled, so nothing legitimate needs the network, and a document
+  is untrusted content: it can come from an agent, from git, or from `spawn --base origin/<branch>`.
+
+  NO 'unsafe-inline' anywhere, style included. The grant existed because KaTeX's HTML output styles the
+  spans it emits; MathML output does not.
+
+  KaTeX does still emit `style="false"` on <mstyle> for pmatrix/array/cases — but DOMPurify strips it
+  before it reaches the DOM, because `style` is not in its MathML attribute allowlist. So zero style
+  attributes survive sanitization and the CSP never has occasion to block one. Measured in a real
+  WKWebView on both platforms: styleAttrCount 0, console empty, no CSP reports. An earlier version of
+  this comment credited the CSP with work the sanitizer had already done.
+
+  A real consequence, stated rather than discovered later: a style="" attribute authored INSIDE a
+  document does not apply. That is the better default for content this page treats as untrusted — the
+  page's own stylesheet decides how documents look — but it IS a behaviour change.
+
+  base-uri 'none' is deliberate and load-bearing: it forbids <base href>, which is why note-relative
+  image sources are rewritten explicitly in reader.js rather than resolved by the browser.
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self';
+  style-src 'self';
+  img-src 'self' data:;
+  font-src 'self';
+  connect-src 'none';
+  base-uri 'none';
+  form-action 'none';
+  frame-src 'none';
+  object-src 'none'">
+<link rel="stylesheet" href="reader.css">
+</head>
+<body>
+<main id="doc" aria-live="polite"></main>
+<!-- Order matters: katex defines the global the marked extension reads at registration time. -->
+<script src="vendor/katex.min.js"></script>
+<script src="vendor/marked.umd.js"></script>
+<script src="vendor/marked-katex-extension.umd.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="docpath.js"></script>
+<script src="reader.js"></script>
+</body>
+</html>

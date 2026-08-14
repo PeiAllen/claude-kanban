@@ -296,6 +296,9 @@ public actor OrchestraService {
         emit(.activity(item), rev: lastRev)
     }
 
+    /// Ephemeral: stamps the current board rev via the `lastRev` mirror, exactly like `emitActivity`.
+    /// Called once per genuinely-changed note — the watcher already suppressed unchanged content.
+
     // MARK: - test-support (rev)
 
     #if DEBUG
@@ -1456,9 +1459,30 @@ public actor OrchestraService {
     /// Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
     /// Returns `(opened:` tabs opened `, total:` changed `.md` count `)`.
     @discardableResult
-    public func openNotes(_ id: UUID) async throws -> (opened: Int, total: Int) {
+    /// Open the card's working directory as an Obsidian vault, seeding a tab per document THIS CARD
+    /// TOUCHED.
+    ///
+    /// Only the changed set is seeded, never every document in the workspace: opening a repo would
+    /// otherwise flood Obsidian with every markdown file it contains, which is noise rather than
+    /// review. The vault is still the whole directory, so everything else stays one click away in the
+    /// file tree — the tabs are a starting point, not the boundary.
+    ///
+    /// The set comes from `documentRefs`, the same ordered list the in-app reader shows, so Obsidian
+    /// and the reader can never disagree about what a card changed.
+    public func openInObsidian(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        return try launcher.openNotes(t.cwd, parentRef: resolvedParentRef(t))
+        let tabs = try await obsidianTabs(id)
+        let l = launcher, cwd = t.cwd
+        return try await offActor { try l.openInObsidian(cwd, tabs: tabs) }
+    }
+
+    /// WHICH documents Obsidian opens in tabs: the ones this card changed or created, in the reader's
+    /// order. Named and separate so it can be tested — `openInObsidian` itself shells out to a script
+    /// that is not present in a test environment, so a test written against it can only assert that it
+    /// throws, which is how this filter shipped a regression once already (it used to seed every
+    /// markdown file in the repo).
+    func obsidianTabs(_ id: UUID) async throws -> [String] {
+        try await documentRefs(id).filter { $0.status != nil }.map(\.path)
     }
 
     // MARK: - config

@@ -168,8 +168,14 @@ cmd_up() {
   python3 - "$DATA/tasks.json" "$ROOT/repo" "$ROOT/wt" "$CARD_ID" <<'PY'
 import json, sys
 tasks, repo, wt, cid = sys.argv[1:5]
+# `cwd`, NOT `worktree`. The card model renamed this field, and `Task`'s decoder is deliberately
+# lenient — an unknown key is ignored and `cwd` falls back to "". So the wrong name did not fail: it
+# seeded a card whose working directory was the empty string, which decodes, appears on the board, and
+# is inert for everything that needs a directory (the agent's tmux cwd, the diff, the document reader).
+# Keep this shape in step with scripts/orch-test.sh, which is exercised far more often.
 card = {"id": cid, "title": "isolated test card", "titleProvisional": False, "desc": "", "repo": repo,
-        "branch": "verify", "worktree": wt, "agentId": "claude-code",
+        "branch": "verify", "cwd": wt, "origin": "worktree", "access": "readWrite",
+        "agentId": "claude-code",
         "model": {"id": "claude-opus-4-8", "displayName": "Opus 4.8", "family": "claude"},
         "startIn": "impl", "column": "impl", "order": 0, "status": "waiting", "ctxPct": 0,
         "priorSessionIds": [], "initialPrompt": "t", "archived": False,

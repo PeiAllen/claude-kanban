@@ -56,7 +56,7 @@ struct CardDetailView: View {
         case .agent:    AgentTab(task: task, onOpenImage: { openImage($0, for: task) })
         case .terminal: TerminalTab(task: task, onOpenImage: { openImage($0, for: task) })
         case .diff:     DiffTab(task: task)
-        case .notes:    NotesPage(task: task)
+        case .documents: DocumentsPage(task: task)
         case .inbox:    InboxTab(task: task)
         case .info:     InfoTab(task: task)
         }

@@ -6,61 +6,61 @@ public struct Launcher: Sendable {
 
     public init(resolver: PathResolver) { self.resolver = resolver }
 
-    /// Cap on how many changed-note tabs `openNotes` opens at once, so a card that touched many
-    /// markdown files doesn't flood Obsidian with dozens of tabs. The rest stay one click away in
-    /// the vault tree.
-    static let openNotesTabCap = 15
+    /// Cap on how many tabs `openInObsidian` opens at once, so a document-heavy workspace doesn't
+    /// flood Obsidian. The rest stay one click away in the vault tree.
+    static let obsidianTabCap = 15
 
-    /// Per-note byte cap for the phone's `changedNoteFiles` RPC — a pathological note is truncated with
-    /// a sentinel so the wire payload stays bounded, mirroring `diffText`'s cap. Notes are markdown, so
-    /// this virtually never fires.
-    static let noteContentCap = 256 * 1024
+    /// Per-document byte cap for `readDocument` — a pathological file is truncated with a sentinel so
+    /// the wire payload stays bounded, mirroring `diffText`'s cap. Documents are markdown, so this
+    /// virtually never fires.
+    static let documentContentCap = 256 * 1024
 
-    /// "Open notes" — open the card's WORKTREE as an Obsidian vault, laid out with its notes each in its
-    /// own tab: the gitignored `notes/` vault (plans + designs, scanned off disk) plus any other markdown
-    /// the branch changed (docs, superpower specs, `.claude/skills`). Runs the host's
-    /// `~/.claude/open-obsidian-vault.sh` recipe (seed a default config, register the vault, launch
-    /// Obsidian — restarting a running instance only when the vault is new).
+    /// "Open in Obsidian" — open the card's WORKING DIRECTORY as an Obsidian vault, its documents
+    /// each seeded into a tab.
     ///
-    /// The vault is the worktree root — not `<repo>/notes` — because Obsidian only opens files that
-    /// live inside a registered vault, and the changed notes span several top-level dirs. When nothing
-    /// changed (or the card isn't a git worktree) the vault still opens, just with no seeded tabs.
+    /// The caller supplies `tabs`, already discovered and ordered. That is deliberate: this and the
+    /// in-app reader must show the SAME set, so discovery lives in one place and this function only
+    /// does the Obsidian part. It used to run its own git-derived scan, which meant the two surfaces
+    /// could disagree about what a card's documents were.
+    ///
+    /// The vault is the working directory itself — not a `notes/` subdirectory — because Obsidian only
+    /// opens files inside a registered vault, and documents span several top-level dirs. With no
+    /// documents the vault still opens, just with no seeded tabs.
     ///
     /// HOW THE TABS OPEN: firing `obsidian://open?path=…` per file does NOT work — Obsidian's open URI
     /// has no honored new-tab parameter (verified: `newtab=true` on both the `path=` and `vault=&file=`
     /// routes just reuses the active leaf, so only the last file survives). The official `obsidian`
     /// CLI's `newtab` flag needs Obsidian ≥ 1.12.7, and Advanced-URI means a bundled plugin. Instead we
-    /// SEED `.obsidian/workspace.json` with one tab per changed note before opening; Obsidian restores
-    /// that layout when it loads the vault. Caveat: a vault window that's ALREADY open in a running
-    /// Obsidian keeps its in-memory workspace, so the seed only takes on a fresh load (first open, or a
-    /// reopen after the vault window was closed) — acceptable for the review flow.
+    /// SEED `.obsidian/workspace.json` before opening; Obsidian restores that layout when it loads the
+    /// vault. Caveat: a vault window ALREADY open in a running Obsidian keeps its in-memory workspace,
+    /// so the seed only takes on a fresh load — acceptable for the review flow.
     ///
-    /// `.obsidian/` is gitignored at the repo root, so registering the worktree as a vault never
+    /// `.obsidian/` is gitignored at the repo root, so registering the directory as a vault never
     /// pollutes the card's diff (and the script's own `.gitignore`-append is then a no-op).
     ///
-    /// Returns `(opened:` tabs seeded, ≤ cap `, total:` changed `.md` count `)` for the caller's toast.
+    /// Returns `(opened:` tabs seeded, ≤ cap `, total:` documents `)` for the caller's toast.
     @discardableResult
-    public func openNotes(_ worktree: String, parentRef: String?) throws -> (opened: Int, total: Int) {
+    public func openInObsidian(_ workdir: String, tabs: [String]) throws -> (opened: Int, total: Int) {
         #if !os(macOS)
-        throw OrchestraError.io("opening notes in Obsidian is a macOS-only convenience")
+        throw OrchestraError.io("opening documents in Obsidian is a macOS-only convenience")
         #else
-        try resolver.assertAllowed(worktree)
+        // No `assertAllowed` here, for the same reason the document endpoints dropped it: `workdir` is
+        // the card's own recorded directory, already authorized at spawn, and the repo allowlist would
+        // refuse a freeform or scratch card outright.
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let script = (home as NSString).appendingPathComponent(".claude/open-obsidian-vault.sh")
         guard FileManager.default.fileExists(atPath: script) else { throw OrchestraError.toolMissing(script) }
 
-        // Seed the changed notes as tabs BEFORE the script opens the vault, so Obsidian restores them
-        // on load. Capped so a large diff doesn't seed dozens of tabs.
-        let all = changedNotes(worktree: worktree, parentRef: parentRef)   // vault-relative paths
-        let opened = Array(all.prefix(Self.openNotesTabCap))
-        if !opened.isEmpty { seedWorkspaceTabs(worktree: worktree, relPaths: opened) }
+        // Seed the tabs BEFORE the script opens the vault, so Obsidian restores them on load. Capped so
+        // a document-heavy workspace doesn't seed dozens of tabs.
+        let opened = Array(tabs.prefix(Self.obsidianTabCap))
+        if !opened.isEmpty { seedWorkspaceTabs(worktree: workdir, relPaths: opened) }
 
         // The script resolves jq/python3/osascript/open on PATH; augmentedPATH (applied by Proc.run)
-        // adds Homebrew + per-user bins so they're found under launchd's minimal PATH. Running it on
-        // the worktree root registers + opens that as the vault, and covers the no-changes case.
-        let r = try Proc.run(["bash", script, worktree])
+        // adds Homebrew + per-user bins so they're found under launchd's minimal PATH.
+        let r = try Proc.run(["bash", script, workdir])
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "open-obsidian-vault.sh failed" : r.stderr) }
-        return (opened: opened.count, total: all.count)
+        return (opened: opened.count, total: tabs.count)
         #endif
     }
 
@@ -90,95 +90,44 @@ public struct Launcher: Sendable {
         try? data.write(to: dest)
     }
 
-    /// The markdown notes to open for this card — the gitignored `notes/` vault (scanned off disk) plus
-    /// the branch-vs-base changed `.md` (docs/specs/skills), excluding deletions. Worktree-RELATIVE paths
-    /// (what `workspace.json` leaves reference). See `changedMarkdown` for the union. Empty only when the
-    /// card has no `notes/` files and nothing else changed.
-    func changedNotes(worktree: String, parentRef: String?) -> [String] {
-        changedMarkdown(worktree: worktree, parentRef: parentRef).map { $0.path }
-    }
-
-    /// A changed markdown note: its worktree-relative path + whether it's modified vs base or newly
-    /// added. The primitive shared by `changedNotes` (paths only, for Obsidian tabs) and the phone's
-    /// `changedNoteFiles` RPC (which also reads each file's content). Deletions are excluded.
+    /// A changed markdown document: its worktree-relative path + whether it's modified vs base or
+    /// newly added. This is the git DECORATION behind the document list — discovery itself is a
+    /// filesystem walk, so this only says what git happens to know. Deletions are excluded.
     struct ChangedNote { let path: String; let added: Bool }
 
-    /// The changed/new markdown notes with their M/A status — the "which notes does this card have" set
-    /// the desktop's Open-notes and the phone's Notes page both use, before dropping status. Two sources,
-    /// unioned (notes-first, deduped): the gitignored `notes/` vault scanned off disk (git can't see it),
-    /// plus every other `.md` the branch changed vs base (docs, specs, skills — tracked, so git-visible).
-    /// Notes come first so a card's plans/designs get first claim on the tab cap. Only empty when the card
-    /// has no `notes/` files AND no resolvable base / changed markdown.
-    func changedMarkdown(worktree: String, parentRef: String?) -> [ChangedNote] {
-        // The git-visible side first: tracked/untracked-non-ignored `.md` changed vs base (docs, specs,
-        // skills — and tracked notes in a repo that doesn't ignore notes/). This is the only source with
-        // real M/A status, so it wins on any overlap with the disk scan below.
+    /// The changed/new markdown documents with their M/A status, vs the branch base.
+    ///
+    /// GIT ONLY. An earlier version also walked the gitignored `notes/` vault off disk, because git
+    /// cannot report it. `trackedPathSet` below made that redundant: a discovered document git does not
+    /// track is `.added`, in ANY directory, which is the same rule stated generally. The scan was also
+    /// wrong outside a repo, where it marked `notes/*.md` as added while the stated rule is that nothing
+    /// is changed without git.
+    ///
+    /// Takes an ALREADY-RESOLVED base so a caller that also needs it — the conditional list, which puts
+    /// it in the validator — resolves it once rather than forking `git merge-base` twice.
+    func changedMarkdown(worktree: String, base: String?) -> [ChangedNote] {
         var gitAdded: [String: Bool] = [:]        // path -> is-an-add-vs-base
         var gitOrder: [String] = []
-        if let base = mergeBase(worktree: worktree, parentRef: parentRef) {
+        if let base {
             for c in changedFiles(worktree: worktree, base: base)
             where c.status != .deleted && c.newPath.lowercased().hasSuffix(".md") {
                 if gitAdded[c.newPath] == nil { gitOrder.append(c.newPath) }
                 gitAdded[c.newPath] = (c.status == .added)
             }
         }
-        var seen = Set<String>()
-        var out: [ChangedNote] = []
-        // Notes first (they get first claim on the tab cap): the gitignored notes/ vault scanned off disk,
-        // which git's diff/ls-files never reports. Reuse git's M/A status if it happens to know the file
-        // (tracked notes), else it's new-to-base → `.added`.
-        for path in untrackedMarkdownUnderNotes(worktree: worktree) where seen.insert(path).inserted {
-            out.append(ChangedNote(path: path, added: gitAdded[path] ?? true))
-        }
-        // Then the remaining git-changed markdown outside notes/ (docs, specs, skills).
-        for path in gitOrder where seen.insert(path).inserted {
-            out.append(ChangedNote(path: path, added: gitAdded[path]!))
-        }
-        return out
+        return gitOrder.map { ChangedNote(path: $0, added: gitAdded[$0]!) }
     }
 
-    /// The UNTRACKED `.md` files under the worktree's `notes/` vault (plans + designs), as worktree-
-    /// relative paths (`notes/…`). `notes/` is gitignored scratch, so git's diff/ls-files never reports
-    /// it — a disk walk is the only way Open-notes / the phone can surface a card's notes. Recursive
-    /// (design vaults nest, `notes/designs/<slug>/…`); skips dot components (`.obsidian`, `.trash`).
-    /// Tracked notes are excluded: the git set already reports the changed ones and rightly omits the
-    /// unchanged ones, so a repo that DOES track `notes/` behaves exactly as before this scan existed.
-    func untrackedMarkdownUnderNotes(worktree: String) -> [String] {
-        let notesRoot = (worktree as NSString).appendingPathComponent("notes")
-        guard let en = FileManager.default.enumerator(atPath: notesRoot) else { return [] }
-        var candidates: [String] = []
-        for case let rel as String in en {
-            guard rel.lowercased().hasSuffix(".md"),
-                  !rel.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { continue }
-            candidates.append("notes/" + rel)
-        }
-        guard !candidates.isEmpty else { return [] }
-        let tracked = trackedPaths(worktree: worktree, under: "notes")
-        return candidates.filter { !tracked.contains($0) }.sorted()
-    }
-
-    /// The paths git tracks under `dir` (worktree-relative) — subtracted from the notes disk scan so a
-    /// repo that tracks `notes/` still shows only *changed* notes (via the diff set), not every file.
-    private func trackedPaths(worktree: String, under dir: String) -> Set<String> {
-        guard let r = try? Proc.run(["git", "ls-files", "-z", "--", dir], cwd: worktree), r.ok
-        else { return [] }
+    /// Every path git tracks in this working directory, or `nil` when it is not a git repo at all.
+    ///
+    /// The nil case is load-bearing for the document list: it distinguishes "git has nothing to say
+    /// about this directory" (a scratch dir — so NO document gets a status, and the reader shows
+    /// everything) from "git tracks this repo, and this file is not in it" (the card created it).
+    /// An empty repo succeeds with an empty set, which is correct — nothing is committed yet, so every
+    /// document is new.
+    func trackedPathSet(worktree: String) -> Set<String>? {
+        guard let r = try? Proc.run(["git", "ls-files", "-z"], cwd: worktree), r.ok else { return nil }
         return Set(r.stdout.split(separator: "\0").map(String.init).filter { !$0.isEmpty })
-    }
-
-    /// The changed/new markdown notes WITH their current worktree content — what the phone's Notes page
-    /// (M6) renders in-app (it has no Obsidian). Same branch-vs-base set as `changedNotes`, each note's
-    /// live file content attached (UTF-8, capped for a pathological note). A note whose file can't be
-    /// read is skipped. Not `#if os(macOS)`-gated — the git/file work runs on the Linux daemon too.
-    func changedNoteFiles(worktree: String, parentRef: String?) -> [NoteFile] {
-        changedMarkdown(worktree: worktree, parentRef: parentRef).compactMap { note in
-            let abs = (worktree as NSString).appendingPathComponent(note.path)
-            guard let data = FileManager.default.contents(atPath: abs) else { return nil }
-            var content = String(decoding: data, as: UTF8.self)
-            if content.utf8.count > Self.noteContentCap {
-                content = String(content.prefix(Self.noteContentCap)) + "\n… (note truncated)\n"
-            }
-            return NoteFile(path: note.path, status: note.added ? .added : .modified, content: content)
-        }
     }
 
     public func openInZed(_ worktree: String, parentRef: String?) throws {
@@ -285,7 +234,11 @@ public struct Launcher: Sendable {
     /// to the default-branch merge-base, exactly like `DiffBaseline.range(.parent)`. `nil` when neither
     /// resolves or git fails. Base-ref resolution (local default branch preferred over a stale
     /// `origin/main`) is shared with the board diffstat via `DiffBaseline.defaultBaseRef`.
-    private func mergeBase(worktree: String, parentRef: String?) -> String? {
+    /// The commit this card's work is measured against. Internal rather than private because the
+    /// document list folds it into its validator: `status` is derived vs this SHA, so a base that moved
+    /// under an unchanged tree (a rebase, a retargeted parent) re-dates every badge without touching a
+    /// file. A validator that did not cover it would answer "unchanged" forever.
+    func mergeBase(worktree: String, parentRef: String?) -> String? {
         if let parentRef, !parentRef.isEmpty,
            let r = try? Proc.run(["git", "merge-base", "HEAD", parentRef], cwd: worktree), r.ok {
             let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
