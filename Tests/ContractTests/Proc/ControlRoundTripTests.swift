@@ -258,15 +258,32 @@ struct ControlRoundTripTests {
         try "edited\n".write(toFile: dir + "/notes/keep.md", atomically: true, encoding: .utf8)
         try "new\n".write(toFile: dir + "/notes/new.md", atomically: true, encoding: .utf8)
 
-        // Typed client methods → decoded [DocRef], then one body, over the socket.
-        let docs = try await client.listDocuments(task.shortId)
+        // Typed client methods → decoded DocumentList, then one body, over the socket.
+        let list = try await client.listDocuments(task.shortId)
+        let docs = try #require(list.documents)
         let byPath = Dictionary(uniqueKeysWithValues: docs.map { ($0.path, $0) })
         #expect(Set(byPath.keys) == ["notes/keep.md", "notes/new.md"])
         #expect(byPath["notes/keep.md"]?.status == .modified)
         // The list carries NO content; the body is a separate call.
-        #expect(try await client.readDocument(task.shortId, path: "notes/keep.md") == "edited\n")
+        let keep = try await client.readDocument(task.shortId, path: "notes/keep.md")
+        #expect(keep.content == "edited\n")
         #expect(byPath["notes/new.md"]?.status == .added)
-        #expect(try await client.readDocument(task.shortId, path: "notes/new.md") == "new\n")
+        #expect(try await client.readDocument(task.shortId, path: "notes/new.md").content == "new\n")
+
+        // CONDITIONAL: hand each validator back and the daemon answers "unchanged", sending no payload.
+        // This is the whole mechanism behind the reader's poll — a request that finds nothing is a
+        // round trip and nothing else.
+        #expect(try await client.listDocuments(task.shortId, ifNoneMatch: list.hash).documents == nil)
+        let again = try await client.readDocument(task.shortId, path: "notes/keep.md",
+                                                  ifNoneMatch: keep.hash)
+        #expect(again.content == nil)
+        #expect(again.hash == keep.hash)
+
+        // ...and a real edit defeats both validators, so the poll notices.
+        try "edited again\n".write(toFile: dir + "/notes/keep.md", atomically: true, encoding: .utf8)
+        #expect(try await client.readDocument(task.shortId, path: "notes/keep.md",
+                                              ifNoneMatch: keep.hash).content == "edited again\n")
+        #expect(try await client.listDocuments(task.shortId, ifNoneMatch: list.hash).documents != nil)
     }
 
     @Test("ping / version / getConfig over the socket")

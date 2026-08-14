@@ -10,13 +10,14 @@ import OrchestraKit
 ///
 /// Three behaviours here are subtle enough to state up front:
 ///
-///  - **The quote is frozen at SELECTION time.** Refresh is paused while composing and the file may
+///  - **Staying current is a POLL, not a subscription.** Two of them, at different rates: the open
+///    document is asked about often and cheaply, the document set rarely and expensively. Both send a
+///    validator, so a poll that finds nothing transfers nothing. This replaced a filesystem watcher —
+///    see `docs/09-design-decisions.md` for why.
+///  - **The quote is frozen at SELECTION time.** Polling is paused while composing and the file may
 ///    move underneath, so re-deriving the excerpt at send time could quote text the user never saw.
-///  - **Refresh is deferred, not dropped, while composing.** Text must not move under someone
-///    mid-sentence, but the pending change still applies the moment the field closes.
-///  - **Every load is epoch-gated.** Two rapid edits can complete out of order; without a gate the
-///    older response overwrites the newer one and nothing repairs it, because no further event is
-///    coming.
+///  - **Every load is epoch-gated.** Two polls can complete out of order; without a gate the older
+///    answer overwrites the newer one and nothing repairs it until the next tick.
 @MainActor
 public final class DocumentReaderModel: ObservableObject {
     /// Every document in the working directory, changed-first (the daemon sorts).
@@ -41,7 +42,10 @@ public final class DocumentReaderModel: ObservableObject {
     @Published public private(set) var sending = false
 
     public var composing: Bool { comment != nil }
-    private var pendingRefresh = false
+    /// The validators. Each is whatever the daemon last answered with, sent back on the next poll so it
+    /// can reply "unchanged" instead of resending. Same contract as an HTTP `ETag`.
+    private var contentHash: String?
+    private var listHash: String?
     private var listEpoch = 0
     private var contentEpoch = 0
 
@@ -80,18 +84,27 @@ public final class DocumentReaderModel: ObservableObject {
 
     // MARK: - loading
 
-    /// Fetch the document LIST. Keeps the current selection if it survived, else opens the first.
-    public func loadList(fetch: () async -> [DocRef]) async {
+    /// Fetch the document LIST unconditionally — first load, and whenever the user opens the picker
+    /// rather than waiting for the slow poll.
+    public func loadList(fetch: (String?) async -> DocumentList?) async {
         listEpoch &+= 1
         let mine = listEpoch
-        let fetched = await fetch()
+        let answer = await fetch(nil)                  // nil validator: always answer with documents
         guard mine == listEpoch else { return }        // a newer load already won
-        documents = fetched
         loadingList = false
-        if let sel = selected, !fetched.contains(where: { $0.path == sel.path }) {
+        guard let answer, let docs = answer.documents else { return }
+        listHash = answer.hash
+        adopt(docs)
+    }
+
+    /// Take a new document set, keeping the selection if it survived.
+    private func adopt(_ docs: [DocRef]) {
+        documents = docs
+        if let sel = selected, !docs.contains(where: { $0.path == sel.path }) {
             // The open document was deleted. Stop showing it rather than leaving stale text on screen.
             selected = nil
             content = nil
+            contentHash = nil
             cancelComment()                            // its anchor no longer refers to anything
         }
         // Deliberately does NOT auto-select: `selected` must never be set without its content having
@@ -102,7 +115,7 @@ public final class DocumentReaderModel: ObservableObject {
 
     /// Open a document: fetch its content. Epoch-gated separately from the list, so a slow content
     /// load for a document the user has already navigated away from cannot land.
-    public func open(_ doc: DocRef, fetch: (String) async -> String?) async {
+    public func open(_ doc: DocRef, fetch: (String, String?) async -> DocumentContent?) async {
         selected = doc
         browsing = false
         cancelComment()                                // an anchor belongs to the document it came from
@@ -110,43 +123,49 @@ public final class DocumentReaderModel: ObservableObject {
         // a selection freeze a comment that cites one file and quotes another — the same "wrong is
         // worse than coarse" failure the line refinement guards, at document granularity.
         content = nil
+        contentHash = nil
         loadingContent = true
         contentEpoch &+= 1
         let mine = contentEpoch
-        let body = await fetch(doc.path)
+        let answer = await fetch(doc.path, nil)        // nil validator: always answer with content
         guard mine == contentEpoch else { return }
-        content = body
+        content = answer?.content
+        contentHash = answer?.hash
         loadingContent = false
     }
 
-    /// A live change for this card. Held while composing so the text cannot move mid-sentence.
+    /// THE FAST POLL — ask whether the open document has moved, and take the new bytes if it has.
     ///
-    /// Deliberately ignores WHICH document changed: the list can change too, and re-reading both is
-    /// cheap next to deciding whether this particular path is the open one.
-    public func changed(list: () async -> [DocRef],
-                        read: @escaping (String) async -> String?) async {
-        guard !composing else { pendingRefresh = true; return }
-        await refresh(list: list, read: read)
-    }
-
-    /// Apply anything that arrived while the compose field was open.
-    public func applyPendingRefresh(list: () async -> [DocRef],
-                                    read: @escaping (String) async -> String?) async {
-        guard pendingRefresh else { return }
-        pendingRefresh = false
-        await refresh(list: list, read: read)
-    }
-
-    /// Re-read the list AND the open document. The list can change too — an agent creating a document
-    /// is exactly as interesting as one editing it.
-    private func refresh(list: () async -> [DocRef], read: (String) async -> String?) async {
-        await loadList(fetch: list)
-        guard let sel = selected else { return }
+    /// Called on a short cadence while the reader is on screen. Costs one small request and no bytes
+    /// when nothing changed, because `contentHash` is a validator and the daemon answers conditionally.
+    ///
+    /// Held while composing, so text cannot move under someone mid-sentence. Deferred, not dropped: the
+    /// next tick after the field closes picks it up, and the validator makes that free.
+    public func pollContent(_ fetch: (String, String?) async -> DocumentContent?) async {
+        guard !composing, let sel = selected, let have = contentHash else { return }
         contentEpoch &+= 1
         let mine = contentEpoch
-        let body = await read(sel.path)
-        guard mine == contentEpoch else { return }
+        let answer = await fetch(sel.path, have)
+        guard mine == contentEpoch, let answer, let body = answer.content else { return }
         content = body
+        contentHash = answer.hash
+    }
+
+    /// THE SLOW POLL — ask whether the document SET has moved.
+    ///
+    /// Separate from the content poll because it is the expensive one: the daemon walks the tree, and
+    /// when the validator does not match it also pays two git forks to re-derive every status. So this
+    /// runs on its own much slower cadence, and a document the agent creates appears within it rather
+    /// than instantly. Opening the picker asks unconditionally, which is the impatient path.
+    public func pollList(_ fetch: (String?) async -> DocumentList?) async {
+        guard !composing else { return }
+        listEpoch &+= 1
+        let mine = listEpoch
+        let answer = await fetch(listHash)
+        guard mine == listEpoch, let answer else { return }
+        listHash = answer.hash
+        guard let docs = answer.documents else { return }
+        adopt(docs)
     }
 
     // MARK: - selecting + commenting

@@ -11,40 +11,72 @@ import Testing
         DocRef(path: path, status: status)
     }
 
+    /// An unconditional list answer — what the daemon sends when the validator does not match.
+    private func list(_ docs: [DocRef], hash: String = "L1") -> DocumentList {
+        DocumentList(hash: hash, documents: docs)
+    }
+    private func body(_ text: String, hash: String = "C1") -> DocumentContent {
+        DocumentContent(hash: hash, content: text)
+    }
+
     /// A model with one document already open, so the tests can get straight to the behaviour.
-    private func opened(_ body: String, path: String = "docs/a.md") async -> DocumentReaderModel {
+    private func opened(_ text: String, path: String = "docs/a.md") async -> DocumentReaderModel {
         let m = DocumentReaderModel()
-        await m.loadList { [self.doc(path)] }
-        await m.open(self.doc(path)) { _ in body }
+        await m.loadList { _ in self.list([self.doc(path)]) }
+        await m.open(self.doc(path)) { _, _ in self.body(text) }
         return m
     }
 
-    // MARK: - refresh is deferred while composing, not dropped
+    // MARK: - the poll
 
-    @Test("a change while composing does not move the text")
-    func aChangeWhileComposingIsDeferredNotApplied() async {
+    @Test("the poll sends the validator it was last given")
+    func pollSendsItsValidator() async {
+        // This is the whole economy of the design: the reader asks constantly, and asking is cheap only
+        // because the daemon can answer "unchanged" without sending bytes.
+        let m = await opened("# A\n\nfirst\n")
+        var sent: String??
+        await m.pollContent { _, validator in sent = validator; return nil }
+        #expect(sent == "C1")
+    }
+
+    @Test("an unchanged answer leaves the text exactly where it was")
+    func pollWithNoChangeIsANoOp() async {
+        let m = await opened("# A\n\nfirst\n")
+        await m.pollContent { _, _ in DocumentContent(hash: "C1", content: nil) }
+        #expect(m.content?.contains("first") == true)
+    }
+
+    @Test("a changed answer replaces the text and adopts the new validator")
+    func pollAppliesAChange() async {
+        let m = await opened("# A\n\nfirst\n")
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("SECOND") == true)
+        var sent: String??
+        await m.pollContent { _, v in sent = v; return nil }
+        #expect(sent == "C2")                          // the next poll asks against the NEW copy
+    }
+
+    @Test("the poll does not move the text while someone is composing")
+    func pollIsHeldWhileComposing() async {
         let m = await opened("# A\n\nfirst\n")
         m.select(DocumentSelection(startLine: 3, endLine: 3))
         m.draft = "why?"
-
-        await m.changed(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
         #expect(m.content?.contains("first") == true)   // untouched mid-sentence
+
+        // ...and the very next tick after the field closes picks it up. Deferred, not dropped.
+        m.cancelComment()
+        await m.pollContent { _, _ in self.body("# A\n\nSECOND\n", hash: "C2") }
+        #expect(m.content?.contains("SECOND") == true)
     }
 
-    @Test("closing the compose field applies the deferred change once")
-    func closingComposeAppliesTheDeferredRefresh() async {
-        let m = await opened("# A\n\nfirst\n")
-        m.select(DocumentSelection(startLine: 3, endLine: 3))
-        await m.changed(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
-
-        m.cancelComment()
-        await m.applyPendingRefresh(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
-        #expect(m.content?.contains("SECOND") == true)
-
-        // ...and it is not applied twice.
-        var fetches = 0
-        await m.applyPendingRefresh(list: { fetches += 1; return [] }, read: { _ in nil })
-        #expect(fetches == 0)
+    @Test("the LIST poll only adopts a set when one is sent")
+    func listPollRespectsItsValidator() async {
+        let m = await opened("body")
+        await m.pollList { _ in DocumentList(hash: "L1", documents: nil) }
+        #expect(m.documents.map(\.path) == ["docs/a.md"])          // unchanged: nothing adopted
+        await m.pollList { _ in self.list([self.doc("docs/a.md"), self.doc("docs/new.md")], hash: "L2") }
+        #expect(m.documents.count == 2)                            // a new document appeared
     }
 
     // MARK: - the quote is frozen at selection
@@ -56,7 +88,7 @@ import Testing
         m.draft = "is this right?"
 
         // The file moves underneath while the user is typing.
-        await m.changed(list: { [self.doc()] }, read: { _ in "# H\n\ncompletely different\n" })
+        await m.pollContent { _, _ in self.body("# H\n\ncompletely different\n", hash: "C2") }
 
         var sent: String?
         await m.send { sent = $0; return true }
@@ -121,9 +153,9 @@ import Testing
         // from inside its own fetch, so by the time OLD returns its epoch is provably stale. No gate,
         // no timing, no flake.
         let m = await opened("v1")
-        await m.open(doc()) { _ in
-            await m.open(self.doc()) { _ in "NEW" }   // a newer open starts AND finishes first
-            return "OLD"                              // ...then the older one returns
+        await m.open(doc()) { _, _ in
+            await m.open(self.doc()) { _, _ in self.body("NEW") }  // a newer open finishes first
+            return self.body("OLD")                               // ...then the older one returns
         }
         #expect(m.content == "NEW")
     }
@@ -133,12 +165,12 @@ import Testing
     @Test("the picker shows what this card changed, not the whole workspace")
     func browseListFocusesOnChangedDocuments() async {
         let m = DocumentReaderModel()
-        await m.loadList { [
+        await m.loadList { _ in self.list([
             self.doc("docs/edited.md", .modified),
             self.doc("docs/added.md", .added),
             self.doc("README.md", nil),
             self.doc("docs/untouched.md", nil),
-        ] }
+        ]) }
         // Opening a repo must not bury the two files the agent touched under everything else.
         #expect(m.browseList.map(\.path) == ["docs/edited.md", "docs/added.md"])
         #expect(m.canRevealAll)
@@ -147,7 +179,7 @@ import Testing
     @Test("the rest is one tap away")
     func theRestCanBeRevealed() async {
         let m = DocumentReaderModel()
-        await m.loadList { [self.doc("a.md", .modified), self.doc("b.md", nil)] }
+        await m.loadList { _ in self.list([self.doc("a.md", .modified), self.doc("b.md", nil)]) }
         m.showingAll = true
         #expect(m.browseList.count == 2)
     }
@@ -155,7 +187,7 @@ import Testing
     @Test("search always spans EVERY document, touched or not")
     func searchSpansEverything() async {
         let m = DocumentReaderModel()
-        await m.loadList { [self.doc("docs/edited.md", .modified), self.doc("docs/untouched.md", nil)] }
+        await m.loadList { _ in self.list([self.doc("docs/edited.md", .modified), self.doc("docs/untouched.md", nil)]) }
         m.search = "untouched"
         // Excluding untouched documents from search would make a document the user knows exists look
         // absent — the opposite of what typing a filter means.
@@ -168,15 +200,15 @@ import Testing
         // A scratch dir is not a repo, so nothing has a status. Showing an empty focus section there
         // would make the reader look broken.
         let m = DocumentReaderModel()
-        await m.loadList { [self.doc("plan.md", nil), self.doc("notes.md", nil)] }
+        await m.loadList { _ in self.list([self.doc("plan.md", nil), self.doc("notes.md", nil)]) }
         #expect(m.browseList.count == 2)
         #expect(!m.canRevealAll)
     }
 
-    @Test("a vanished document falls back to another rather than showing nothing")
-    func aDeletedNoteFallsBack() async {
+    @Test("a vanished document stops being displayed")
+    func aDeletedNoteStopsBeingShown() async {
         let m = await opened("a", path: "docs/a.md")
-        await m.loadList { [self.doc("docs/b.md")] }              // a.md was deleted
+        await m.loadList { _ in self.list([self.doc("docs/b.md")]) }             // a.md was deleted
         #expect(m.selected == nil)                                // and the reader stops showing it
         #expect(m.content == nil)
     }

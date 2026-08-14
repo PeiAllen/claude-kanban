@@ -233,21 +233,6 @@ extension OrchestraService {
 
         // (5) orphan-session sweep — after the per-card pass so a just-transitioned card isn't misread.
         await sweepOrphanSessions(aliveNames: aliveNames, tasks: tasks)
-
-        // (6) note watches — reconcile the daemon's per-worktree FSEvents streams against the live
-        //     cards. Deliberately LAST: it suspends the actor, and the phase/session snapshot pair
-        //     above is order-sensitive (see the comment at the top of this function), so nothing may
-        //     be inserted between those two reads.
-        //
-        //     Riding the tick is the whole lifecycle: `sync` is an idempotent diff, so a card that
-        //     gained or lost a worktree is picked up within one poll interval and a missed transition
-        //     self-heals. There is no per-card hook to forget and no teardown protocol to get wrong.
-        //     EVERY live card with a working directory, not just worktree cards: documents belong to
-        //     the directory, so a freeform or scratch card has them too. Cards sharing a directory
-        //     share one stream.
-        await documentWatches.sync(cards: tasks
-            .filter { !$0.archived && !$0.cwd.isEmpty }
-            .map { (id: $0.id, worktree: $0.cwd) })
     }
 
     /// Dispatch one phase-step for `card` off-actor if eligible: no step already in flight AND past the

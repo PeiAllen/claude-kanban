@@ -21,6 +21,48 @@ extension OrchestraService {
         try await documentRefs(id)
     }
 
+    /// The document list, answered CONDITIONALLY — the reader's slow poll.
+    ///
+    /// The validator covers each document's path AND its stat stamp, not just the path set. Both halves
+    /// are load-bearing: paths catch a document created or deleted, and stamps catch one whose bytes
+    /// moved — which is what changes git's `M`/`A` answer, and therefore which section of the reader a
+    /// document sits in. Statting the set costs ~1.2ms next to the walk's ~80ms.
+    ///
+    /// The two git forks behind `status` run ONLY when that digest moves, which is the whole point: a
+    /// poll that finds nothing spends no subprocesses at all.
+    ///
+    /// One case the validator cannot see is the branch BASE moving under an unchanged tree (a rebase, a
+    /// parent merge), which re-dates every status without touching a file. Opening the picker forces an
+    /// unconditional refresh, which is the repair.
+    public func listDocuments(_ id: UUID, ifNoneMatch: String?) async throws -> DocumentList {
+        let t = try await require(id)
+        let l = launcher, cwd = t.cwd
+        let parentRef = resolvedParentRef(t)
+        return try await offActor {
+            let discovered = DocumentDiscovery.walk(root: cwd)
+            var fingerprint = ""
+            for rel in discovered {
+                var st = stat()
+                let abs = (cwd as NSString).appendingPathComponent(rel)
+                if stat(abs, &st) == 0 {
+                    #if canImport(Darwin)
+                    let secs = st.st_mtimespec.tv_sec
+                    #else
+                    let secs = st.st_mtim.tv_sec
+                    #endif
+                    fingerprint += "\(rel)\u{1}\(st.st_size)\u{1}\(secs)\n"
+                } else {
+                    fingerprint += "\(rel)\u{1}?\n"
+                }
+            }
+            let digest = DocumentContentHash.hex(Data(fingerprint.utf8))
+            guard digest != ifNoneMatch else { return DocumentList(hash: digest, documents: nil) }
+            return DocumentList(hash: digest,
+                                documents: Self.decorate(discovered, launcher: l, cwd: cwd,
+                                                         parentRef: parentRef))
+        }
+    }
+
     /// The ordered document set — the ONE place discovery + git decoration + ordering happen. Both the
     /// in-app reader and "Open in Obsidian" read from here, so the two surfaces can never disagree
     /// about what a card's documents are.
@@ -37,32 +79,57 @@ extension OrchestraService {
         let l = launcher, cwd = t.cwd
         let parentRef = resolvedParentRef(t)
         return try await offActor {
-            let discovered = DocumentDiscovery.walk(root: cwd)
-            // Git's opinion, where it has one — the walk already found the files regardless.
-            let statuses = Dictionary(
-                l.changedMarkdown(worktree: cwd, parentRef: parentRef)
-                    .map { ($0.path, $0.added ? DocumentStatus.added : .modified) },
-                uniquingKeysWith: { a, _ in a })
-            // A discovered document git does NOT TRACK was created in this workspace. That one rule
-            // covers three cases the diff alone misses: a gitignored document anywhere (not just under
-            // `notes/`), an untracked document when no merge base resolves (the whole diff is skipped
-            // then), and a repo with no commits yet.
-            //
-            // `nil` means "not a git repo", which is different from "tracks nothing": there, NO
-            // document gets a status and the reader falls back to showing everything.
-            let tracked = l.trackedPathSet(worktree: cwd)
-            let refs = discovered.map { path -> DocRef in
-                if let s = statuses[path] { return DocRef(path: path, status: s) }
-                if let tracked, !tracked.contains(path) { return DocRef(path: path, status: .added) }
-                return DocRef(path: path, status: nil)
-            }
-            // CHANGED FIRST, then everything else, each alphabetical. What the agent just touched is
-            // what the reviewer came for; the rest is browsable below it.
-            return refs.sorted {
-                let (a, b) = ($0.status != nil, $1.status != nil)
-                return a == b ? $0.path < $1.path : a
-            }
+            Self.decorate(DocumentDiscovery.walk(root: cwd), launcher: l, cwd: cwd, parentRef: parentRef)
         }
+    }
+
+    /// Ask git what it can say about an already-discovered set, and order it. The two forks in here are
+    /// the expensive half of a list, which is why the conditional endpoint skips them when its validator
+    /// matches.
+    static func decorate(_ discovered: [String], launcher l: Launcher,
+                         cwd: String, parentRef: String?) -> [DocRef] {
+        // Git's opinion, where it has one — the walk already found the files regardless.
+        let statuses = Dictionary(
+            l.changedMarkdown(worktree: cwd, parentRef: parentRef)
+                .map { ($0.path, $0.added ? DocumentStatus.added : .modified) },
+            uniquingKeysWith: { a, _ in a })
+        // A discovered document git does NOT TRACK was created in this workspace. That one rule covers
+        // three cases the diff alone misses: a gitignored document anywhere (not just under `notes/`),
+        // an untracked document when no merge base resolves (the whole diff is skipped then), and a
+        // repo with no commits yet.
+        //
+        // `nil` means "not a git repo", which is different from "tracks nothing": there, NO document
+        // gets a status and the reader falls back to showing everything.
+        let tracked = l.trackedPathSet(worktree: cwd)
+        let refs = discovered.map { path -> DocRef in
+            if let s = statuses[path] { return DocRef(path: path, status: s) }
+            if let tracked, !tracked.contains(path) { return DocRef(path: path, status: .added) }
+            return DocRef(path: path, status: nil)
+        }
+        // CHANGED FIRST, then everything else, each alphabetical. What the agent just touched is what
+        // the reviewer came for; the rest is browsable below it.
+        return refs.sorted {
+            let (a, b) = ($0.status != nil, $1.status != nil)
+            return a == b ? $0.path < $1.path : a
+        }
+    }
+
+    /// One document's content, answered CONDITIONALLY — the reader's fast poll, and the mechanism that
+    /// replaced the filesystem watcher.
+    ///
+    /// `ifNoneMatch` is the hash from a previous answer. When it still matches, no bytes are sent — and
+    /// the bytes are the whole cost, because the phone reads this over a tunnel.
+    ///
+    /// The daemon still reads and hashes the file on every poll: ~250µs for a 256 KB document, local,
+    /// against a poll every couple of seconds. Skipping that would mean caching a stamp-to-hash pair per
+    /// document, which is per-document daemon state this design deliberately does not keep — and it
+    /// would buy a quarter of a millisecond. Content is hashed rather than stat-compared for a second
+    /// reason anyway: a touch, or an atomic save that rewrote identical bytes, moves mtime and inode
+    /// without changing a thing the reader should redraw.
+    public func readDocument(_ id: UUID, path: String, ifNoneMatch: String?) async throws -> DocumentContent {
+        let content = try await readDocument(id, path: path)
+        let hash = DocumentContentHash.hex(Data(content.utf8))
+        return DocumentContent(hash: hash, content: hash == ifNoneMatch ? nil : content)
     }
 
     /// One document's content. Size-capped, so a pathological file cannot blow

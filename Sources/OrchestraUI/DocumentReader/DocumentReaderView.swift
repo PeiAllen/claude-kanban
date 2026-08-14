@@ -25,30 +25,42 @@ public struct DocumentReaderView: View {
                 if reader.selected == nil, let first = reader.documents.first {
                     await reader.open(first, fetch: fetchBody)
                 }
-            }
-            // A live change for THIS card. The model holds it while composing so text cannot move
-            // under the user mid-sentence.
-            .onChange(of: model.documentChanges[task.id]) { _, change in
-                guard change != nil else { return }
-                _Concurrency.Task { await reader.changed(list: fetchList, read: fetchBody) }
-            }
-            // Events broadcast while the link was down are not replayed, so coming back online reloads
-            // once — the LIST and the open document both. Reloading only the list left a document that
-            // was edited during the outage displaying its old text indefinitely, since it is still in
-            // the list and no event is coming for it. This is also what repairs an edit that landed in
-            // the daemon's own start-up window, before its watches existed.
-            //
-            // Routed through `changed` rather than a direct reload so it obeys the same rule as a live
-            // change: text must not move under someone who is mid-sentence.
-            .onChange(of: model.connected) { _, online in
-                guard online else { return }
-                _Concurrency.Task { await reader.changed(list: fetchList, read: fetchBody) }
+                // THE POLL. It lives inside `.task`, so it runs only while this view is on screen and
+                // SwiftUI cancels it on the way out — there is no timer to invalidate and nothing to
+                // leak. Two rates, because the two questions cost wildly different amounts: asking
+                // whether the open document moved is a validator round trip, while asking whether the
+                // document SET moved makes the daemon walk the tree.
+                //
+                // This is what replaced a filesystem watcher. See `docs/09-design-decisions.md`.
+                var ticks = 0
+                while !_Concurrency.Task.isCancelled {
+                    try? await _Concurrency.Task.sleep(for: .seconds(Self.contentPollSeconds))
+                    if _Concurrency.Task.isCancelled { break }
+                    await reader.pollContent(fetchBody)
+                    ticks += 1
+                    if ticks % Self.listPollEveryNTicks == 0 { await reader.pollList(fetchListConditional) }
+                }
             }
     }
 
-    private func fetchList() async -> [DocRef] { await model.listDocuments(task.id) }
-    private func fetchBody(_ path: String) async -> String? {
-        await model.readDocument(task.id, path: path)
+    /// How often the open document is re-asked about. A validator round trip, so this is cheap enough
+    /// to feel live without being a stream.
+    static let contentPollSeconds = 2
+    /// How many content ticks pass between document-SET polls. The set is the expensive question — a
+    /// tree walk, plus two git forks when it actually moved — so it runs on its own much slower clock.
+    /// At 2s a tick this is 30s, which is how long a NEWLY created document takes to appear on its own.
+    /// Opening the picker asks immediately, for when that is too slow.
+    static let listPollEveryNTicks = 15
+
+    private func fetchList(_ ifNoneMatch: String?) async -> DocumentList? {
+        await model.listDocuments(task.id, ifNoneMatch: ifNoneMatch)
+    }
+    /// Same call as `fetchList`; named apart only to make the two poll rates legible at the call site.
+    private func fetchListConditional(_ ifNoneMatch: String?) async -> DocumentList? {
+        await fetchList(ifNoneMatch)
+    }
+    private func fetchBody(_ path: String, _ ifNoneMatch: String?) async -> DocumentContent? {
+        await model.readDocument(task.id, path: path, ifNoneMatch: ifNoneMatch)
     }
 
     @ViewBuilder private var content: some View {
@@ -78,6 +90,9 @@ public struct DocumentReaderView: View {
     private var documentBar: some View {
         Button {
             withAnimation(.easeOut(duration: 0.15)) { reader.browsing.toggle() }
+            // Opening the picker is the impatient path: ask for the set NOW rather than waiting out
+            // the slow poll, so a document the agent just created is there when you look for it.
+            if reader.browsing { _Concurrency.Task { await reader.loadList(fetch: fetchList) } }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text").font(.footnote).foregroundStyle(theme.text2)
@@ -217,7 +232,7 @@ public struct DocumentReaderView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                Button("Cancel") { reader.cancelComment(); applyDeferred() }
+                Button("Cancel") { reader.cancelComment() }
                     .buttonStyle(.plain).font(.footnote).foregroundStyle(theme.text2)
 
                 Button {
@@ -225,7 +240,6 @@ public struct DocumentReaderView: View {
                         // Report the REAL outcome: on failure the model keeps the anchor and the draft,
                         // so a dropped link costs a retry rather than the user's comment.
                         await reader.send { message in await model.send(task.id, message) }
-                        applyDeferred()
                     }
                 } label: {
                     Text(reader.sending ? "Sending…" : "Send")
@@ -242,11 +256,6 @@ public struct DocumentReaderView: View {
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(theme.card)
         }
-    }
-
-    /// Closing the compose field releases any refresh that arrived while it was open.
-    private func applyDeferred() {
-        _Concurrency.Task { await reader.applyPendingRefresh(list: fetchList, read: fetchBody) }
     }
 
     // MARK: - chrome

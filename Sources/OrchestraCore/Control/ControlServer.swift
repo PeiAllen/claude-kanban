@@ -199,13 +199,20 @@ public final class ControlServer: @unchecked Sendable {
                 throw OrchestraError.invalidParams("listDocuments needs ref")
             }
             let task = try await service.resolveRef(ref)
-            return try JSONValue(encodable: try await service.listDocuments(task.id))
+            // CONDITIONAL, like an HTTP GET with `If-None-Match`. The reader polls this on a slow
+            // cadence; when the validator matches, the answer carries no documents and the daemon
+            // skips the two git forks behind `status`.
+            return try JSONValue(encodable:
+                try await service.listDocuments(task.id, ifNoneMatch: p.optString("ifNoneMatch")))
         case "readDocument":
             guard let p = req.params, let ref = p.optString("ref"), let path = p.optString("path") else {
                 throw OrchestraError.invalidParams("readDocument needs ref + path")
             }
             let task = try await service.resolveRef(ref)
-            return .string(try await service.readDocument(task.id, path: path))
+            // Also conditional — this is the reader's fast poll, and what replaced the file watcher.
+            return try JSONValue(encodable:
+                try await service.readDocument(task.id, path: path,
+                                               ifNoneMatch: p.optString("ifNoneMatch")))
         case "documentAsset":
             // An image a note references, read by the daemon so the phone — which cannot reach the
             // daemon's disk — renders the same page the desktop does. Internal + app-only, like

@@ -156,12 +156,6 @@ public class BoardStore: ObservableObject {
     /// a `.phone` owner means the desktop shows the placeholder and stays detached from the tmux window.
     @Published public var agentOwners: [UUID: AgentTerminalOwnerState] = [:]
 
-    /// The last live change seen for each card's watched documents — a NOTIFICATION cursor, never content.
-    /// The reader observes it and re-fetches through `readDocument`, so a large document never rides the
-    /// event bus. Live-only, so it is deliberately not seeded from a snapshot: the daemon watches on
-    /// its own account, so a reconnecting client simply starts receiving these again.
-    @Published public private(set) var documentChanges: [UUID: DocumentChange] = [:]
-
     // Preferences (host props in the prototype).
     @AppStorage("orch_accent") public var accentRaw = Accent.blue.rawValue
     @AppStorage("orch_density") public var densityRaw = Density.comfortable.rawValue
@@ -888,7 +882,7 @@ public class BoardStore: ObservableObject {
         case .taskRemoved(let id):
             guard env.rev > max(baselineRev, appliedRev[id] ?? Int.min) else { return }
             appliedRev[id] = env.rev; apply(env.event)
-        case .activity, .agentTerminalOwner, .shellsChanged, .documentChanged:
+        case .activity, .agentTerminalOwner, .shellsChanged:
             apply(env.event)
         }
     }
@@ -915,7 +909,6 @@ public class BoardStore: ObservableObject {
                 // An archived card keeps no note cursor. This is the ARCHIVE path — a card is archived
                 // through `.taskUpserted(archived: true)`, NOT `.taskRemoved` — so reaping only in
                 // `.taskRemoved` would leave the cursor behind for the process's lifetime.
-                documentChanges[t.id] = nil
             } else {
                 // Prior snapshot of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
@@ -947,7 +940,7 @@ public class BoardStore: ObservableObject {
             if archiveConfirm == id { archiveConfirm = nil }
             // Reap per-card shell state so it doesn't accumulate for the process's lifetime.
             // (`shellOpen` is derived from `shellWindows`, so clearing that clears it too.)
-            shellWindows[id] = nil; selectedShell[id] = nil; documentChanges[id] = nil
+            shellWindows[id] = nil; selectedShell[id] = nil
         case .activity(let item):
             // Dedup by id (#3): the daemon replays its whole activity ring to EVERY `subscribe`, so each
             // reconnect (which re-subscribes) would otherwise re-insert up to 200 items the board already
@@ -963,12 +956,6 @@ public class BoardStore: ObservableObject {
         case .shellsChanged(let s):
             // Live shell open/close from ANY surface (this client, another desktop, or the phone).
             ingestShellsChanged(s)
-        case .documentChanged(let change):
-            // A note this card's agent edited. Store the cursor ONLY — the reader re-fetches through
-            // the shipped `readDocument` RPC, so a large document never rides the event bus. Not rev-gated:
-            // like shells and owner state, this carries its own dedup (the daemon suppresses an
-            // unchanged content hash before it ever broadcasts).
-            documentChanges[change.cardId] = change
         }
     }
 
@@ -1275,14 +1262,16 @@ public class BoardStore: ObservableObject {
         (try? await client.call("diffText",
             .object(["ref": .string(id.uuidString), "base": .string(base)])).decode(String.self)) ?? ""
     }
-    /// The card's documents — list only, no content. `[]` on any error so the reader degrades to an
-    /// empty state rather than failing.
-    public func listDocuments(_ id: UUID) async -> [DocRef] {
-        (try? await client.listDocuments(id.uuidString)) ?? []
+    /// The card's documents — list only, no content, asked CONDITIONALLY. Pass the previous answer's
+    /// hash and a matching validator returns `documents == nil`, which also spares the daemon the two
+    /// git forks behind `status`. `nil` on any error, so the reader keeps what it has.
+    public func listDocuments(_ id: UUID, ifNoneMatch: String? = nil) async -> DocumentList? {
+        try? await client.listDocuments(id.uuidString, ifNoneMatch: ifNoneMatch)
     }
-    /// One document's content, fetched when the reader opens it. `nil` on failure.
-    public func readDocument(_ id: UUID, path: String) async -> String? {
-        try? await client.readDocument(id.uuidString, path: path)
+    /// One document's content, asked CONDITIONALLY — this is the reader's poll. `content == nil` in the
+    /// answer means the caller's copy is still current. `nil` overall on failure.
+    public func readDocument(_ id: UUID, path: String, ifNoneMatch: String? = nil) async -> DocumentContent? {
+        try? await client.readDocument(id.uuidString, path: path, ifNoneMatch: ifNoneMatch)
     }
     /// Bytes for an image the document at `note` references, read by the daemon and scoped to that document's
     /// own references. `nil` on any failure — a missing image renders as a broken image, which is

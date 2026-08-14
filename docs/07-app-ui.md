@@ -418,9 +418,11 @@ be plain markdown with no raw HTML and no entities. Rendered text and source dif
 as `bold` — so falling back to the block is common and expected. It is also the right failure. A coarse
 quote is visibly coarse; a confidently wrong line is not.
 
-**How it stays fresh.** The daemon watches each working directory and pushes a small notification when
-a document changes. The reader re-reads that document and flashes the blocks whose content moved, for
-about a second. The flash is a change cue, not a diff.
+**How it stays fresh.** The reader asks. While it is on screen it re-checks the open document every
+couple of seconds and the document list every thirty, and each question carries a validator so an
+unchanged answer sends nothing back. Blocks whose content moved flash for about a second — a change
+cue, not a diff. A document the agent CREATES appears on the slower clock; opening the picker asks for
+the list immediately.
 
 The reader is read-only. The agent edits; you comment. A comment carries no instruction line, because
 the author decides whether to answer, to edit, or both.

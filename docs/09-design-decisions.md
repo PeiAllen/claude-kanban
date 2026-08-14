@@ -1357,37 +1357,43 @@ focus section there would be empty.
 This is an approximation, and it is honest about its edges. It measures the branch, not the card. So a
 file edited before the card started still counts, and two cards on one directory report the same set.
 
-### The document watch is daemon-owned, so there is no subscription to leak
+### The reader polls; it does not watch the filesystem
 
-The daemon watches each live card's working directory on its OWN account and broadcasts a change
-notification, exactly as it derives `shellsChanged` from tmux. Nothing registers, so nothing can leak.
+The reader keeps its copy current by asking, on two clocks. The open document is re-asked about every
+two seconds. The document SET is re-asked about every thirty. Both send a validator and both are
+answered conditionally, so a question that finds nothing transfers nothing — this is HTTP's
+`ETag` / `If-None-Match` / `304`, and `readDocument` and `listDocuments` implement exactly that.
 
-The alternative was a watch registered per client, per open view. Orchestra built that, then removed it.
-A daemon that holds an OS resource for one client owes five more mechanisms:
+The two rates exist because the two questions cost wildly different amounts. Statting a file is about
+5 microseconds. Walking the tree for the document set is about 80 milliseconds on a large repo, and
+deriving each document's `M`/`A` status costs two `git` forks on top. Coupling them meant paying the
+expensive one every time an agent saved a file.
 
-- connection identity that survives file descriptor reuse
-- teardown on two racing death paths
-- a register/teardown rollback
-- replay after reconnect
-- refcounting
+This replaced an FSEvents tree watcher, which pushed a `documentChanged` event per save. Three things
+retired it:
 
-That is six mechanisms and two RPCs, and none of them are the feature. The daemon reconciles the watch
-set from the live cards instead, so a missed transition self-heals at the next tick.
+- **It could not work everywhere.** FSEvents is Darwin-only, and this daemon cross-compiles to Linux —
+  where the watcher was a stub that never fired, so live refresh was silently dead on that build. The
+  Linux answer, inotify, needs one watch descriptor per DIRECTORY: about 10,000 for one worktree of this
+  repo, against a kernel default that has historically floored at 8,192.
+- **It cost more under load, not less.** A watcher fires for every file event in the tree, so a build
+  floods it with object-file churn that then has to be filtered one path at a time. FSEvents caps its
+  own exclusion list at eight directories. A poll costs the same whether the tree is idle or busy.
+- **It was never cheap enough to be worth a platform fork.** The tick it would have ridden already
+  shells out to tmux for the whole board every two seconds.
 
-Three behaviors survive that simplification. They are not subscription tax:
+Emacs settled this argument long ago and ships both mechanisms: `auto-revert-use-notify` defaults on,
+and `auto-revert-avoid-polling` defaults OFF, because notification is the optimization and the poll is
+the floor. With the floor this cheap, the optimization did not earn its second implementation.
 
-- A change emits only when the content hash moves, so a touch wakes nobody.
-- A deletion is reported, because suppressing it leaves a deleted document on screen.
-- An FSEvents overflow re-walks the tree AND re-checks every known path. A dropped batch can name only
-  `/`, so trusting its paths would strand a document silently. Re-checking known paths alone is not
-  enough either: a document CREATED inside the dropped batch was never hashed, so no cache remembers it.
-  The walk finds what was created; the cache remembers what was deleted.
+What the poll costs the design is precision. A newly created document appears within the slow poll
+rather than instantly — opening the picker asks immediately, which is the impatient path — and an edit
+shows up within a tick rather than within FSEvents' 0.3-second window. What it buys is that the daemon
+holds no per-document state, has no OS-specific code left in this path, and behaves identically on both
+platforms.
 
-Two windows stay open on the daemon side, and the client closes both. FSEvents streams start at "now",
-so an edit between the daemon accepting requests and its first watch sync reaches nobody — the sync runs
-early in boot to keep that window small, but it cannot be zero. Events broadcast while a client's link is
-down are not replayed either, by design. So the reader re-reads its open document, not just its list,
-whenever it reconnects. That one repair covers both.
+The poll lives inside the reader's `.task`, so it runs only while the view is on screen and SwiftUI
+cancels it on the way out. There is no timer to invalidate and nothing to leak.
 
 ### The reader's bridge reports a selection and nothing else
 

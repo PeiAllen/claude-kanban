@@ -328,14 +328,22 @@ public final class ControlClient: @unchecked Sendable {
     /// Every document in the card's working directory — path + optional git status, NO content.
     /// Discovery is a git-independent filesystem walk, so a gitignored `notes/` lists exactly like a
     /// tracked `docs/`, and most results carry no status because git has nothing to say about them.
-    public func listDocuments(_ ref: String) async throws -> [DocRef] {
-        try await call("listDocuments", .object(["ref": .string(ref)]), as: [DocRef].self)
+    ///
+    /// Asked CONDITIONALLY. Pass the previous answer's `hash`; a matching
+    /// validator comes back with `documents == nil` and costs the daemon no git forks.
+    public func listDocuments(_ ref: String, ifNoneMatch: String? = nil) async throws -> DocumentList {
+        var params: [String: JSONValue] = ["ref": .string(ref)]
+        if let ifNoneMatch { params["ifNoneMatch"] = .string(ifNoneMatch) }
+        return try await call("listDocuments", .object(params), as: DocumentList.self)
     }
 
-    /// One document's content, fetched on demand when the reader opens it.
-    public func readDocument(_ ref: String, path: String) async throws -> String {
-        try await call("readDocument", .object(["ref": .string(ref), "path": .string(path)]),
-                       as: String.self)
+    /// One document's content, asked CONDITIONALLY — the reader's poll. `content == nil` means the
+    /// caller's copy is still current, so nothing crossed the wire.
+    public func readDocument(_ ref: String, path: String,
+                             ifNoneMatch: String? = nil) async throws -> DocumentContent {
+        var params: [String: JSONValue] = ["ref": .string(ref), "path": .string(path)]
+        if let ifNoneMatch { params["ifNoneMatch"] = .string(ifNoneMatch) }
+        return try await call("readDocument", .object(params), as: DocumentContent.self)
     }
 
     /// Bytes for an image the note at `note` references. Scoped to that note's OWN references, so the

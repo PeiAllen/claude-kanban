@@ -507,19 +507,34 @@ public struct DocRef: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// One live change to a document the daemon is watching: WHICH note moved, and its new content hash.
+/// A document's content, answered CONDITIONALLY.
 ///
-/// Deliberately a NOTIFICATION, not the content. The event stays a few dozen bytes and the client
-/// re-fetches through the shipped `readDocument` RPC, so a large document can never blow the wire.
-public struct DocumentChange: Codable, Sendable, Equatable {
-    public let cardId: UUID
-    public let path: String          // relative to the card's working directory
-    /// The document's new content hash, or `nil` when the file was DELETED. Deletion has to be reportable:
-    /// dropping it would leave the reader displaying a document that no longer exists.
-    public let contentHash: String?
-    public init(cardId: UUID, path: String, contentHash: String?) {
-        self.cardId = cardId; self.path = path; self.contentHash = contentHash
-    }
+/// This is HTTP's `ETag` / `If-None-Match` / `304`, and deliberately so — the reader keeps its copy
+/// current by asking again on a timer, and asking is the common case while an answer is the rare one.
+/// The daemon stats the file (~5µs) and only reads and hashes it when the stat moved, so a poll that
+/// finds nothing costs almost exactly nothing.
+///
+/// There is no push counterpart. An FSEvents watcher used to broadcast these; it was Darwin-only,
+/// needed one inotify descriptor per directory to port, and cost more under build churn than the poll
+/// costs at rest. See `docs/09-design-decisions.md`.
+public struct DocumentContent: Codable, Sendable, Equatable {
+    /// The validator. Pass it back as `ifNoneMatch` on the next read.
+    public let hash: String
+    /// `nil` means NOT MODIFIED — the caller's `ifNoneMatch` still matches, so no bytes were sent.
+    public let content: String?
+    public init(hash: String, content: String?) { self.hash = hash; self.content = content }
+}
+
+/// A document LIST, answered conditionally on the same rule.
+///
+/// The validator covers the path set and each document's git status, so the answer is `nil` unless the
+/// set actually moved. That matters more here than for content: the walk is cheap but the git decoration
+/// behind `status` costs two forks, and it is skipped entirely when the digest matches.
+public struct DocumentList: Codable, Sendable, Equatable {
+    public let hash: String
+    /// `nil` means NOT MODIFIED.
+    public let documents: [DocRef]?
+    public init(hash: String, documents: [DocRef]?) { self.hash = hash; self.documents = documents }
 }
 
 /// One asset a document references (an image), fetched by the reader's scheme handler. The phone cannot
@@ -1363,14 +1378,6 @@ public enum Event: Codable, Sendable, Equatable {
     /// ring-replayed; a (re)connecting client reconciles via the `sessions` RPC in
     /// `refreshShellPanels`. NOT durable card state (`Task` is untouched).
     case shellsChanged(ShellWindowsState)
-    /// A note the daemon watches changed on disk. Live-only — NOT ring-replayed (only `.activity` is),
-    /// and NOT durable card state (`Task` is untouched). Carries a hash, never content: the client
-    /// re-fetches through the shipped `readDocument` RPC, so a large document can never blow the wire.
-    ///
-    /// There is nothing to reconcile on reconnect. The daemon watches every live worktree card on its
-    /// own account rather than per-client, so a reconnecting client simply starts receiving these
-    /// again — unlike `.shellsChanged`, which needs a companion `sessions` call.
-    case documentChanged(DocumentChange)
 }
 
 /// Every event notification to clients is wrapped with the board `rev` at emit, so a client can
