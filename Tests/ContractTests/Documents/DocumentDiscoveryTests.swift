@@ -24,8 +24,9 @@ struct DocumentDiscoveryTests {
         try write("notes/designs/plan.md")         // gitignored in a real repo — must still be found
         try write("Sources/main.swift")            // not a document
         try write(".git/COMMIT_EDITMSG.md")        // hidden dir
-        try write(".claude/skills/foo.md")         // hidden BUT allowlisted — real documents live here
-        try write(".github/PULL_REQUEST_TEMPLATE.md")
+        try write(".claude/skills/foo.md")         // hidden dir — machine-owned config, not a document
+        try write(".claude/skills/orchestra-tree/SKILL.md")   // what Orchestra itself used to inject
+        try write(".github/PULL_REQUEST_TEMPLATE.md")          // hidden dir
         try write(".hidden.md")                    // hidden file
         try write("node_modules/pkg/readme.md")    // denied dir
         try write("build/output.md")               // denied dir
@@ -60,17 +61,22 @@ struct DocumentDiscoveryTests {
         #expect(found.allSatisfy { !$0.hasPrefix("DerivedData/") })
     }
 
-    @Test("allowlisted dot-directories are still walked")
-    func allowedDotDirectoriesAreFound() throws {
-        // `.claude/skills` and `.github` hold documents a reviewer wants. Skipping every hidden entry
-        // made a card whose only change was `.claude/skills/foo.md` show an empty reader and seed no
-        // Obsidian tabs — a regression against the shipped Obsidian path, which named it explicitly.
+    @Test("every dot-directory is pruned, with no exceptions")
+    func dotDirectoriesArePruned() throws {
+        // The dot prefix marks machine-owned config, not a document a human reviews. Pruning all of it
+        // is fail-safe: it covers tools this walk has never heard of, which an exception list cannot do.
+        // The case that forced this: Orchestra injected its own guidance skills into every card's
+        // `.claude/skills`, and the reader listed them as `.added` — ABOVE the real documents.
         let root = try tree()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let found = Set(DocumentDiscovery.walk(root: root))
-        #expect(found.contains(".claude/skills/foo.md"))
-        #expect(found.contains(".github/PULL_REQUEST_TEMPLATE.md"))
-        #expect(found.allSatisfy { !$0.hasPrefix(".git/") })   // ...but .git is still pruned
+        #expect(found.allSatisfy { !$0.hasPrefix(".") })
+        #expect(!found.contains(".claude/skills/orchestra-tree/SKILL.md"))
+        #expect(!found.contains(".claude/skills/foo.md"))
+        #expect(!found.contains(".github/PULL_REQUEST_TEMPLATE.md"))
+        // The rule did not swallow the documents that matter.
+        #expect(found.contains("docs/guide.md"))
+        #expect(found.contains("notes/designs/plan.md"))
     }
 
     @Test("results are relative, sorted, and capped")
@@ -96,6 +102,11 @@ struct DocumentDiscoveryTests {
         #expect(DocumentDiscovery.isPruned(relativePath: "node_modules/pkg/readme.md"))
         #expect(DocumentDiscovery.isPruned(relativePath: ".git/x.md"))
         #expect(DocumentDiscovery.isPruned(relativePath: "docs/.secret.md"))
+        // The watcher must prune dot-directories too. If it did not, an injected
+        // `.claude/skills/orchestra-tree/SKILL.md` would emit change events for a document the list
+        // never shows, and the reader would refetch on every launch.
+        #expect(DocumentDiscovery.isPruned(relativePath: ".claude/skills/orchestra-tree/SKILL.md"))
+        #expect(DocumentDiscovery.isPruned(relativePath: ".github/PULL_REQUEST_TEMPLATE.md"))
         #expect(!DocumentDiscovery.isPruned(relativePath: "docs/guide.md"))
         #expect(!DocumentDiscovery.isPruned(relativePath: "notes/designs/plan.md"))
     }
