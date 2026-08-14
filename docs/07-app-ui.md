@@ -417,11 +417,24 @@ The quote freezes when you select, not when you send. Live refresh also pauses w
 so the text cannot move under you mid-sentence. The frozen quote stays a valid anchor after the line
 numbers shift.
 
-A Mac drag anchors to the whole block, then narrows to the exact lines only when it can prove which
-lines you picked: the selected text must appear exactly once in the block's markdown, and the block must
-be plain markdown with no raw HTML and no entities. Rendered text and source differ — `**bold**` renders
-as `bold` — so falling back to the block is common and expected. It is also the right failure. A coarse
-quote is visibly coarse; a confidently wrong line is not.
+**What a drag highlights.** Exactly the range you dragged through, tinted in place, and it stays tinted
+after focus moves to the compose field. A selection that crosses several blocks tints the tail of the
+first, all of the middle ones, and the head of the last.
+
+The tint survives a refresh. Each anchored passage remembers the content of the block it sits in, so an
+agent that inserts a paragraph above your passage does not move your highlight off it. If the agent
+rewrites the passage ITSELF, the highlight drops rather than tinting words you never picked. The block
+flashes as changed instead, which is the honest answer.
+
+**What the comment quotes.** The exact words you selected, whenever Swift can prove they are really in
+the file at those lines. It compares the words of your selection against the words of the source, so
+markdown markers do not defeat the match: `**poll**, not` in the file matches the `poll, not` you saw.
+A link matches on its label.
+
+The line range itself is coarser, and deliberately so. It narrows past the block only when the selected
+text appears exactly once in the block's markdown and the block has no raw HTML and no entities.
+Falling back to the whole block is common and expected. It is also the right failure — a coarse anchor
+is visibly coarse, and a confidently wrong line is not.
 
 **How it stays fresh.** The reader asks. While it is on screen it re-checks the open document every
 couple of seconds and the document list every thirty, and each question carries a validator so an

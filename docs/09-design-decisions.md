@@ -1461,10 +1461,30 @@ A document can come from an agent, from git, or from `spawn --base origin/<branc
 untrusted. A webview runs whatever HTML that content contains, in the app's process, with no prompt and no log.
 That is a different audit path from a shell command, which stays visible in the terminal.
 
-The page therefore reports `{blockIndex, startLine, endLine}` and nothing else. It cannot request
-anything, write anything, or name a path, because the compose field is native and never needs it to. The
-worst a compromised page can do is misreport WHICH lines the user picked. Swift then quotes those lines
-from its own copy of the file, so the message stays internally consistent.
+The page therefore reports a selection and nothing else. It cannot request anything, write anything, or
+name a path, because the compose field is native and never needs it to. The invariant is that **the
+worst a compromised page can do is misreport WHICH lines the user picked.** Swift then quotes from its
+own copy of the file, so the message stays internally consistent.
+
+The payload is `{blockIndex, startLine, endLine, text}`. `text` is the rendered text the user dragged
+through, and it is the one field that is not a number — so it gets a proof rather than trust. Swift
+accepts it as the quote only when the words of the selection occur, in order and unbroken, in Swift's
+own copy of those lines. Markdown markers and link targets are punctuation between words, so
+`**poll**, not` in the file matches the rendered `poll, not`. Anything that changes the WORDS — an HTML
+entity, an attribute value, a string the page invented — fails the proof, and the quote falls back to
+the whole line range.
+
+That keeps the invariant exactly as it was. The page still cannot put words in the user's mouth. It can
+only choose between two quotes that both come out of the real file: the precise selection, or the whole
+block. The field earns its place because the line range alone is coarse — source and rendered text
+differ, so the page can rarely prove which lines a selection fell on, and a comment about four words
+used to quote the entire paragraph.
+
+The page tints the exact range instead of the enclosing block, which is a readability fix rather than a
+security one. It anchors each highlight to the CONTENT of its block, not to the block's position, so a
+passage keeps its tint while the agent edits above it. When the anchored text itself is rewritten, the
+highlight is dropped rather than re-placed. Tinting words the user did not choose is the same class of
+error as quoting a line they did not pick.
 
 Two layers back that up. DOMPurify sanitizes the rendered HTML, and a strict CSP with no remote loads
 catches anything sanitization misses — script gets no inline or eval grant. The page is served over a private scheme, not `file://` or `loadHTMLString`. An opaque origin makes CSP

@@ -16,6 +16,20 @@ import UIKit
 public struct DocumentSelection: Equatable, Sendable {
     public let startLine: Int
     public let endLine: Int
+    /// The RENDERED text the user dragged through, as the page measured it — and untrusted, like
+    /// everything else the page says. `DocumentComment.capture` quotes it only after proving the same
+    /// words occur in Swift's own copy of these lines, and otherwise quotes the whole line range.
+    ///
+    /// It exists because the line range alone is coarse. Source and rendered text differ, so the page
+    /// can rarely prove which lines a selection fell on, and the quote then covered a whole paragraph
+    /// when the user had picked four words.
+    public let text: String?
+
+    public init(startLine: Int, endLine: Int, text: String? = nil) {
+        self.startLine = startLine
+        self.endLine = endLine
+        self.text = text
+    }
 }
 
 /// The shared WKWebView that renders a document on BOTH platforms.
@@ -68,6 +82,10 @@ struct DocumentWebView {
         /// keystroke, and re-lexes the whole document several times a second on a busy board.
         private var lastSent: String?
 
+        /// Hard cap on the selected text the page may report. Comfortably above the excerpt cap the
+        /// comment applies later, so the cap never truncates a quote a user could actually have made.
+        static let selectedTextCap = 4000
+
         init(onSelect: @escaping (DocumentSelection) -> Void) { self.onSelect = onSelect }
 
         func push(_ payload: [String: Any], into web: WKWebView) {
@@ -103,7 +121,10 @@ struct DocumentWebView {
                   let start = d["startLine"] as? Int,
                   let end = d["endLine"] as? Int,
                   block >= 0, start >= 1, end >= start else { return }
-            onSelect(DocumentSelection(startLine: start, endLine: end))
+            // Capped here as well as in the page. The page's own cap is a courtesy, and a bridge must
+            // not size a buffer from a number the other side chose.
+            let text = (d["text"] as? String).map { String($0.prefix(Self.selectedTextCap)) }
+            onSelect(DocumentSelection(startLine: start, endLine: end, text: text))
         }
 
         /// A jetsammed content process leaves the page blank and every later `evaluateJavaScript` a
@@ -192,7 +213,11 @@ struct DocumentWebView {
             "text2": theme.text2.cssColor,
             "text3": theme.text3.cssColor,
             "accent": theme.accent.cssColor,
-            "sel": theme.accent.cssRGBA(0.16),
+            // Two strengths of the same tint. A highlight only ever changes WEIGHT to show focus,
+            // never gains a border — one anchored passage is several spans whenever it crosses inline
+            // markup, and an edge would then draw a seam at every join.
+            "sel": theme.accent.cssRGBA(0.22),
+            "selIdle": theme.accent.cssRGBA(0.10),
             "flash": theme.amber.dot.cssRGBA(0.38),
             "code": theme.chip.cssColor,
             "hair": theme.hair.cssColor,

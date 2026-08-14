@@ -50,10 +50,27 @@ body {
   scroll-margin-top: 12px;
 }
 
+/* The PHONE anchors a whole block, because a tap picks a block and not a range. */
 .block.sel {
   background: var(--sel, rgba(10, 120, 255, 0.16));
   box-shadow: inset 2px 0 0 var(--accent, #0a78ff);
 }
+
+/* An anchored passage on the Mac, tinted at the EXACT range the user dragged through. The reader used
+   to tint the whole `.block`, which meant three words lit up a whole paragraph or a whole table.
+
+   NO border, NO radius, and vertical padding only. One highlight is usually SEVERAL spans, because a
+   range that crosses a `<strong>` or a link has to be wrapped once per text node. Any horizontal
+   decoration then draws a seam at every one of those joins, and an outline draws a box around each
+   fragment. A flat tint is the only treatment that reads as one continuous mark. */
+.hl {
+  background: var(--selIdle, rgba(10, 120, 255, 0.09));
+  padding: 0.08em 0;
+}
+
+/* The passage whose comment card is focused in the rail. It wins on tint STRENGTH rather than on an
+   added edge, for the same reason. */
+.hl-active { background: var(--sel, rgba(10, 120, 255, 0.2)); }
 
 /* ~1s, matching the daemon's coalescing window closely enough that a burst of agent writes reads as
    one change rather than a strobe. */

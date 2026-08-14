@@ -37,7 +37,18 @@ public enum MarkdownOutline {
         guard !all.isEmpty else { return "" }
         let lo = max(1, min(startLine, all.count))
         let hi = max(lo, min(endLine, all.count))
-        let body = all[(lo - 1)...(hi - 1)].map { "> \($0)" }.joined(separator: "\n")
+        return quote(all[(lo - 1)...(hi - 1)].joined(separator: "\n"))
+    }
+
+    /// The `> `-prefixed quote for arbitrary text, capped the same way.
+    ///
+    /// Split out from `excerpt` so a comment can quote the exact passage the reader selected instead of
+    /// the whole source line it fell on. Both paths must produce the same shape, or a comment would
+    /// read differently depending on which anchor the page managed to prove.
+    public static func quote(_ text: String) -> String {
+        guard !text.isEmpty else { return "" }
+        let body = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "> \($0)" }.joined(separator: "\n")
         guard body.count > excerptCap else { return body }
 
         // Budget for the two trailing markers BEFORE cutting, so the finished string honors the cap

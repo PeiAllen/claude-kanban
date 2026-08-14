@@ -174,7 +174,8 @@ public final class DocumentReaderModel: ObservableObject {
     public func select(_ selection: DocumentSelection) {
         guard let doc = selected, let body = content else { return }
         comment = DocumentComment.capture(path: doc.path, source: body,
-                                      startLine: selection.startLine, endLine: selection.endLine)
+                                      startLine: selection.startLine, endLine: selection.endLine,
+                                      selectedText: selection.text)
     }
 
     public func cancelComment() {
