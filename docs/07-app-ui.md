@@ -379,9 +379,10 @@ never yanks the agent terminal.
 **The pointer belongs to tmux, for every agent.** tmux holds the scrollback, so only tmux can anchor a
 selection or a scroll position to the TEXT: presses, drags, and the wheel all go to the same owner.
 Wheel events are forwarded on the alternate screen and fall back to SwiftTerm's native scrollback
-otherwise. A drag therefore selects in tmux copy mode, and the embedded config keeps the highlight when
-the user is **reading history** (already scrolled up) but copies and leaves copy mode at the **live
-bottom**, so an agent's pane can never look frozen. The app registers its own **OSC 52** handler
+otherwise. A drag therefore selects in tmux copy mode. The view overrides `mouseDragged` to send
+the drag motion itself — SwiftTerm withholds it for the tracking mode tmux requests, which left tmux
+seeing a press and a release but never a drag — and drag-end keeps tmux's default copy-and-cancel, so the
+pane always returns to live. The app registers its own **OSC 52** handler
 (`TerminalClipboardOSC`) over SwiftTerm's: a copy still reaches the pasteboard, and a clipboard *query*
 is never answered, so a program in a terminal cannot read the user's clipboard by printing an escape
 sequence.
