@@ -85,17 +85,10 @@ final class CodexAppServerObserver: @unchecked Sendable {
 
     private func handle(_ message: JSONValue, onObservation: (RawTelemetry) -> Void) throws {
         guard let method = message["method"]?.stringValue else { return }
-        if let id = message["id"] {
-            // This connection observes only. Approval and input requests remain owned by the co-present
-            // stock TUI; explicitly declining prevents this subscriber from accidentally claiming them.
-            try peer.send(.object([
-                "jsonrpc": .string("2.0"),
-                "id": id,
-                "error": .object([
-                    "code": .int(-32601),
-                    "message": .string("Orchestra status observer does not handle server requests"),
-                ]),
-            ]))
+        if message["id"] != nil {
+            // App-server fans one approval/input request out to every connection subscribed to the
+            // thread and accepts the first response. This connection is deliberately passive: even an
+            // error response would resolve the shared request before the co-present TUI can answer it.
             return
         }
         onObservation(.rpcNotification(method: method, params: message["params"] ?? .object([:])))

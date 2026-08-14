@@ -41,8 +41,8 @@ struct CodexAppServerObserverTests {
         ])
     }
 
-    @Test("observer refuses server requests so approval ownership stays with the TUI")
-    func refusesServerRequests() throws {
+    @Test("observer leaves server requests unanswered so the co-present TUI remains the sole responder")
+    func ignoresServerRequests() throws {
         let peer = FakeCodexAppServerPeer(incoming: [
             Self.response(id: 1, result: .object([:])),
             Self.response(id: 2, result: .object([
@@ -64,9 +64,8 @@ struct CodexAppServerObserverTests {
             try observer.run(threadId: "thread-1") { _ in }
         }
 
-        let refusal = try #require(peer.sent.last)
-        #expect(refusal["id"]?.intValue == 91)
-        #expect(refusal["error"]?["code"]?.intValue == -32601)
+        #expect(peer.sent.count == 3)
+        #expect(!peer.sent.contains { $0["id"]?.intValue == 91 })
     }
 
     private static func response(id: Int, result: JSONValue) -> JSONValue {
