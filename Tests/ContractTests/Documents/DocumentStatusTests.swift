@@ -105,6 +105,18 @@ struct DocumentStatusTests {
         #expect(after.documents != nil)          // ...so the reader re-fetches and re-derives its badges
     }
 
+    @Test("Obsidian opens only what this card touched")
+    func obsidianSeedsOnlyChangedDocuments() async throws {
+        // The regression this guards has shipped once: opening a repo seeded a tab for EVERY markdown
+        // file in it. The previous test named for this never called the function — it re-implemented
+        // the filter in the test body, so it would have passed with the production line deleted.
+        let (env, t) = try await card()
+        try "# New\n".write(toFile: t.cwd + "/docs/new.md", atomically: true, encoding: .utf8)
+        let tabs = try await env.svc.obsidianTabs(t.id)
+        #expect(tabs == ["docs/new.md"])                       // NOT docs/committed.md or docs/edited.md
+        #expect(try await env.svc.listDocuments(t.id).count == 3)   // ...though all three are listed
+    }
+
     @Test("changed documents sort ahead of untouched ones")
     func changedSortFirst() async throws {
         let (env, t) = try await card()

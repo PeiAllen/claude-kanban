@@ -26,18 +26,6 @@
     return (h >>> 0).toString(36);
   }
 
-  // Collapse `.` / `..`. MUST stay byte-identical to MarkdownAssets.normalize in Swift, or a path this
-  // page requests will not match the path the daemon allowlists and the image 404s.
-  function normalizePath(p) {
-    const out = [];
-    for (const seg of p.split("/")) {
-      if (!seg || seg === ".") continue;
-      if (seg === "..") { out.pop(); continue; }
-      out.push(seg);
-    }
-    return out.join("/");
-  }
-
   // Rewrite note-relative image sources so they resolve against the NOTE's directory, not the page's.
   // The page lives at `orchestra-doc://doc/index.html`, so a document at `docs/07-app-ui.md` referencing
   // `images/board.png` would otherwise request `<worktree>/images/board.png` instead of
@@ -45,19 +33,12 @@
   // CSP's `base-uri 'none'`, so rewrite explicitly and keep the CSP intact.
   function resolveAssets(el, documentDir) {
     el.querySelectorAll("img[src]").forEach((img) => {
-      var src = img.getAttribute("src") || "";
-      // Leave `data:` and any explicit scheme alone; the CSP decides whether they may load.
-      if (!src || /^[a-z][a-z0-9+.\-]*:/i.test(src) || src.startsWith("//")) return;
-      // Strip a query or fragment, then decode — WebKit percent-decodes `url.path` before the scheme
-      // handler sees it, so an encoded src would never match the daemon's allowlist. This MUST stay
-      // identical to MarkdownAssets.add in Swift; DocumentPathVectorTests pins the pair.
-      var cut = src.search(/[?#]/);
-      if (cut >= 0) src = src.slice(0, cut);
-      try { src = decodeURIComponent(src); } catch (e) { /* malformed escape: use it as written */ }
-      if (!src) return;
-      var joined = src.startsWith("/") ? src.slice(1) : (documentDir ? documentDir + "/" + src : src);
+      // ONE function decides this, shared with the Swift allowlist and checked against it — see
+      // docpath.js. Getting it wrong here is a silently broken image, never an error.
+      const resolved = orchestraDocPath.resolveOne(img.getAttribute("src") || "", documentDir);
+      if (resolved === null) return;          // remote, data:, or protocol-relative — the CSP decides
       // Re-encode so the URL is well-formed; WebKit decodes it again on the way to the handler.
-      img.setAttribute("src", "orchestra-doc://doc/" + encodeURI(normalizePath(joined)));
+      img.setAttribute("src", "orchestra-doc://doc/" + encodeURI(resolved));
     });
   }
 

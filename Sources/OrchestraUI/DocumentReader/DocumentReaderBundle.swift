@@ -22,6 +22,7 @@ public enum DocumentReaderBundle {
         "index.html",
         "reader.css",
         "reader.js",
+        "docpath.js",
         "vendor/marked.umd.js",
         "vendor/marked-katex-extension.umd.js",
         "vendor/katex.min.js",

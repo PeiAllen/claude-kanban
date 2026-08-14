@@ -1471,9 +1471,18 @@ public actor OrchestraService {
     /// and the reader can never disagree about what a card changed.
     public func openInObsidian(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        let tabs = try await documentRefs(id).filter { $0.status != nil }.map(\.path)
+        let tabs = try await obsidianTabs(id)
         let l = launcher, cwd = t.cwd
         return try await offActor { try l.openInObsidian(cwd, tabs: tabs) }
+    }
+
+    /// WHICH documents Obsidian opens in tabs: the ones this card changed or created, in the reader's
+    /// order. Named and separate so it can be tested — `openInObsidian` itself shells out to a script
+    /// that is not present in a test environment, so a test written against it can only assert that it
+    /// throws, which is how this filter shipped a regression once already (it used to seed every
+    /// markdown file in the repo).
+    func obsidianTabs(_ id: UUID) async throws -> [String] {
+        try await documentRefs(id).filter { $0.status != nil }.map(\.path)
     }
 
     // MARK: - config

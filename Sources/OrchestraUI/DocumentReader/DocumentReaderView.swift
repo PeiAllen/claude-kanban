@@ -10,20 +10,38 @@ public struct DocumentReaderView: View {
     public let task: Task
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var reader = DocumentReaderModel()
     @FocusState private var composeFocused: Bool
 
     public init(task: Task) { self.task = task }
 
+    /// What the poll is keyed on. Changing EITHER half restarts `.task`, which is how the poll stops
+    /// when the app goes away and resumes — with an immediate ask — when it comes back.
+    private struct PollKey: Equatable { let card: UUID; let awake: Bool }
+
     public var body: some View {
         content
-            .task(id: task.id) {
+            // `.background` only, never `.inactive`: on the Mac a window that merely lost focus is still
+            // on screen, and a reader that stopped updating whenever you clicked another app would be a
+            // worse bug than the one this fixes.
+            .task(id: PollKey(card: task.id, awake: scenePhase != .background)) {
+                // Backgrounded. SwiftUI does NOT cancel `.task` for a scene change, so without this the
+                // timer keeps firing at a screen nobody is looking at — on a phone, over cellular, until
+                // iOS gets around to suspending the process. The rest of this app already gates on scene
+                // phase (the connection reconnects on it, terminals stop painting); the reader was the
+                // one surface that ignored it.
+                guard scenePhase != .background else { return }
                 await reader.loadList(fetch: fetchList)
                 // Open straight into the only document, or into the most relevant one — the daemon
                 // sorts changed-first, so `.first` is what the reviewer came for. Done HERE rather
                 // than in the model so the content fetch is awaited with it.
                 if reader.selected == nil, let first = reader.documents.first {
                     await reader.open(first, fetch: fetchBody)
+                } else {
+                    // Already reading something — so this is a return from the background, and the file
+                    // may have moved while we were gone. Ask once now instead of waiting out a tick.
+                    await reader.pollContent(fetchBody)
                 }
                 // THE POLL. It lives inside `.task`, so it runs only while this view is on screen and
                 // SwiftUI cancels it on the way out — there is no timer to invalidate and nothing to
