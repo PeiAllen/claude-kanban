@@ -26,7 +26,7 @@ public enum DocumentReaderBundle {
         "vendor/marked.umd.js",
         "vendor/marked-katex-extension.umd.js",
         "vendor/katex.min.js",
-        "vendor/katex.min.css",
         "vendor/purify.min.js",
+        "vendor/SHA256SUMS",
     ]
 }

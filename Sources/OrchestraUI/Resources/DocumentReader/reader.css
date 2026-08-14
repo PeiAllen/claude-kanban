@@ -88,4 +88,7 @@ img { max-width: 100%; height: auto; border-radius: 6px; }
 hr { border: none; border-top: 1px solid var(--hair, rgba(127, 127, 127, 0.3)); margin: 1.4em 0; }
 
 /* KaTeX display math can overflow on a phone; give it its own scroller rather than the page. */
-.katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+/* Display math. KaTeX's MathML output wraps it as `<span class="katex"><math display="block">`, and the
+   inline span defeats the block-level centring the `display` attribute would otherwise get. */
+.block .katex:has(math[display="block"]) { display: block; text-align: center; }
+math[display="block"] { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }

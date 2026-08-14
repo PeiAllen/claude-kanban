@@ -16,7 +16,11 @@
   let prevHashes = null;    // multiset of the previous render's block hashes
   let prevDocKey = null;    // which document that multiset describes
 
-  marked.use(markedKatex({ throwOnError: false }));
+  // MathML, not KaTeX's own HTML+CSS layout. WebKit lays math out natively against the system math
+  // font (STIXTwoMath.otf, present on both macOS and iOS), so this drops KaTeX's stylesheet and all 20
+  // of its webfonts — 80% of the vendored payload — with no loss of quality. KaTeX stays only as the
+  // LaTeX parser, which is the part the platform genuinely does not provide.
+  marked.use(markedKatex({ throwOnError: false, output: "mathml" }));
 
   // A tiny non-cryptographic digest. It only has to answer "did this block's text move?", so FNV-1a is
   // the right tool — it is not a security boundary.

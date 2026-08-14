@@ -1357,6 +1357,27 @@ focus section there would be empty.
 This is an approximation, and it is honest about its edges. It measures the branch, not the card. So a
 file edited before the card started still counts, and two cards on one directory report the same set.
 
+### Math is MathML, laid out by the platform
+
+The reader renders math by asking KaTeX for `output: "mathml"` and letting WebKit lay it out against the
+system math font. Both macOS and iOS ship `STIXTwoMath.otf`, and WebKit maps the CSS `math` generic to
+it, so no webfont is bundled and no stylesheet is needed.
+
+KaTeX's default mode does the opposite: it reimplements TeX layout in HTML and CSS and ships 20 webfonts
+so the result is identical in browsers that cannot render MathML. That guarantee is worth nothing here —
+there is exactly one engine, and it can. The stylesheet and the fonts were 254 KB, about 80% of
+everything vendored for the reader, spent to avoid using a capability the platform already had.
+
+What KaTeX still does is parse LaTeX, which is genuinely not a platform capability: neither SDK exposes a
+LaTeX parser or a MathML API, and Core Text's `kCTFontTableMATH` is raw table access with no layout
+engine. So the library stays; only its renderer goes.
+
+Verified on both platforms before the switch, not after — real screenshots of fractions, integrals with
+limits, stretchy matrix delimiters, `cases` braces, radicals with indices, and accents.
+
+Removing the stylesheet also let the page's CSP drop `'unsafe-inline'` from `style-src`. The grant only
+ever existed for KaTeX's own inline styles.
+
 ### The reader polls; it does not watch the filesystem
 
 The reader keeps its copy current by asking, on two clocks. The open document is re-asked about every
