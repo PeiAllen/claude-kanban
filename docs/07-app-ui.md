@@ -377,8 +377,13 @@ passage without leaving the board.
 
 **What it lists.** A document is any `.md` or `.markdown` file in the card's working directory.
 Discovery is a filesystem walk, not a git query, so a gitignored `notes/` directory lists exactly like a
-tracked `docs/` one. The walk skips hidden entries (`.git`, `.build`) and prunes `node_modules`, `build`,
-`dist`, `target`, `vendor`, `Pods`, and `DerivedData` at the directory level. It stops at 500 documents.
+tracked `docs/` one. The walk skips every hidden entry and prunes `node_modules`, `build`, `dist`,
+`target`, `vendor`, `Pods`, and `DerivedData` at the directory level. It stops at 500 documents.
+
+The hidden rule has **no exceptions**, `.claude` and `.github` included. A dot-directory holds
+machine-owned config, not a document a human reviews, so pruning all of it is fail-safe against tools the
+reader has never heard of. The cost is accepted: a card whose only markdown sits in `.claude/skills` or
+`.github` shows an empty picker, and its diff still shows the change.
 
 Documents belong to the **working directory**, not to the card — the same rule the diff follows. Two
 cards on one directory list the same documents. A freeform or scratch card has documents like a
