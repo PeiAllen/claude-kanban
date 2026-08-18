@@ -28,6 +28,7 @@ struct DocumentStatusTests {
         }
         try "# Committed\n".write(toFile: t.cwd + "/docs/committed.md", atomically: true, encoding: .utf8)
         try "# Edited\n".write(toFile: t.cwd + "/docs/edited.md", atomically: true, encoding: .utf8)
+        try "# Untouched\n".write(toFile: t.cwd + "/docs/untouched.md", atomically: true, encoding: .utf8)
         try "plans/\n".write(toFile: t.cwd + "/.gitignore", atomically: true, encoding: .utf8)
         #expect(try Proc.run(["git", "add", "-A"], cwd: t.cwd).ok)
         #expect(try Proc.run(["git", "commit", "-q", "-m", "base"], cwd: t.cwd).ok)
@@ -114,16 +115,24 @@ struct DocumentStatusTests {
         try "# New\n".write(toFile: t.cwd + "/docs/new.md", atomically: true, encoding: .utf8)
         let tabs = try await env.svc.obsidianTabs(t.id)
         #expect(tabs == ["docs/new.md"])                       // NOT docs/committed.md or docs/edited.md
-        #expect(try await env.svc.listDocuments(t.id).count == 3)   // ...though all three are listed
+        #expect(try await env.svc.listDocuments(t.id).count == 4)   // ...though all four are listed
     }
 
-    @Test("changed documents sort ahead of untouched ones")
-    func changedSortFirst() async throws {
+    @Test("changed documents stay first and each group is newest first")
+    func changedGroupsSortNewestFirst() async throws {
         let (env, t) = try await card()
+        // Make this tracked document changed, then add a second changed document. The two untouched
+        // files are both newer overall and reverse lexical order, so grouping and per-group mtime order
+        // must both hold.
+        try "# Edited more\n".write(toFile: t.cwd + "/docs/edited.md", atomically: true, encoding: .utf8)
         try "# New\n".write(toFile: t.cwd + "/docs/new.md", atomically: true, encoding: .utf8)
+        let fm = FileManager.default
+        let before = Date(timeIntervalSince1970: 1_700_000_000)
+        try fm.setAttributes([.modificationDate: before + 30], ofItemAtPath: t.cwd + "/docs/committed.md")
+        try fm.setAttributes([.modificationDate: before + 40], ofItemAtPath: t.cwd + "/docs/untouched.md")
+        try fm.setAttributes([.modificationDate: before + 20], ofItemAtPath: t.cwd + "/docs/new.md")
+        try fm.setAttributes([.modificationDate: before + 10], ofItemAtPath: t.cwd + "/docs/edited.md")
         let paths = try await env.svc.listDocuments(t.id).map(\.path)
-        // `docs/committed.md` sorts before `docs/new.md` alphabetically, so ordering by status is the
-        // only thing that can put the new document first. The two untouched ones follow, alphabetical.
-        #expect(paths == ["docs/new.md", "docs/committed.md", "docs/edited.md"])
+        #expect(paths == ["docs/new.md", "docs/edited.md", "docs/untouched.md", "docs/committed.md"])
     }
 }

@@ -114,12 +114,10 @@ extension OrchestraService {
             if let tracked, !tracked.contains(path) { return DocRef(path: path, status: .added) }
             return DocRef(path: path, status: nil)
         }
-        // CHANGED FIRST, then everything else, each alphabetical. What the agent just touched is what
-        // the reviewer came for; the rest is browsable below it.
-        return refs.sorted {
-            let (a, b) = ($0.status != nil, $1.status != nil)
-            return a == b ? $0.path < $1.path : a
-        }
+        // CHANGED FIRST, then everything else. `walk` already put both groups newest-first, so partition
+        // without re-sorting and the reader's first document remains the most recently modified changed
+        // document (or the most recently modified document when none changed).
+        return refs.filter { $0.status != nil } + refs.filter { $0.status == nil }
     }
 
     /// One document's content, answered CONDITIONALLY — the reader's fast poll, and the mechanism that
