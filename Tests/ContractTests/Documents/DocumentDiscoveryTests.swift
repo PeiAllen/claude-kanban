@@ -79,14 +79,20 @@ struct DocumentDiscoveryTests {
         #expect(found.contains("notes/designs/plan.md"))
     }
 
-    @Test("results are relative, sorted, and capped")
+    @Test("results are relative, newest-first, capped, and tied by path")
     func resultShape() throws {
         let root = try tree()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let found = DocumentDiscovery.walk(root: root)
+        let fm = FileManager.default
+        let before = Date(timeIntervalSince1970: 1_700_000_000)
+        // The last modified document must lead even though its path sorts last alphabetically. The
+        // two older documents deliberately tie, so the fallback remains predictable across filesystems.
+        try fm.setAttributes([.modificationDate: before], ofItemAtPath: root + "/README.md")
+        try fm.setAttributes([.modificationDate: before], ofItemAtPath: root + "/docs/guide.md")
+        try fm.setAttributes([.modificationDate: before + 20], ofItemAtPath: root + "/notes/designs/plan.md")
+        let found = DocumentDiscovery.walk(root: root, cap: 2)
         #expect(found.allSatisfy { !$0.hasPrefix("/") })     // relative to the root, never absolute
-        #expect(found == found.sorted())
-        #expect(DocumentDiscovery.walk(root: root, cap: 2).count == 2)
+        #expect(found == ["notes/designs/plan.md", "README.md"])
     }
 
     @Test("a missing root yields nothing rather than throwing")

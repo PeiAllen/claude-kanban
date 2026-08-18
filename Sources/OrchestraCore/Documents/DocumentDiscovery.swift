@@ -8,7 +8,6 @@ import OrchestraKit
 /// know about. Documents are a property of the WORKSPACE, not of a card: two cards on one directory
 /// list the same documents, the same way they show the same diff.
 public enum DocumentDiscovery {
-
     /// Extensions the reader can render. Markdown only — the page is a markdown renderer, and adding
     /// formats it cannot lay out would list documents that open blank.
     public static let documentExtensions: Set<String> = ["md", "markdown"]
@@ -57,25 +56,27 @@ public enum DocumentDiscovery {
         return (relativePath as NSString).lastPathComponent.hasPrefix(".")
     }
 
-    /// Walk `root` and return every document, as paths relative to `root`, sorted.
+    /// Walk `root` and return up to `cap` documents, as paths relative to `root`, newest first.
+    /// Paths break equal modification times so every client receives one deterministic order.
     ///
     /// Blocking I/O — call it off the actor.
     public static func walk(root: String, cap: Int = resultCap) -> [String] {
+        guard cap > 0 else { return [] }
         let rootURL = URL(fileURLWithPath: root, isDirectory: true)
         // Hidden entries are NOT skipped by the enumerator. Pruning happens per-directory below instead,
         // which keeps the dot rule and the deny list in ONE decision that `isPruned` can mirror for the
         // watcher.
         guard let en = FileManager.default.enumerator(
             at: rootURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
             errorHandler: { _, _ in true })      // an unreadable subtree is skipped, never fatal
         else { return [] }
 
         let rootPath = rootURL.standardizedFileURL.path
-        var out: [String] = []
+        var documents: [(path: String, modifiedAt: Date)] = []
         for case let url as URL in en {
-            if out.count >= cap { break }
-            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+            let isDir = values?.isDirectory ?? false
             if isDir {
                 // PRUNE HERE, not per-file. This is the whole performance story.
                 if isPrunedDirectory(url.lastPathComponent) { en.skipDescendants() }
@@ -85,8 +86,14 @@ public enum DocumentDiscovery {
                   !url.lastPathComponent.hasPrefix(".") else { continue }
             let path = url.standardizedFileURL.path
             guard path.hasPrefix(rootPath + "/") else { continue }   // never leave the root
-            out.append(String(path.dropFirst(rootPath.count + 1)))
+            documents.append((path: String(path.dropFirst(rootPath.count + 1)),
+                              modifiedAt: values?.contentModificationDate ?? .distantPast))
         }
-        return out.sorted()
+        return documents
+            .sorted { lhs, rhs in
+                lhs.modifiedAt == rhs.modifiedAt ? lhs.path < rhs.path : lhs.modifiedAt > rhs.modifiedAt
+            }
+            .prefix(cap)
+            .map(\.path)
     }
 }
