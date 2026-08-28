@@ -50,9 +50,6 @@ struct AgentTerminalView: NSViewRepresentable {
     /// Shared by every desktop agent and shell terminal, and persisted across launches. Updating this
     /// property re-runs `updateNSView`, where the mounted SwiftTerm view recalculates its normal grid.
     @AppStorage(TerminalFontSize.preferenceKey) private var terminalFontSize = TerminalFontSize.defaultPointSize
-    /// The surrounding interface canvas scales ordinary SwiftUI content. SwiftTerm is an AppKit view,
-    /// so it cancels this multiplier and keeps the terminal's persisted font physically independent.
-    @Environment(\.interfaceScale) private var interfaceScale
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
@@ -80,8 +77,7 @@ struct AgentTerminalView: NSViewRepresentable {
         let term = ScrollableTerminalView(frame: .zero)
         term.installClipboardOSCHandler()
         term.processDelegate = context.coordinator
-        term.font = Self.terminalFont(size: CGFloat(TerminalFontSize.renderedPointSize(
-            for: terminalFontSize, interfaceScale: interfaceScale)))
+        term.font = Self.terminalFont(size: CGFloat(TerminalFontSize.normalized(terminalFontSize)))
         // SwiftTerm v1.13.0 defaults its 256-colour palette to a "base16 LAB" strategy that re-derives
         // the whole 16–255 cube from the active theme's colours. That remaps fixed xterm indices: e.g.
         // 231 (normally pure white) becomes the theme *foreground*, so a TUI that uses 48;5;231 for a
@@ -118,8 +114,7 @@ struct AgentTerminalView: NSViewRepresentable {
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
         // A font assignment makes SwiftTerm recompute its cell grid and resize the existing pty. Guard it
         // so unrelated SwiftUI updates (theme, telemetry, focus) do not repeatedly reflow the TUI.
-        let requestedFontSize = CGFloat(TerminalFontSize.renderedPointSize(
-            for: terminalFontSize, interfaceScale: interfaceScale))
+        let requestedFontSize = CGFloat(TerminalFontSize.normalized(terminalFontSize))
         if abs(nsView.font.pointSize - requestedFontSize) > .ulpOfOne {
             nsView.font = Self.terminalFont(size: requestedFontSize)
         }

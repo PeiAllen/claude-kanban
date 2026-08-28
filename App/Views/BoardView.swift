@@ -208,7 +208,7 @@ private struct ColumnView: View {
 private struct FreeformRegionView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
-    @Environment(\.interfaceScale) private var interfaceScale
+    @Environment(\.boardScale) private var boardScale
 
     // Persisted so the `z` keyboard verb (which writes this key) can collapse/expand the dock too.
     @AppStorage("freeformCollapsed") private var collapsed = false
@@ -293,14 +293,14 @@ private struct FreeformRegionView: View {
             .onChanged { v in
                 if startHeight == nil {
                     startHeight = savedHeight
-                    startScale = interfaceScale
+                    startScale = boardScale
                 }
                 dragHeight = resolve(v.translation.height, base: startHeight ?? savedHeight,
-                                     scale: startScale ?? interfaceScale)
+                                     scale: startScale ?? boardScale)
             }
             .onEnded { v in
                 let base = startHeight ?? savedHeight
-                savedHeight = resolve(v.translation.height, base: base, scale: startScale ?? interfaceScale)
+                savedHeight = resolve(v.translation.height, base: base, scale: startScale ?? boardScale)
                 startHeight = nil
                 startScale = nil
                 dragHeight = nil

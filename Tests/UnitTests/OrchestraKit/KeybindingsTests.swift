@@ -126,16 +126,16 @@ final class KeybindingsTests: XCTestCase {
 
         // `charactersIgnoringModifiers` reports the standard Cmd-+ chord as `=`; accepting both
         // forms keeps the pure policy independent of the AppKit event representation. Terminal focus
-        // owns physical font zoom; all app-owned focus surfaces own interface scale.
+        // owns physical font zoom; every other focus surface owns board zoom.
         XCTAssertEqual(map(KeyChord("=", .command), .terminal), .terminalZoom(.increase))
         XCTAssertEqual(map(KeyChord("+", [.command, .shift]), .terminal), .terminalZoom(.increase))
         XCTAssertEqual(map(KeyChord("-", .command), .terminal), .terminalZoom(.decrease))
         XCTAssertEqual(map(KeyChord("0", .command), .terminal), .terminalZoom(.reset))
         for ctx in [KeyContext.board, .field, .overlay] {
-            XCTAssertEqual(map(KeyChord("=", .command), ctx), .interfaceZoom(.increase))
-            XCTAssertEqual(map(KeyChord("+", [.command, .shift]), ctx), .interfaceZoom(.increase))
-            XCTAssertEqual(map(KeyChord("-", .command), ctx), .interfaceZoom(.decrease))
-            XCTAssertEqual(map(KeyChord("0", .command), ctx), .interfaceZoom(.reset))
+            XCTAssertEqual(map(KeyChord("=", .command), ctx), .boardZoom(.increase))
+            XCTAssertEqual(map(KeyChord("+", [.command, .shift]), ctx), .boardZoom(.increase))
+            XCTAssertEqual(map(KeyChord("-", .command), ctx), .boardZoom(.decrease))
+            XCTAssertEqual(map(KeyChord("0", .command), ctx), .boardZoom(.reset))
         }
     }
 
@@ -193,10 +193,10 @@ final class KeybindingsTests: XCTestCase {
         XCTAssertEqual(base(KeyChord("-", .command), .terminal), .terminalZoom(.decrease))
         XCTAssertEqual(base(KeyChord("0", .command), .terminal), .terminalZoom(.reset))
         for ctx in [KeyContext.board, .field, .overlay] {
-            XCTAssertEqual(base(KeyChord("=", .command), ctx), .interfaceZoom(.increase))
-            XCTAssertEqual(base(KeyChord("+", [.command, .shift]), ctx), .interfaceZoom(.increase))
-            XCTAssertEqual(base(KeyChord("-", .command), ctx), .interfaceZoom(.decrease))
-            XCTAssertEqual(base(KeyChord("0", .command), ctx), .interfaceZoom(.reset))
+            XCTAssertEqual(base(KeyChord("=", .command), ctx), .boardZoom(.increase))
+            XCTAssertEqual(base(KeyChord("+", [.command, .shift]), ctx), .boardZoom(.increase))
+            XCTAssertEqual(base(KeyChord("-", .command), ctx), .boardZoom(.decrease))
+            XCTAssertEqual(base(KeyChord("0", .command), ctx), .boardZoom(.reset))
         }
     }
 

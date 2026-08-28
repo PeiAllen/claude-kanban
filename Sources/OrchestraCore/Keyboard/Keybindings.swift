@@ -39,10 +39,10 @@ public struct CommandKeybindings: Keybindings {
         return nil
     }
 
-    /// Terminal glyphs retain their physical font size. Every app-owned focus surface uses the
-    /// interface canvas, including fields and overlays where a shortcut should still be available.
+    /// Terminal glyphs retain their physical font size. Every other focus surface changes the board
+    /// canvas, including fields and overlays where the shortcut should still be available.
     private func zoom(_ action: ZoomAction, in context: KeyContext) -> KeyIntent {
-        context == .terminal ? .terminalZoom(action) : .interfaceZoom(action)
+        context == .terminal ? .terminalZoom(action) : .boardZoom(action)
     }
 }
 

@@ -81,17 +81,12 @@ struct OrchestraApp: App {
         }
 
         Settings {
-            InterfaceScaleCanvas(controller: interfaceScale,
-                                 minimumLogicalSize: .init(width: 480, height: 540)) {
-                TabView {
-                    SettingsView()
-                        .tabItem { Label("General", systemImage: "gearshape") }
-                    ConnectionsSettingsView()
-                        .tabItem { Label("Connections", systemImage: "network") }
-                }
-                .frame(minWidth: 480, minHeight: 540)
+            TabView {
+                SettingsView()
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                ConnectionsSettingsView()
+                    .tabItem { Label("Connections", systemImage: "network") }
             }
-            .frame(minWidth: 480, minHeight: 540)
             .environmentObject(model)
             .environmentObject(interfaceScale)
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
@@ -117,23 +112,20 @@ struct ContentView: View {
     /// backgrounded, which parks every perpetual animation + live clock in the board.
     @StateObject private var activity = WindowActivityMonitor()
 
-    /// The main window retains a physical 940×580 minimum. Its titlebar band is fixed at 32pt, leaving
-    /// this many physical points for a 100% logical body at that minimum.
-    private static let minimumBodySize = InterfaceScale.Size(width: 940, height: 548)
+    /// Three board columns have a 690pt logical minimum. The board canvas uses this to cap zoom before
+    /// the transform could create horizontal overflow; the inspector remains a separate native surface.
+    private static let minimumBoardSize = InterfaceScale.Size(width: 690, height: 320)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             theme.winBg.ignoresSafeArea()
-            WindowConfigurator(model: model, monitor: activity, interfaceScale: interfaceScale)
+            WindowConfigurator(model: model, monitor: activity)
 
             VStack(spacing: 0) {
                 // This band shares the transparent native titlebar with the traffic lights and titlebar
-                // accessory. It deliberately stays in physical points while all app-owned body UI scales.
+                // accessory. It deliberately stays in physical points while the board beneath it zooms.
                 ToolbarView()
-                InterfaceScaleCanvas(controller: interfaceScale, minimumLogicalSize: Self.minimumBodySize) {
-                    scaledBody
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                bodyContent
             }
             // Pull the toolbar up under the (hidden) titlebar so it shares the band with the traffic
             // lights. Without this, the title-bar safe-area inset pushes the toolbar down, leaving an
@@ -150,9 +142,9 @@ struct ContentView: View {
         .modifier(DebugLaunchHook())
     }
 
-    /// Everything below the native titlebar is one logical canvas: board, inspector, custom overlays,
-    /// and onboarding all agree on fonts, geometry, and hit targets at the current effective scale.
-    private var scaledBody: some View {
+    /// The board is the sole transformed surface. Inspector, settings, titlebar, and presentations use
+    /// their normal native points so board zoom remains local and predictable.
+    private var bodyContent: some View {
         ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
                 if !model.connected {
@@ -173,7 +165,9 @@ struct ContentView: View {
                     let split = w - inspectorWidth
                     let boardW = hasInspector ? max(boardMin, split) : w
                     ZStack(alignment: .topLeading) {
-                        BoardView()
+                        BoardScaleCanvas(controller: interfaceScale, minimumLogicalSize: Self.minimumBoardSize) {
+                            BoardView()
+                        }
                             .frame(width: boardW, height: h)
                         if hasInspector {
                             HStack(spacing: 0) {
@@ -198,7 +192,7 @@ struct ContentView: View {
 
             // Spawn sheet overlay
             if model.showSpawn {
-                Color.black.opacity(0.28)
+                Color.black.opacity(0.28).ignoresSafeArea()
                     .onTapGesture { model.showSpawn = false }
                 SpawnSheet()
                     .frame(width: 470)
@@ -227,7 +221,7 @@ struct ContentView: View {
 
             // `:` command palette.
             if model.showPalette {
-                Color.black.opacity(0.28)
+                Color.black.opacity(0.28).ignoresSafeArea()
                     .onTapGesture { model.showPalette = false }
                 CommandPalette()
                     .padding(.top, 64)
@@ -237,7 +231,7 @@ struct ContentView: View {
 
             // Keyboard-shortcuts reference (?) — overlay like the spawn sheet.
             if model.showHelp {
-                Color.black.opacity(0.28)
+                Color.black.opacity(0.28).ignoresSafeArea()
                     .onTapGesture { model.showHelp = false }
                 KeyboardHelpView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -247,7 +241,7 @@ struct ContentView: View {
             // Archive confirmation — the keyboard `a` path routes here so an accidental keystroke
             // can't permanently archive a card. ⏎ confirms, esc / ⌘W / click-away cancels.
             if let id = model.archiveConfirm {
-                Color.black.opacity(0.28)
+                Color.black.opacity(0.28).ignoresSafeArea()
                     .onTapGesture { model.cancelArchive() }
                 ArchiveConfirmView(cardTitle: model.cardTitle(id))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -1208,13 +1202,11 @@ struct InspectorResizer: View {
     /// Called once when the drag ends with the final width (parent persists it).
     var onEnd: (Double) -> Void
     @Environment(\.theme) var theme
-    @Environment(\.interfaceScale) private var interfaceScale
     @State private var startWidth: Double?
-    @State private var startScale: Double?
 
-    private func resolve(_ translation: CGFloat, base: Double, scale: Double) -> Double {
+    private func resolve(_ translation: CGFloat, base: Double) -> Double {
         // Dragging left (negative translation) widens the inspector.
-        min(maxWidth, max(320, base - InterfaceScale.logicalDistance(fromPhysical: Double(translation), scale: scale)))
+        min(maxWidth, max(320, base - Double(translation)))
     }
 
     var body: some View {
@@ -1229,19 +1221,13 @@ struct InspectorResizer: View {
                 // so a .local translation would be measured against a moving origin and jitter.
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { v in
-                        if startWidth == nil {
-                            startWidth = width
-                            startScale = interfaceScale
-                        }
-                        onChange(resolve(v.translation.width, base: startWidth ?? width,
-                                         scale: startScale ?? interfaceScale))
+                        if startWidth == nil { startWidth = width }
+                        onChange(resolve(v.translation.width, base: startWidth ?? width))
                     }
                     .onEnded { v in
                         let base = startWidth ?? width
-                        let scale = startScale ?? interfaceScale
                         startWidth = nil
-                        startScale = nil
-                        onEnd(resolve(v.translation.width, base: base, scale: scale))
+                        onEnd(resolve(v.translation.width, base: base))
                     }
             )
     }
@@ -1336,22 +1322,19 @@ final class WindowActivityMonitor: ObservableObject {
 struct WindowConfigurator: NSViewRepresentable {
     let model: BoardModel
     let monitor: WindowActivityMonitor
-    let interfaceScale: InterfaceScaleController
     func makeNSView(context: Context) -> NSView {
-        ConfiguratorView(model: model, monitor: monitor, interfaceScale: interfaceScale)
+        ConfiguratorView(model: model, monitor: monitor)
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ConfiguratorView: NSView {
         let model: BoardModel
         let monitor: WindowActivityMonitor
-        let interfaceScale: InterfaceScaleController
         private var installedAccessory = false
 
-        init(model: BoardModel, monitor: WindowActivityMonitor, interfaceScale: InterfaceScaleController) {
+        init(model: BoardModel, monitor: WindowActivityMonitor) {
             self.model = model
             self.monitor = monitor
-            self.interfaceScale = interfaceScale
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { fatalError() }
@@ -1382,8 +1365,7 @@ struct WindowConfigurator: NSViewRepresentable {
                 let host = AutoWidthHostingView(
                     rootView: ToolbarControls()
                         .environmentObject(model)
-                        .environmentObject(monitor)
-                        .environmentObject(interfaceScale))
+                        .environmentObject(monitor))
                 acc.view = host
                 window.addTitlebarAccessoryViewController(acc)
             }

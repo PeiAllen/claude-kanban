@@ -217,9 +217,7 @@ private struct HeaderBar: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: isOn, arrowEdge: .bottom) {
-            InterfaceScaledPresentation {
-                popover().environment(\.theme, theme)
-            }
+            popover().environment(\.theme, theme)
         }
     }
 }
@@ -642,13 +640,11 @@ private struct SharedWorktreeBadge: View {
             .buttonStyle(.plain)
             .help(model.worktreeSiblingsHelp(of: task))
             .popover(isPresented: $showList, arrowEdge: .bottom) {
-                InterfaceScaledPresentation {
-                    SharedWorktreeList(siblings: siblings) { id in
-                        model.selectedId = id
-                        showList = false
-                    }
-                    .environment(\.theme, theme)
+                SharedWorktreeList(siblings: siblings) { id in
+                    model.selectedId = id
+                    showList = false
                 }
+                .environment(\.theme, theme)
             }
         }
     }

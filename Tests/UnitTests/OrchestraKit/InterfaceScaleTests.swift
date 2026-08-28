@@ -2,7 +2,7 @@ import XCTest
 @testable import OrchestraKit
 
 final class InterfaceScaleTests: XCTestCase {
-    private let minimumBody = InterfaceScale.Size(width: 940, height: 548)
+    private let minimumCanvas = InterfaceScale.Size(width: 940, height: 548)
 
     func test_normalized_recovers_malformed_values_and_snaps_to_supported_tenths() {
         XCTAssertEqual(InterfaceScale.normalized(nil), 1.0, accuracy: 0.001)
@@ -23,17 +23,17 @@ final class InterfaceScaleTests: XCTestCase {
         let viewport = InterfaceScale.Size(width: 1_472, height: 1_000)
 
         XCTAssertEqual(InterfaceScale.maximumFittingScale(viewport: viewport,
-                                                           minimumLogicalSize: minimumBody),
+                                                           minimumLogicalSize: minimumCanvas),
                        1.5,
                        accuracy: 0.001)
         XCTAssertEqual(InterfaceScale.effectiveScale(requested: 2.0,
                                                       viewport: viewport,
-                                                      minimumLogicalSize: minimumBody),
+                                                      minimumLogicalSize: minimumCanvas),
                        1.5,
                        accuracy: 0.001)
         XCTAssertEqual(InterfaceScale.effectiveScale(requested: 1.2,
                                                       viewport: viewport,
-                                                      minimumLogicalSize: minimumBody),
+                                                      minimumLogicalSize: minimumCanvas),
                        1.2,
                        accuracy: 0.001)
     }
@@ -41,7 +41,7 @@ final class InterfaceScaleTests: XCTestCase {
     func test_fit_keeps_an_exact_supported_tenth_boundary() {
         XCTAssertEqual(InterfaceScale.maximumFittingScale(
             viewport: .init(width: 1_128, height: 657.6),
-            minimumLogicalSize: minimumBody),
+            minimumLogicalSize: minimumCanvas),
             1.2,
             accuracy: 0.001)
     }
@@ -49,7 +49,7 @@ final class InterfaceScaleTests: XCTestCase {
     func test_fit_does_not_promote_a_genuinely_smaller_viewport() {
         XCTAssertEqual(InterfaceScale.maximumFittingScale(
             viewport: .init(width: 1_127.99, height: 657.594),
-            minimumLogicalSize: minimumBody),
+            minimumLogicalSize: minimumCanvas),
             1.1,
             accuracy: 0.001)
     }
@@ -57,12 +57,12 @@ final class InterfaceScaleTests: XCTestCase {
     func test_retained_target_applies_again_when_the_viewport_grows() {
         XCTAssertEqual(InterfaceScale.effectiveScale(requested: 2.0,
                                                       viewport: .init(width: 940, height: 548),
-                                                      minimumLogicalSize: minimumBody),
+                                                      minimumLogicalSize: minimumCanvas),
                        1.0,
                        accuracy: 0.001)
         XCTAssertEqual(InterfaceScale.effectiveScale(requested: 2.0,
                                                       viewport: .init(width: 1_880, height: 1_096),
-                                                      minimumLogicalSize: minimumBody),
+                                                      minimumLogicalSize: minimumCanvas),
                        2.0,
                        accuracy: 0.001)
     }

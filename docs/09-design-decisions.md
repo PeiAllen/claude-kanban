@@ -316,39 +316,29 @@ recreating or reattaching the tmux client.
 Claude and Codex therefore take the same provider-neutral path, while a bounded 8–32pt policy recovers
 from malformed persisted values instead of producing an unusable terminal.
 
-### Desktop interface scale is a persistent target with a fit-limited application
+### Desktop board zoom is a persistent target with a fit-limited canvas
 
-Desktop has a user-selectable interface-scale target from 50% through 200% in 10% increments, stored
-independently from terminal font size. One pure `InterfaceScale` policy owns the target's persistence,
-normalization, stepping, and fit calculation, so views do not grow their own conflicting percentages. The
-target is a preference rather than an assertion about the current window: absent or malformed data recovers
-to 100%, and command-driven changes clamp at the policy bounds. The app derives a separate effective scale
-from that target and the available content viewport, rounding down to the highest supported increment that
-fits the stable logical body minimum derived from the 940×580 window contract after reserving the fixed
-titlebar band. This keeps the interface completely visible at every window size instead of silently
-overflowing or introducing a second scrolling coordinate system just for zoom.
+Desktop has a user-selectable board-zoom target from 50% through 200% in 10% increments, stored
+independently from terminal font size. One pure `InterfaceScale` policy owns normalization, stepping, and
+fit calculation, while a single `BoardScaleCanvas` applies the transform around `BoardView`. The canvas
+gives the board its logical size and then scales it back into the available board region, so cards, column
+spacing, and freeform cards zoom together without adding a second scrolling coordinate system.
 
-The picker keeps the user's target even when the window temporarily cannot honour it, and makes the
-difference explicit (for example, “200% selected · showing 120% in this window”). Enlarging the window
-automatically restores the chosen target; shrinking it never rewrites the preference. `⌘+` and the Zoom
-menu stop at the current fitting value, while `⌘-` and `⌘0` change the remembered target from the scale
-the user is actually seeing. The titlebar band — traffic lights, app identity, titlebar accessories, and
-menus — stays unscaled, so system chrome remains governed by AppKit and the scale canvas begins below it.
+The target is a preference rather than an assertion about the current window: absent or malformed data
+recovers to 100%, and command-driven changes clamp at the policy bounds. The board derives an effective
+scale from its own viewport, rounded down to the largest supported tenth that keeps the three-column board
+minimum visible. A target above that limit is retained and automatically returns when the board gets wider;
+`⌘+` stops at the visible fitting value while `⌘-` steps down from it.
 
-The focused responder decides which scale changes: a focused terminal adjusts its independent terminal
-font size, while board, inspector, field, and overlay focus adjust interface scale regardless of Vim-key
-mode. The board, inspector, settings, sheets, overlays, and popover content in the scale canvas share the
-effective scale. The terminal is the deliberate exception: it sets SwiftTerm's native font to the saved
-physical terminal size divided by the effective interface scale, allowing a 4–64pt internal render range
-so the visible terminal font stays at its separately selected 8–32pt size. Global-coordinate resize
-gestures similarly divide their captured physical drag distance by the effective scale before persisting
-logical inspector or panel dimensions.
+Everything outside `BoardView` remains in native points: the titlebar, toolbar, inspector, settings,
+sheets, popovers, overlays, and terminal panels. A focused terminal changes its independently persisted
+8–32pt font size; every other focus surface changes the board target regardless of Vim-key mode. The only
+global-coordinate gesture inside the board canvas — the freeform dock resize — converts physical drag
+distance back to logical board points before persisting it.
 
-The policy is covered as pure logic: scale normalization and bounds, step and reset behavior, fit-cap
-rounding, restoration of a retained target after a resize, terminal inverse-font calculation, and
-physical-to-logical drag conversion. Keyboard-binding tests cover terminal and non-terminal focus with Vim
-mode both enabled and disabled. A desktop smoke pass at 50%, 100%, and a fit-capped target exercises the
-picker, Zoom menu, terminal, fields, overlays, popovers, settings, and all persisted resize handles.
+The policy is covered as pure logic: normalization and bounds, step and reset behavior, fit-cap rounding,
+and retained-target restoration. Keyboard-binding tests cover terminal and non-terminal focus with Vim mode
+both enabled and disabled.
 
 ### Transcript images are published, opaque, and session-scoped
 

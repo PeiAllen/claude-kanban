@@ -1,5 +1,12 @@
 import Foundation
 
+/// A user-initiated change to the shared desktop terminal font size.
+public enum TerminalZoomAction: Equatable, Sendable {
+    case increase
+    case decrease
+    case reset
+}
+
 /// The persisted desktop terminal zoom policy. Keeping this AppKit-free makes the shortcut and
 /// persistence behavior testable without constructing a SwiftTerm view.
 public enum TerminalFontSize {
@@ -26,12 +33,5 @@ public enum TerminalFontSize {
     public static func normalized(_ pointSize: Double?) -> Double {
         guard let pointSize, pointSize.isFinite else { return defaultPointSize }
         return min(max(pointSize, minimumPointSize), maximumPointSize)
-    }
-
-    /// The native SwiftTerm point size required beneath an interface canvas. The stored terminal size is
-    /// deliberately physical, so the canvas multiplies this value back to the user's chosen 8–32pt font.
-    /// At the interface-scale bounds the native rendering range is 4–64pt.
-    public static func renderedPointSize(for pointSize: Double?, interfaceScale: Double) -> Double {
-        normalized(pointSize) / InterfaceScale.normalized(interfaceScale)
     }
 }

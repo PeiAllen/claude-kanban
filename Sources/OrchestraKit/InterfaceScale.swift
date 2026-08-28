@@ -1,17 +1,10 @@
 import Foundation
 
-/// A user-initiated change to either the interface scale or the terminal font size.
-public enum ZoomAction: Equatable, Sendable {
-    case increase
-    case decrease
-    case reset
-}
+/// Board zoom uses the same three user actions as terminal font zoom.
+public typealias ZoomAction = TerminalZoomAction
 
-/// Source-compatible name for the existing desktop terminal zoom API.
-public typealias TerminalZoomAction = ZoomAction
-
-/// The persisted desktop interface-scale policy. This stays free of SwiftUI and AppKit so each window
-/// can derive its fitting scale from plain dimensions, and the keyboard/menu behavior stays testable.
+/// The persisted desktop board-zoom policy. This stays free of SwiftUI and AppKit so the board canvas can
+/// derive its fitting scale from plain dimensions, and the keyboard/menu behavior stays testable.
 public enum InterfaceScale {
     /// A client-safe size used for fitting a logical canvas into a physical viewport.
     public struct Size: Equatable, Sendable {
@@ -54,7 +47,7 @@ public enum InterfaceScale {
         }
     }
 
-    /// The highest supported scale that fits a logical canvas entirely in its physical viewport.
+    /// The highest supported scale that fits a logical board canvas entirely in its physical viewport.
     /// The enclosing macOS windows enforce their own physical minima, so a pathological viewport below
     /// the 50% minimum still returns the minimum selectable scale rather than inventing another state.
     public static func maximumFittingScale(viewport: Size, minimumLogicalSize: Size) -> Double {
@@ -99,8 +92,8 @@ public enum InterfaceScale {
         }
     }
 
-    /// Converts a global physical drag translation into logical canvas points using the scale captured
-    /// at gesture start. This preserves persisted dimensions across interface-scale changes.
+    /// Converts a global physical drag translation into logical board points using the scale captured at
+    /// gesture start. This preserves persisted dimensions inside the board canvas.
     public static func logicalDistance(fromPhysical distance: Double, scale: Double) -> Double {
         distance / normalized(scale)
     }

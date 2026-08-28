@@ -9,7 +9,6 @@ struct SettingsView: View {
     @EnvironmentObject var model: BoardModel
     @EnvironmentObject var interfaceScale: InterfaceScaleController
     @Environment(\.theme) var theme: Theme
-    @Environment(\.interfaceScale) private var appliedInterfaceScale
 
     @State private var reposRoot = ""
     @State private var worktreesRoot = ""
@@ -95,21 +94,12 @@ struct SettingsView: View {
                 }
 
                 section("Appearance") {
-                    row("Interface scale") {
+                    row("Board scale") {
                         menu(scaleLabel(interfaceScale.requestedScale), width: 108) {
                             ForEach(InterfaceScale.supportedScales, id: \.self) { scale in
                                 Button(scaleLabel(scale)) { interfaceScale.setRequestedScale(scale) }
                             }
                         }
-                    }
-                    if abs(appliedInterfaceScale - interfaceScale.requestedScale) > 0.001 {
-                        rowDivider
-                        Text("\(scaleLabel(interfaceScale.requestedScale)) selected; this window is showing \(scaleLabel(appliedInterfaceScale)) to fit.")
-                            .font(F.ui(11))
-                            .foregroundStyle(theme.text2)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 10)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -140,7 +130,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(theme.winBg)
-        .frame(minWidth: 480, maxWidth: .infinity, minHeight: 540, maxHeight: .infinity)
+        .frame(width: 480, height: 540)
         .onAppear(perform: load)
         .task {
             // Defeat AppKit auto-focusing (and select-all-ing) the first text field when the

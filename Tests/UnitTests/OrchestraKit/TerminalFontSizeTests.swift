@@ -16,11 +16,4 @@ final class TerminalFontSizeTests: XCTestCase {
     func test_reset_restores_the_standard_size() {
         XCTAssertEqual(TerminalFontSize.pointSize(after: .reset, current: 20), 12.5, accuracy: 0.001)
     }
-
-    func test_rendered_font_cancels_the_interface_canvas_scale() {
-        XCTAssertEqual(TerminalFontSize.renderedPointSize(for: 12.5, interfaceScale: 0.5), 25, accuracy: 0.001)
-        XCTAssertEqual(TerminalFontSize.renderedPointSize(for: 12.5, interfaceScale: 2.0), 6.25, accuracy: 0.001)
-        XCTAssertEqual(TerminalFontSize.renderedPointSize(for: 8, interfaceScale: 2.0), 4, accuracy: 0.001)
-        XCTAssertEqual(TerminalFontSize.renderedPointSize(for: 32, interfaceScale: 0.5), 64, accuracy: 0.001)
-    }
 }

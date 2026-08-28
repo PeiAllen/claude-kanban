@@ -29,14 +29,12 @@ struct ConnectionsSettingsView: View {
             .id(bump)   // force a rebuild after upsert/delete so the list reflects the store
         }
         .background(theme.winBg)
-        .frame(minWidth: 480, maxWidth: .infinity, minHeight: 470, maxHeight: .infinity)
+        .frame(width: 480, height: 470)
         .sheet(item: $editing) { conn in
-            InterfaceScaledPresentation {
-                ConnectionEditor(connection: conn) { saved in
-                    model.connections.upsert(saved); editing = nil; bump.toggle()
-                } onCancel: { editing = nil }
-                .environment(\.theme, theme)
-            }
+            ConnectionEditor(connection: conn) { saved in
+                model.connections.upsert(saved); editing = nil; bump.toggle()
+            } onCancel: { editing = nil }
+            .environment(\.theme, theme)
         }
     }
 

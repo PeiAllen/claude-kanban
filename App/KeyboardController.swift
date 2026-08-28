@@ -4,7 +4,7 @@ import OrchestraCore
 
 /// Resolves the *actual* keyboard owner from AppKit's first-responder chain. Keyboard shortcuts share
 /// this with menu actions, so the terminal gets font zoom only while a mounted terminal truly owns focus;
-/// board, fields, and app overlays all use the interface canvas instead.
+/// every other focus surface changes the board canvas instead.
 @MainActor
 enum KeyboardContextResolver {
     static func current(model: BoardModel) -> KeyContext {
@@ -141,7 +141,7 @@ final class KeyboardController {
 
     private func isZoom(_ intent: KeyIntent) -> Bool {
         switch intent {
-        case .terminalZoom, .interfaceZoom:
+        case .terminalZoom, .boardZoom:
             return true
         default:
             return false
@@ -182,7 +182,7 @@ final class KeyboardController {
         case .searchNext:           model.searchNext(); return true
         case .searchPrev:           model.searchPrev(); return true
         case .terminalZoom(let action): TerminalZoomController.perform(action); return true
-        case .interfaceZoom(let action):
+        case .boardZoom(let action):
             ZoomController.perform(action, model: model, interfaceScale: interfaceScale)
             return true
         case .resize(let d):        model.resizeFocusedPane(d); return true
