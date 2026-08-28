@@ -122,12 +122,20 @@ final class KeybindingsTests: XCTestCase {
             XCTAssertEqual(map(KeyChord("n", .command), ctx), .newCard)
             XCTAssertEqual(map(KeyChord("t", .command), ctx), .newShell)
             XCTAssertEqual(map(KeyChord("w", .command), ctx), .closeFrontmost)
-            // `charactersIgnoringModifiers` reports the standard Cmd-+ chord as `=`; accepting
-            // both forms keeps the pure policy independent of the AppKit event representation.
-            XCTAssertEqual(map(KeyChord("=", .command), ctx), .terminalZoom(.increase))
-            XCTAssertEqual(map(KeyChord("+", [.command, .shift]), ctx), .terminalZoom(.increase))
-            XCTAssertEqual(map(KeyChord("-", .command), ctx), .terminalZoom(.decrease))
-            XCTAssertEqual(map(KeyChord("0", .command), ctx), .terminalZoom(.reset))
+        }
+
+        // `charactersIgnoringModifiers` reports the standard Cmd-+ chord as `=`; accepting both
+        // forms keeps the pure policy independent of the AppKit event representation. Terminal focus
+        // owns physical font zoom; all app-owned focus surfaces own interface scale.
+        XCTAssertEqual(map(KeyChord("=", .command), .terminal), .terminalZoom(.increase))
+        XCTAssertEqual(map(KeyChord("+", [.command, .shift]), .terminal), .terminalZoom(.increase))
+        XCTAssertEqual(map(KeyChord("-", .command), .terminal), .terminalZoom(.decrease))
+        XCTAssertEqual(map(KeyChord("0", .command), .terminal), .terminalZoom(.reset))
+        for ctx in [KeyContext.board, .field, .overlay] {
+            XCTAssertEqual(map(KeyChord("=", .command), ctx), .interfaceZoom(.increase))
+            XCTAssertEqual(map(KeyChord("+", [.command, .shift]), ctx), .interfaceZoom(.increase))
+            XCTAssertEqual(map(KeyChord("-", .command), ctx), .interfaceZoom(.decrease))
+            XCTAssertEqual(map(KeyChord("0", .command), ctx), .interfaceZoom(.reset))
         }
     }
 
@@ -178,10 +186,17 @@ final class KeybindingsTests: XCTestCase {
             XCTAssertEqual(base(KeyChord("n", .command), ctx), .newCard)
             XCTAssertEqual(base(KeyChord("t", .command), ctx), .newShell)
             XCTAssertEqual(base(KeyChord("w", .command), ctx), .closeFrontmost)
-            XCTAssertEqual(base(KeyChord("=", .command), ctx), .terminalZoom(.increase))
-            XCTAssertEqual(base(KeyChord("+", [.command, .shift]), ctx), .terminalZoom(.increase))
-            XCTAssertEqual(base(KeyChord("-", .command), ctx), .terminalZoom(.decrease))
-            XCTAssertEqual(base(KeyChord("0", .command), ctx), .terminalZoom(.reset))
+        }
+
+        XCTAssertEqual(base(KeyChord("=", .command), .terminal), .terminalZoom(.increase))
+        XCTAssertEqual(base(KeyChord("+", [.command, .shift]), .terminal), .terminalZoom(.increase))
+        XCTAssertEqual(base(KeyChord("-", .command), .terminal), .terminalZoom(.decrease))
+        XCTAssertEqual(base(KeyChord("0", .command), .terminal), .terminalZoom(.reset))
+        for ctx in [KeyContext.board, .field, .overlay] {
+            XCTAssertEqual(base(KeyChord("=", .command), ctx), .interfaceZoom(.increase))
+            XCTAssertEqual(base(KeyChord("+", [.command, .shift]), ctx), .interfaceZoom(.increase))
+            XCTAssertEqual(base(KeyChord("-", .command), ctx), .interfaceZoom(.decrease))
+            XCTAssertEqual(base(KeyChord("0", .command), ctx), .interfaceZoom(.reset))
         }
     }
 

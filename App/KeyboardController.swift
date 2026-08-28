@@ -2,6 +2,28 @@ import AppKit
 import OrchestraUI
 import OrchestraCore
 
+/// Resolves the *actual* keyboard owner from AppKit's first-responder chain. Keyboard shortcuts share
+/// this with menu actions, so the terminal gets font zoom only while a mounted terminal truly owns focus;
+/// board, fields, and app overlays all use the interface canvas instead.
+@MainActor
+enum KeyboardContextResolver {
+    static func current(model: BoardModel) -> KeyContext {
+        if model.showSpawn || model.showDone || model.showActivity || model.showHelp || model.showPalette
+            || model.archiveConfirm != nil {
+            return .overlay
+        }
+        let firstResponder = NSApp.keyWindow?.firstResponder
+        var view = firstResponder as? NSView
+        while let current = view {
+            if String(describing: type(of: current)).contains("ScrollableTerminalView") { return .terminal }
+            view = current.superview
+        }
+        // A focused text field/editor: keys must type, not navigate.
+        if firstResponder is NSText || firstResponder is NSTextView { return .field }
+        return .board
+    }
+}
+
 /// The app's single keyboard router. Installs one `NSEvent` keyDown local monitor (mirroring the
 /// shared scroll monitor in AgentTerminalView), derives the current `KeyContext` from the first
 /// responder + model state, asks the active `Keybindings` what to do, and executes the resulting
@@ -10,6 +32,7 @@ import OrchestraCore
 @MainActor
 final class KeyboardController {
     private let model: BoardModel
+    private let interfaceScale: InterfaceScaleController
     /// The two keybinding strategies, selected per keypress by the "Vim keyboard" setting. Both are
     /// stateless value types, so a single shared instance of each is all we need.
     private static let vim: Keybindings = VimKeybindings()
@@ -21,28 +44,16 @@ final class KeyboardController {
     /// Accumulated keystrokes while `f` hint mode is active (for 2-char labels).
     private var hintBuffer = ""
 
-    init(model: BoardModel) { self.model = model }
+    init(model: BoardModel, interfaceScale: InterfaceScaleController) {
+        self.model = model
+        self.interfaceScale = interfaceScale
+    }
 
     func install() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             return self.handle(event) ? nil : event
         }
-    }
-
-    // MARK: context
-
-    private func context() -> KeyContext {
-        if model.showSpawn || model.showDone || model.showActivity || model.showHelp || model.showPalette || model.archiveConfirm != nil { return .overlay }
-        let fr = NSApp.keyWindow?.firstResponder
-        var v = fr as? NSView
-        while let cur = v {
-            if String(describing: type(of: cur)).contains("ScrollableTerminalView") { return .terminal }
-            v = cur.superview
-        }
-        // A focused text field/editor: keys must type, not navigate.
-        if fr is NSText || fr is NSTextView { return .field }
-        return .board
     }
 
     private func chord(from e: NSEvent) -> KeyChord? {
@@ -60,6 +71,14 @@ final class KeyboardController {
     /// Returns true if the event was consumed (swallowed).
     private func handle(_ e: NSEvent) -> Bool {
         guard let ch = chord(from: e) else { return false }
+        let ctx = KeyboardContextResolver.current(model: model)
+
+        // Zoom is a global command that must remain available while a text field or overlay owns focus.
+        // Resolve it before the palette/archive/hint state machines swallow their local keystrokes.
+        let bindings: Keybindings = UserDefaults.standard.bool(forKey: "orch_vim_keys") ? Self.vim : Self.command
+        if let intent = bindings.intent(for: ch, in: ctx, awaitingGoTo: pendingG), isZoom(intent) {
+            return execute(intent, ctx: ctx)
+        }
 
         // Command palette owns its navigation (letters still reach the search field → return false).
         if model.showPalette {
@@ -93,13 +112,9 @@ final class KeyboardController {
             return true
         }
 
-        let ctx = context()
-
         // Pick the strategy once — the "Vim keyboard" setting (on by default). CommandKeybindings
         // resolves only ⌘ accelerators + Esc; VimKeybindings adds the whole single-key layer. Read
         // live so a Settings toggle takes effect on the very next keystroke.
-        let bindings: Keybindings = UserDefaults.standard.bool(forKey: "orch_vim_keys") ? Self.vim : Self.command
-
         // `y`-prefix yank state machine (board only) — resolving the c/t/p/i second key stays here
         // rather than in the pure layer, to avoid a second prefix arg. It's self-gating: `pendingY`
         // is only ever set by the `.beginYank` intent, which only VimKeybindings emits.
@@ -122,6 +137,15 @@ final class KeyboardController {
         // Clear the g-sequence unless this key *starts* one.
         if case .beginGoTo = intent { /* keep pendingG set below */ } else { pendingG = false }
         return execute(intent, ctx: ctx)
+    }
+
+    private func isZoom(_ intent: KeyIntent) -> Bool {
+        switch intent {
+        case .terminalZoom, .interfaceZoom:
+            return true
+        default:
+            return false
+        }
     }
 
     private func execute(_ intent: KeyIntent, ctx: KeyContext) -> Bool {
@@ -158,6 +182,9 @@ final class KeyboardController {
         case .searchNext:           model.searchNext(); return true
         case .searchPrev:           model.searchPrev(); return true
         case .terminalZoom(let action): TerminalZoomController.perform(action); return true
+        case .interfaceZoom(let action):
+            ZoomController.perform(action, model: model, interfaceScale: interfaceScale)
+            return true
         case .resize(let d):        model.resizeFocusedPane(d); return true
         case .toggleCollapse:       model.toggleCollapseFocused(); return true
         case .hint:                 model.beginHint(); return true

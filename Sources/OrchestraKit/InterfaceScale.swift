@@ -78,6 +78,24 @@ public enum InterfaceScale {
             maximumFittingScale(viewport: viewport, minimumLogicalSize: minimumLogicalSize))
     }
 
+    /// Chooses the next persisted target for a keyboard/menu zoom command. An increase at the current
+    /// fitting ceiling is intentionally a no-op, preserving any higher target that a smaller window has
+    /// temporarily capped. A decrease starts from the effective scale the user can actually see.
+    public static func requestedScale(after action: ZoomAction, requested: Double?, applied: Double?,
+                                      maximumFittingScale: Double?) -> Double {
+        let target = normalized(requested)
+        let visible = normalized(applied)
+        let ceiling = normalized(maximumFittingScale)
+        switch action {
+        case .increase:
+            return visible < ceiling ? scale(after: .increase, current: visible) : target
+        case .decrease:
+            return scale(after: .decrease, current: visible)
+        case .reset:
+            return defaultScale
+        }
+    }
+
     /// Converts a global physical drag translation into logical canvas points using the scale captured
     /// at gesture start. This preserves persisted dimensions across interface-scale changes.
     public static func logicalDistance(fromPhysical distance: Double, scale: Double) -> Double {

@@ -2,12 +2,14 @@ import SwiftUI
 import OrchestraUI
 import AppKit
 import OrchestraCore
+import OrchestraKit
 
 /// A tab ribbon of opened shell windows + a resizable shell terminal panel below the agent
 /// terminal. ui-spec §3.5 (bottom strip / shell panel) / §4.5.
 struct ShellTabsView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
+    @Environment(\.interfaceScale) private var interfaceScale
     let task: Task
 
     // Shell windows + selection live on BoardModel (keyed by task id) so they survive deselect/
@@ -20,6 +22,7 @@ struct ShellTabsView: View {
     @AppStorage("shellPanelHeight") private var savedHeight: Double = 220
     @State private var dragHeight: Double? = nil
     @State private var startHeight: Double? = nil
+    @State private var startScale: Double? = nil
 
     private var panelHeight: CGFloat { CGFloat(dragHeight ?? savedHeight) }
     private var windows: [String] { model.shellWindows[task.id] ?? [] }
@@ -162,19 +165,24 @@ struct ShellTabsView: View {
         // translation would be read against a moving origin and jitter (cf. InspectorResizer).
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { v in
-                if startHeight == nil { startHeight = savedHeight }
-                dragHeight = resolve(v.translation.height, base: startHeight ?? savedHeight)
+                if startHeight == nil {
+                    startHeight = savedHeight
+                    startScale = interfaceScale
+                }
+                dragHeight = resolve(v.translation.height, base: startHeight ?? savedHeight,
+                                     scale: startScale ?? interfaceScale)
             }
             .onEnded { v in
                 let base = startHeight ?? savedHeight
-                savedHeight = resolve(v.translation.height, base: base)
+                savedHeight = resolve(v.translation.height, base: base, scale: startScale ?? interfaceScale)
                 startHeight = nil
+                startScale = nil
                 dragHeight = nil
             }
     }
 
-    private func resolve(_ translation: CGFloat, base: Double) -> Double {
+    private func resolve(_ translation: CGFloat, base: Double, scale: Double) -> Double {
         // Up (negative translation) → taller panel. Clamp 80–500 per ui-spec §3.5.
-        min(500, max(80, base - Double(translation)))
+        min(500, max(80, base - InterfaceScale.logicalDistance(fromPhysical: Double(translation), scale: scale)))
     }
 }

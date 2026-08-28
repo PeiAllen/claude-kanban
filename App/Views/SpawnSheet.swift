@@ -493,7 +493,9 @@ struct SpawnSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .popover(isPresented: $showRepoPopover, arrowEdge: .bottom) { repoPopover }
+            .popover(isPresented: $showRepoPopover, arrowEdge: .bottom) {
+                InterfaceScaledPresentation { repoPopover }
+            }
         }
     }
 
@@ -575,7 +577,9 @@ struct SpawnSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $showBranchPopover, arrowEdge: .bottom) { branchPopover }
+        .popover(isPresented: $showBranchPopover, arrowEdge: .bottom) {
+            InterfaceScaledPresentation { branchPopover }
+        }
     }
 
     /// Branches matching the current query as a fuzzy subsequence, recency order preserved.

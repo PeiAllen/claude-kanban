@@ -12,7 +12,7 @@ public protocol Keybindings: Sendable {
     func intent(for chord: KeyChord, in ctx: KeyContext, awaitingGoTo: Bool) -> KeyIntent?
 }
 
-/// The generic, always-on layer: the ⌘ accelerators (⌘N / ⌘T / ⌘W and terminal zoom) plus a bare `Esc`
+/// The generic, always-on layer: the ⌘ accelerators (⌘N / ⌘T / ⌘W and focus-aware zoom) plus a bare `Esc`
 /// to close or clear the board selection / an overlay. Nothing else is captured — no navigation, no
 /// single-key verbs — so every other key passes straight through to the terminal, a text field, or an
 /// overlay.
@@ -28,15 +28,21 @@ public struct CommandKeybindings: Keybindings {
             case "w": return .closeFrontmost
             // AppKit's charactersIgnoringModifiers spelling for Cmd-+ is `=` on standard keyboards;
             // accept `+` too so the pure policy does not depend on that platform representation.
-            case "=", "+": return .terminalZoom(.increase)
-            case "-": return .terminalZoom(.decrease)
-            case "0": return .terminalZoom(.reset)
+            case "=", "+": return zoom(.increase, in: ctx)
+            case "-": return zoom(.decrease, in: ctx)
+            case "0": return zoom(.reset, in: ctx)
             default:  return nil
             }
         }
         // A bare Esc closes/clears the board selection or an overlay; it stays sacred to the pty/field.
         if chord.key == "\u{1B}", chord.mods.isEmpty, ctx == .board || ctx == .overlay { return .closeOrClear }
         return nil
+    }
+
+    /// Terminal glyphs retain their physical font size. Every app-owned focus surface uses the
+    /// interface canvas, including fields and overlays where a shortcut should still be available.
+    private func zoom(_ action: ZoomAction, in context: KeyContext) -> KeyIntent {
+        context == .terminal ? .terminalZoom(action) : .interfaceZoom(action)
     }
 }
 

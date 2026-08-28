@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import OrchestraUI
 import OrchestraCore
 
@@ -69,10 +70,14 @@ struct ToolbarControls: View {
     // Injected as an environmentObject by WindowConfigurator (this accessory host is outside ContentView's
     // environment), so the MCP status dot parks with the rest of the board when the window is occluded.
     @EnvironmentObject var activity: WindowActivityMonitor
+    @EnvironmentObject var interfaceScale: InterfaceScaleController
     var body: some View {
         ControlsRow()
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
             .environment(\.animationsActive, activity.active)
+            // This accessory is hosted outside the transformed board canvas, but only its native
+            // titlebar row stays fixed. Popover content inherits the board window's effective scale.
+            .environment(\.interfaceScale, interfaceScale.effectiveScale(in: NSApp.keyWindow))
             .padding(.trailing, 14)
             .frame(height: ToolbarView.height)
             .fixedSize()
@@ -159,9 +164,11 @@ struct ControlsRow: View {
         // Anchor the popover to the button itself so it drops from the control with an arrow,
         // instead of floating at a hardcoded offset in the window.
         .popover(isPresented: $model.showDone, arrowEdge: .bottom) {
-            DonePopover()
-                .environmentObject(model)
-                .environment(\.theme, theme)
+            InterfaceScaledPresentation {
+                DonePopover()
+                    .environmentObject(model)
+                    .environment(\.theme, theme)
+            }
         }
     }
 
@@ -182,9 +189,11 @@ struct ControlsRow: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $model.showActivity, arrowEdge: .bottom) {
-            ActivityPopover()
-                .environmentObject(model)
-                .environment(\.theme, theme)
+            InterfaceScaledPresentation {
+                ActivityPopover()
+                    .environmentObject(model)
+                    .environment(\.theme, theme)
+            }
         }
     }
 

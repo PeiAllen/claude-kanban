@@ -64,7 +64,8 @@ public enum KeyIntent: Equatable, Sendable {
     case help                       // ? — help overlay
     case newShell                   // t / Cmd-T — new shell tab
     case closeFrontmost             // Cmd-W — close the frontmost thing
-    case terminalZoom(TerminalZoomAction) // Cmd-+/Cmd--/Cmd-0 — shared desktop terminal font size
+    case terminalZoom(TerminalZoomAction) // Cmd-+/Cmd--/Cmd-0 while a terminal has keyboard focus
+    case interfaceZoom(ZoomAction) // Cmd-+/Cmd--/Cmd-0 on board, fields, and app-owned overlays
     case resize(Direction)          // Ctrl-Shift-hjkl — grow/shrink the focused pane's edge
     case toggleCollapse             // z — collapse/expand the focused dock/panel
     case hint                       // f — link-hint overlay (jump to any card)

@@ -51,6 +51,27 @@ final class InterfaceScaleTests: XCTestCase {
                        accuracy: 0.001)
     }
 
+    func test_zoom_at_a_fit_cap_retains_the_target_but_decreases_from_the_visible_scale() {
+        XCTAssertEqual(InterfaceScale.requestedScale(after: .increase,
+                                                      requested: 2.0,
+                                                      applied: 1.2,
+                                                      maximumFittingScale: 1.2),
+                       2.0,
+                       accuracy: 0.001)
+        XCTAssertEqual(InterfaceScale.requestedScale(after: .decrease,
+                                                      requested: 2.0,
+                                                      applied: 1.2,
+                                                      maximumFittingScale: 1.2),
+                       1.1,
+                       accuracy: 0.001)
+        XCTAssertEqual(InterfaceScale.requestedScale(after: .increase,
+                                                      requested: 1.1,
+                                                      applied: 1.1,
+                                                      maximumFittingScale: 1.2),
+                       1.2,
+                       accuracy: 0.001)
+    }
+
     func test_logical_distance_divides_a_physical_drag_by_the_captured_scale() {
         XCTAssertEqual(InterfaceScale.logicalDistance(fromPhysical: 24, scale: 2.0), 12, accuracy: 0.001)
         XCTAssertEqual(InterfaceScale.logicalDistance(fromPhysical: 24, scale: 0.5), 48, accuracy: 0.001)

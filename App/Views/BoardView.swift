@@ -2,6 +2,7 @@ import SwiftUI
 import OrchestraUI
 import AppKit
 import OrchestraCore
+import OrchestraKit
 
 /// The horizontally scrolling board of three columns (ui-spec §3.3, §4.2).
 struct BoardView: View {
@@ -207,6 +208,7 @@ private struct ColumnView: View {
 private struct FreeformRegionView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
+    @Environment(\.interfaceScale) private var interfaceScale
 
     // Persisted so the `z` keyboard verb (which writes this key) can collapse/expand the dock too.
     @AppStorage("freeformCollapsed") private var collapsed = false
@@ -217,6 +219,7 @@ private struct FreeformRegionView: View {
     @AppStorage("freeformPanelHeight") private var savedHeight: Double = 208
     @State private var dragHeight: Double? = nil
     @State private var startHeight: Double? = nil
+    @State private var startScale: Double? = nil
 
     private var panelHeight: CGFloat { CGFloat(dragHeight ?? savedHeight) }
     // The ribbon doubles as a drag handle, but only while the panel is actually showing below it.
@@ -288,19 +291,24 @@ private struct FreeformRegionView: View {
         // translation would be read against a moving origin and jitter (cf. ShellTabsView).
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { v in
-                if startHeight == nil { startHeight = savedHeight }
-                dragHeight = resolve(v.translation.height, base: startHeight ?? savedHeight)
+                if startHeight == nil {
+                    startHeight = savedHeight
+                    startScale = interfaceScale
+                }
+                dragHeight = resolve(v.translation.height, base: startHeight ?? savedHeight,
+                                     scale: startScale ?? interfaceScale)
             }
             .onEnded { v in
                 let base = startHeight ?? savedHeight
-                savedHeight = resolve(v.translation.height, base: base)
+                savedHeight = resolve(v.translation.height, base: base, scale: startScale ?? interfaceScale)
                 startHeight = nil
+                startScale = nil
                 dragHeight = nil
             }
     }
 
-    private func resolve(_ translation: CGFloat, base: Double) -> Double {
+    private func resolve(_ translation: CGFloat, base: Double, scale: Double) -> Double {
         // Up (negative translation) → taller dock. Clamp 140–620.
-        min(620, max(140, base - Double(translation)))
+        min(620, max(140, base - InterfaceScale.logicalDistance(fromPhysical: Double(translation), scale: scale)))
     }
 }
