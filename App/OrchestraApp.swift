@@ -6,6 +6,7 @@ import OrchestraCore
 @main
 struct OrchestraApp: App {
     @StateObject private var model = BoardModel(platform: MacPlatform.ui)
+    @StateObject private var boardZoom = BoardZoom()
     /// The app-wide keyboard router — installed once when the window appears.
     @State private var keyboard: KeyboardController? = nil
     /// Foreground-reconcile safety net: live board updates are push-only, so a missed event would strand
@@ -27,6 +28,7 @@ struct OrchestraApp: App {
         Window("Orchestra · Personal", id: "board") {
             ContentView()
                 .environmentObject(model)
+                .environmentObject(boardZoom)
                 .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
                 .platformUI()
                 .preferredColorScheme(model.darkMode ? .dark : .light)
@@ -34,7 +36,7 @@ struct OrchestraApp: App {
                 .task { await model.bootstrap() }
                 .onAppear {
                     if keyboard == nil {
-                        let k = KeyboardController(model: model)
+                        let k = KeyboardController(model: model, boardZoom: boardZoom)
                         k.install()
                         keyboard = k
                     }
@@ -66,13 +68,13 @@ struct OrchestraApp: App {
                 Button("Close") { model.closeFrontmost() }
                     .keyboardShortcut("w", modifiers: .command)
             }
-            CommandMenu("Terminal") {
-                Button("Zoom In") { TerminalZoomController.perform(.increase) }
+            CommandMenu("Zoom") {
+                Button("Zoom In") { zoom(.increase) }
                     .keyboardShortcut("+", modifiers: .command)
-                Button("Zoom Out") { TerminalZoomController.perform(.decrease) }
+                Button("Zoom Out") { zoom(.decrease) }
                     .keyboardShortcut("-", modifiers: .command)
                 Divider()
-                Button("Actual Size") { TerminalZoomController.perform(.reset) }
+                Button("Actual Size") { zoom(.reset) }
                     .keyboardShortcut("0", modifiers: .command)
             }
         }
@@ -85,8 +87,17 @@ struct OrchestraApp: App {
                     .tabItem { Label("Connections", systemImage: "network") }
             }
             .environmentObject(model)
+            .environmentObject(boardZoom)
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
             .platformUI()
+        }
+    }
+
+    private func zoom(_ action: TerminalZoomAction) {
+        if let keyboard {
+            keyboard.zoom(action)
+        } else {
+            boardZoom.zoom(action)
         }
     }
 }
@@ -94,6 +105,7 @@ struct OrchestraApp: App {
 /// Top-level composition: toolbar over a board + optional inspector, with sheet/popover/toast overlays.
 struct ContentView: View {
     @EnvironmentObject var model: BoardModel
+    @EnvironmentObject var boardZoom: BoardZoom
     @Environment(\.theme) var theme
 
     /// Inspector width, persisted across launches. During a live drag we don't touch this (a
@@ -133,8 +145,10 @@ struct ContentView: View {
                     let split = w - inspectorWidth
                     let boardW = hasInspector ? max(boardMin, split) : w
                     ZStack(alignment: .topLeading) {
-                        BoardView()
-                            .frame(width: boardW, height: h)
+                        BoardScaleCanvas(zoom: boardZoom) {
+                            BoardView()
+                        }
+                        .frame(width: boardW, height: h)
                         if hasInspector {
                             HStack(spacing: 0) {
                                 // Allow dragging the inspector out nearly all the way — leave only a

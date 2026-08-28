@@ -10,6 +10,7 @@ import OrchestraCore
 @MainActor
 final class KeyboardController {
     private let model: BoardModel
+    private let boardZoom: BoardZoom
     /// The two keybinding strategies, selected per keypress by the "Vim keyboard" setting. Both are
     /// stateless value types, so a single shared instance of each is all we need.
     private static let vim: Keybindings = VimKeybindings()
@@ -21,13 +22,22 @@ final class KeyboardController {
     /// Accumulated keystrokes while `f` hint mode is active (for 2-char labels).
     private var hintBuffer = ""
 
-    init(model: BoardModel) { self.model = model }
+    init(model: BoardModel, boardZoom: BoardZoom) {
+        self.model = model
+        self.boardZoom = boardZoom
+    }
 
     func install() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             return self.handle(event) ? nil : event
         }
+    }
+
+    /// Menu actions and key events use the same focus rule: a real terminal owns font zoom, while
+    /// any other surface owns board zoom.
+    func zoom(_ action: TerminalZoomAction) {
+        zoom(action, context: context())
     }
 
     // MARK: context
@@ -60,6 +70,22 @@ final class KeyboardController {
     /// Returns true if the event was consumed (swallowed).
     private func handle(_ e: NSEvent) -> Bool {
         guard let ch = chord(from: e) else { return false }
+        let ctx = context()
+        let bindings: Keybindings = UserDefaults.standard.bool(forKey: "orch_vim_keys") ? Self.vim : Self.command
+
+        // Zoom remains available while an overlay owns focus, but it should also end any in-flight
+        // board prefix just like the command would have before this early routing point.
+        if let intent = bindings.intent(for: ch, in: ctx, awaitingGoTo: pendingG),
+           case let .terminalZoom(action) = intent {
+            pendingG = false
+            pendingY = false
+            if model.hintActive {
+                hintBuffer = ""
+                model.endHint()
+            }
+            zoom(action, context: ctx)
+            return true
+        }
 
         // Command palette owns its navigation (letters still reach the search field → return false).
         if model.showPalette {
@@ -93,13 +119,6 @@ final class KeyboardController {
             return true
         }
 
-        let ctx = context()
-
-        // Pick the strategy once — the "Vim keyboard" setting (on by default). CommandKeybindings
-        // resolves only ⌘ accelerators + Esc; VimKeybindings adds the whole single-key layer. Read
-        // live so a Settings toggle takes effect on the very next keystroke.
-        let bindings: Keybindings = UserDefaults.standard.bool(forKey: "orch_vim_keys") ? Self.vim : Self.command
-
         // `y`-prefix yank state machine (board only) — resolving the c/t/p/i second key stays here
         // rather than in the pure layer, to avoid a second prefix arg. It's self-gating: `pendingY`
         // is only ever set by the `.beginYank` intent, which only VimKeybindings emits.
@@ -122,6 +141,14 @@ final class KeyboardController {
         // Clear the g-sequence unless this key *starts* one.
         if case .beginGoTo = intent { /* keep pendingG set below */ } else { pendingG = false }
         return execute(intent, ctx: ctx)
+    }
+
+    private func zoom(_ action: TerminalZoomAction, context: KeyContext) {
+        if context == .terminal {
+            TerminalZoomController.perform(action)
+        } else {
+            boardZoom.zoom(action)
+        }
     }
 
     private func execute(_ intent: KeyIntent, ctx: KeyContext) -> Bool {
@@ -157,7 +184,7 @@ final class KeyboardController {
         case .closeFrontmost:       model.closeFrontmost(); return true
         case .searchNext:           model.searchNext(); return true
         case .searchPrev:           model.searchPrev(); return true
-        case .terminalZoom(let action): TerminalZoomController.perform(action); return true
+        case .terminalZoom(let action): zoom(action, context: ctx); return true
         case .resize(let d):        model.resizeFocusedPane(d); return true
         case .toggleCollapse:       model.toggleCollapseFocused(); return true
         case .hint:                 model.beginHint(); return true
