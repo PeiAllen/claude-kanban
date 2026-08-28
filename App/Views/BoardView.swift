@@ -2,7 +2,6 @@ import SwiftUI
 import OrchestraUI
 import AppKit
 import OrchestraCore
-import OrchestraKit
 
 /// The horizontally scrolling board of three columns (ui-spec §3.3, §4.2).
 struct BoardView: View {
@@ -309,6 +308,6 @@ private struct FreeformRegionView: View {
 
     private func resolve(_ translation: CGFloat, base: Double, scale: Double) -> Double {
         // Up (negative translation) → taller dock. Clamp 140–620.
-        min(620, max(140, base - InterfaceScale.logicalDistance(fromPhysical: Double(translation), scale: scale)))
+        min(620, max(140, base - Double(translation) / scale))
     }
 }

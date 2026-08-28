@@ -309,36 +309,11 @@ interactive and real-time.
 ### Desktop terminal zoom changes font metrics, not the attachment
 
 Desktop keeps one persisted terminal font size for every mounted agent and shell terminal. `⌘+`, `⌘-`,
-and `⌘0` are host-owned accelerators, and the context-sensitive Zoom menu routes the same action according
-to focus, so the focused TUI never receives them. `AgentTerminalView` replaces SwiftTerm's font only when
-that size changes; SwiftTerm then recomputes its grid and resizes the existing local PTY, without
-recreating or reattaching the tmux client.
+and `⌘0` are host-owned accelerators (also exposed in the Terminal menu), so the focused TUI never
+receives them. `AgentTerminalView` replaces SwiftTerm's font only when that size changes; SwiftTerm then
+recomputes its grid and resizes the existing local PTY, without recreating or reattaching the tmux client.
 Claude and Codex therefore take the same provider-neutral path, while a bounded 8–32pt policy recovers
 from malformed persisted values instead of producing an unusable terminal.
-
-### Desktop board zoom is a persistent target with a fit-limited canvas
-
-Desktop has a user-selectable board-zoom target from 50% through 200% in 10% increments, stored
-independently from terminal font size. One pure `InterfaceScale` policy owns normalization, stepping, and
-fit calculation, while a single `BoardScaleCanvas` applies the transform around `BoardView`. The canvas
-gives the board its logical size and then scales it back into the available board region, so cards, column
-spacing, and freeform cards zoom together without adding a second scrolling coordinate system.
-
-The target is a preference rather than an assertion about the current window: absent or malformed data
-recovers to 100%, and command-driven changes clamp at the policy bounds. The board derives an effective
-scale from its own viewport, rounded down to the largest supported tenth that keeps the three-column board
-minimum visible. A target above that limit is retained and automatically returns when the board gets wider;
-`⌘+` stops at the visible fitting value while `⌘-` steps down from it.
-
-Everything outside `BoardView` remains in native points: the titlebar, toolbar, inspector, settings,
-sheets, popovers, overlays, and terminal panels. A focused terminal changes its independently persisted
-8–32pt font size; every other focus surface changes the board target regardless of Vim-key mode. The only
-global-coordinate gesture inside the board canvas — the freeform dock resize — converts physical drag
-distance back to logical board points before persisting it.
-
-The policy is covered as pure logic: normalization and bounds, step and reset behavior, fit-cap rounding,
-and retained-target restoration. Keyboard-binding tests cover terminal and non-terminal focus with Vim mode
-both enabled and disabled.
 
 ### Transcript images are published, opaque, and session-scoped
 

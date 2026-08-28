@@ -2,12 +2,11 @@ import SwiftUI
 import OrchestraUI
 import AppKit
 import OrchestraCore
-import OrchestraKit
 
 @main
 struct OrchestraApp: App {
     @StateObject private var model = BoardModel(platform: MacPlatform.ui)
-    @StateObject private var interfaceScale = InterfaceScaleController()
+    @StateObject private var boardZoom = BoardZoom()
     /// The app-wide keyboard router — installed once when the window appears.
     @State private var keyboard: KeyboardController? = nil
     /// Foreground-reconcile safety net: live board updates are push-only, so a missed event would strand
@@ -29,7 +28,7 @@ struct OrchestraApp: App {
         Window("Orchestra · Personal", id: "board") {
             ContentView()
                 .environmentObject(model)
-                .environmentObject(interfaceScale)
+                .environmentObject(boardZoom)
                 .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
                 .platformUI()
                 .preferredColorScheme(model.darkMode ? .dark : .light)
@@ -37,7 +36,7 @@ struct OrchestraApp: App {
                 .task { await model.bootstrap() }
                 .onAppear {
                     if keyboard == nil {
-                        let k = KeyboardController(model: model, interfaceScale: interfaceScale)
+                        let k = KeyboardController(model: model, boardZoom: boardZoom)
                         k.install()
                         keyboard = k
                     }
@@ -70,12 +69,12 @@ struct OrchestraApp: App {
                     .keyboardShortcut("w", modifiers: .command)
             }
             CommandMenu("Zoom") {
-                Button("Zoom In") { ZoomController.perform(.increase, model: model, interfaceScale: interfaceScale) }
+                Button("Zoom In") { zoom(.increase) }
                     .keyboardShortcut("+", modifiers: .command)
-                Button("Zoom Out") { ZoomController.perform(.decrease, model: model, interfaceScale: interfaceScale) }
+                Button("Zoom Out") { zoom(.decrease) }
                     .keyboardShortcut("-", modifiers: .command)
                 Divider()
-                Button("Actual Size") { ZoomController.perform(.reset, model: model, interfaceScale: interfaceScale) }
+                Button("Actual Size") { zoom(.reset) }
                     .keyboardShortcut("0", modifiers: .command)
             }
         }
@@ -88,9 +87,17 @@ struct OrchestraApp: App {
                     .tabItem { Label("Connections", systemImage: "network") }
             }
             .environmentObject(model)
-            .environmentObject(interfaceScale)
+            .environmentObject(boardZoom)
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
             .platformUI()
+        }
+    }
+
+    private func zoom(_ action: TerminalZoomAction) {
+        if let keyboard {
+            keyboard.zoom(action)
+        } else {
+            boardZoom.zoom(action)
         }
     }
 }
@@ -98,7 +105,7 @@ struct OrchestraApp: App {
 /// Top-level composition: toolbar over a board + optional inspector, with sheet/popover/toast overlays.
 struct ContentView: View {
     @EnvironmentObject var model: BoardModel
-    @EnvironmentObject var interfaceScale: InterfaceScaleController
+    @EnvironmentObject var boardZoom: BoardZoom
     @Environment(\.theme) var theme
 
     /// Inspector width, persisted across launches. During a live drag we don't touch this (a
@@ -112,41 +119,14 @@ struct ContentView: View {
     /// backgrounded, which parks every perpetual animation + live clock in the board.
     @StateObject private var activity = WindowActivityMonitor()
 
-    /// Three board columns have a 690pt logical minimum. The board canvas uses this to cap zoom before
-    /// the transform could create horizontal overflow; the inspector remains a separate native surface.
-    private static let minimumBoardSize = InterfaceScale.Size(width: 690, height: 320)
-
     var body: some View {
         ZStack(alignment: .topLeading) {
             theme.winBg.ignoresSafeArea()
             WindowConfigurator(model: model, monitor: activity)
 
             VStack(spacing: 0) {
-                // This band shares the transparent native titlebar with the traffic lights and titlebar
-                // accessory. It deliberately stays in physical points while the board beneath it zooms.
                 ToolbarView()
-                bodyContent
-            }
-            // Pull the toolbar up under the (hidden) titlebar so it shares the band with the traffic
-            // lights. Without this, the title-bar safe-area inset pushes the toolbar down, leaving an
-            // empty strip above it that looks like the old native bar.
-            .ignoresSafeArea(.container, edges: .top)
-        }
-        .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
-        .animation(.easeOut(duration: 0.18), value: model.showSpawn)
-        .animation(.easeOut(duration: 0.15), value: model.showHelp)
-        .animation(.easeOut(duration: 0.15), value: model.archiveConfirm)
-        // The idle-CPU gate for the whole board subtree — parks perpetual animations + live clocks when
-        // the window isn't being looked at (see WindowActivityMonitor).
-        .environment(\.animationsActive, activity.active)
-        .modifier(DebugLaunchHook())
-    }
-
-    /// The board is the sole transformed surface. Inspector, settings, titlebar, and presentations use
-    /// their normal native points so board zoom remains local and predictable.
-    private var bodyContent: some View {
-        ZStack(alignment: .topLeading) {
-            VStack(spacing: 0) {
+                Divider().overlay(theme.hair)
                 if !model.connected {
                     OfflineBanner()
                     Divider().overlay(theme.hair)
@@ -165,10 +145,10 @@ struct ContentView: View {
                     let split = w - inspectorWidth
                     let boardW = hasInspector ? max(boardMin, split) : w
                     ZStack(alignment: .topLeading) {
-                        BoardScaleCanvas(controller: interfaceScale, minimumLogicalSize: Self.minimumBoardSize) {
+                        BoardScaleCanvas(zoom: boardZoom) {
                             BoardView()
                         }
-                            .frame(width: boardW, height: h)
+                        .frame(width: boardW, height: h)
                         if hasInspector {
                             HStack(spacing: 0) {
                                 // Allow dragging the inspector out nearly all the way — leave only a
@@ -188,7 +168,10 @@ struct ContentView: View {
                 }
                 .frame(maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Pull the toolbar up under the (hidden) titlebar so it shares the band with the traffic
+            // lights. Without this, the title-bar safe-area inset pushes the toolbar down, leaving an
+            // empty strip above it that looks like the old native bar.
+            .ignoresSafeArea(.container, edges: .top)
 
             // Spawn sheet overlay
             if model.showSpawn {
@@ -196,7 +179,7 @@ struct ContentView: View {
                     .onTapGesture { model.showSpawn = false }
                 SpawnSheet()
                     .frame(width: 470)
-                    .padding(.top, 30)
+                    .padding(.top, 62)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -214,7 +197,7 @@ struct ContentView: View {
             // `/` card search bar — floats near the top of the board.
             if model.searchQuery != nil {
                 SearchBar()
-                    .padding(.top, 22)
+                    .padding(.top, 54)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -224,7 +207,7 @@ struct ContentView: View {
                 Color.black.opacity(0.28).ignoresSafeArea()
                     .onTapGesture { model.showPalette = false }
                 CommandPalette()
-                    .padding(.top, 64)
+                    .padding(.top, 96)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .transition(.opacity)
             }
@@ -254,6 +237,14 @@ struct ContentView: View {
                     .transition(.opacity)
             }
         }
+        .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
+        .animation(.easeOut(duration: 0.18), value: model.showSpawn)
+        .animation(.easeOut(duration: 0.15), value: model.showHelp)
+        .animation(.easeOut(duration: 0.15), value: model.archiveConfirm)
+        // The idle-CPU gate for the whole board subtree — parks perpetual animations + live clocks when
+        // the window isn't being looked at (see WindowActivityMonitor).
+        .environment(\.animationsActive, activity.active)
+        .modifier(DebugLaunchHook())
     }
 }
 
@@ -1322,9 +1313,7 @@ final class WindowActivityMonitor: ObservableObject {
 struct WindowConfigurator: NSViewRepresentable {
     let model: BoardModel
     let monitor: WindowActivityMonitor
-    func makeNSView(context: Context) -> NSView {
-        ConfiguratorView(model: model, monitor: monitor)
-    }
+    func makeNSView(context: Context) -> NSView { ConfiguratorView(model: model, monitor: monitor) }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ConfiguratorView: NSView {
@@ -1363,9 +1352,7 @@ struct WindowConfigurator: NSViewRepresentable {
                 // the monitor as its own environmentObject — `ToolbarControls` re-publishes it as
                 // `\.animationsActive` so the MCP status dot parks with the rest when occluded.
                 let host = AutoWidthHostingView(
-                    rootView: ToolbarControls()
-                        .environmentObject(model)
-                        .environmentObject(monitor))
+                    rootView: ToolbarControls().environmentObject(model).environmentObject(monitor))
                 acc.view = host
                 window.addTitlebarAccessoryViewController(acc)
             }

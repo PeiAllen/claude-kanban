@@ -1,13 +1,12 @@
 import SwiftUI
 import OrchestraUI
 import OrchestraCore
-import OrchestraKit
 
 /// Settings, styled to match the rest of the app (themed surfaces, not the native grey Form). Edits
 /// auto-save to the daemon, debounced — there is no Save button.
 struct SettingsView: View {
     @EnvironmentObject var model: BoardModel
-    @EnvironmentObject var interfaceScale: InterfaceScaleController
+    @EnvironmentObject var boardZoom: BoardZoom
     @Environment(\.theme) var theme: Theme
 
     @State private var reposRoot = ""
@@ -95,9 +94,9 @@ struct SettingsView: View {
 
                 section("Appearance") {
                     row("Board scale") {
-                        menu(scaleLabel(interfaceScale.requestedScale), width: 108) {
-                            ForEach(InterfaceScale.supportedScales, id: \.self) { scale in
-                                Button(scaleLabel(scale)) { interfaceScale.setRequestedScale(scale) }
+                        menu(scaleLabel(boardZoom.scale), width: 108) {
+                            ForEach(BoardZoom.values, id: \.self) { scale in
+                                Button(scaleLabel(scale)) { boardZoom.set(scale) }
                             }
                         }
                     }
@@ -105,7 +104,7 @@ struct SettingsView: View {
 
                 section("Keyboard") {
                     toggleRow("Vim keyboard",
-                              "Single-key navigation and commands (hjkl, g, f, :, …). ⌘N / ⌘T / ⌘W, ⌘+ / ⌘− / ⌘0, and Esc always work.",
+                              "Single-key navigation and commands (hjkl, g, f, :, …). ⌘N / ⌘T / ⌘W and Esc always work.",
                               isOn: $vimKeys)
                 }
 
