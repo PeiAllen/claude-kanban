@@ -38,6 +38,22 @@ final class InterfaceScaleTests: XCTestCase {
                        accuracy: 0.001)
     }
 
+    func test_fit_keeps_an_exact_supported_tenth_boundary() {
+        XCTAssertEqual(InterfaceScale.maximumFittingScale(
+            viewport: .init(width: 1_128, height: 657.6),
+            minimumLogicalSize: minimumBody),
+            1.2,
+            accuracy: 0.001)
+    }
+
+    func test_fit_does_not_promote_a_genuinely_smaller_viewport() {
+        XCTAssertEqual(InterfaceScale.maximumFittingScale(
+            viewport: .init(width: 1_127.99, height: 657.594),
+            minimumLogicalSize: minimumBody),
+            1.1,
+            accuracy: 0.001)
+    }
+
     func test_retained_target_applies_again_when_the_viewport_grows() {
         XCTAssertEqual(InterfaceScale.effectiveScale(requested: 2.0,
                                                       viewport: .init(width: 940, height: 548),

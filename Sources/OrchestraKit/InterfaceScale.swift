@@ -67,7 +67,10 @@ public enum InterfaceScale {
 
         let ratio = min(viewport.width / minimumLogicalSize.width,
                         viewport.height / minimumLogicalSize.height)
-        let flooredSteps = floor(ratio / step)
+        // A viewport computed from an exact supported multiple can arrive a few ulps below it (for
+        // example 1,128 ÷ 940 ÷ 0.1). Tolerate only representation noise before flooring; this does
+        // not promote a visibly smaller viewport to the next tenth.
+        let flooredSteps = floor((ratio / step) + 1e-9)
         return min(max(flooredSteps * step, minimumScale), maximumScale)
     }
 

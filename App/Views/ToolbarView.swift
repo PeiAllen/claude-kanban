@@ -72,12 +72,14 @@ struct ToolbarControls: View {
     @EnvironmentObject var activity: WindowActivityMonitor
     @EnvironmentObject var interfaceScale: InterfaceScaleController
     var body: some View {
+        let window = NSApp.keyWindow
         ControlsRow()
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
             .environment(\.animationsActive, activity.active)
             // This accessory is hosted outside the transformed board canvas, but only its native
             // titlebar row stays fixed. Popover content inherits the board window's effective scale.
-            .environment(\.interfaceScale, interfaceScale.effectiveScale(in: NSApp.keyWindow))
+            .environment(\.interfaceScale, interfaceScale.effectiveScale(in: window))
+            .environment(\.interfaceScaleMaximum, interfaceScale.maximumFittingScale(in: window))
             .padding(.trailing, 14)
             .frame(height: ToolbarView.height)
             .fixedSize()

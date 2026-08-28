@@ -32,9 +32,7 @@ final class InterfaceScaleController: ObservableObject {
     /// The scale currently applied in a particular window. A window that has not mounted its canvas yet
     /// uses the target briefly; the reporter immediately replaces that with its measured fit.
     func effectiveScale(in window: NSWindow?) -> Double {
-        guard let window else { return requestedScale }
-        let maximum = maximumFits[ObjectIdentifier(window)] ?? InterfaceScale.maximumScale
-        return min(requestedScale, maximum)
+        min(requestedScale, maximumFittingScale(in: window))
     }
 
     /// Applies a shortcut/menu action to the window that owns it. Increasing at an existing fit cap is a
@@ -60,7 +58,9 @@ final class InterfaceScaleController: ObservableObject {
         fitRevision &+= 1
     }
 
-    private func maximumFittingScale(in window: NSWindow?) -> Double {
+    /// Exposed to detached presentations so their own temporary host windows can inherit the exact
+    /// fitting ceiling of the canvas that opened them.
+    func maximumFittingScale(in window: NSWindow?) -> Double {
         guard let window else { return InterfaceScale.maximumScale }
         return maximumFits[ObjectIdentifier(window)] ?? InterfaceScale.maximumScale
     }

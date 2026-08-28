@@ -13,6 +13,17 @@ extension EnvironmentValues {
         get { self[InterfaceScaleEnvironmentKey.self] }
         set { self[InterfaceScaleEnvironmentKey.self] = newValue }
     }
+
+    /// The fitting ceiling of the canvas that supplied `interfaceScale`. Detached AppKit presentation
+    /// windows inherit it so their own shortcut actions still step from the scale the user sees.
+    var interfaceScaleMaximum: Double {
+        get { self[InterfaceScaleMaximumEnvironmentKey.self] }
+        set { self[InterfaceScaleMaximumEnvironmentKey.self] = newValue }
+    }
+}
+
+private struct InterfaceScaleMaximumEnvironmentKey: EnvironmentKey {
+    static let defaultValue = InterfaceScale.maximumScale
 }
 
 /// Scales a logical SwiftUI canvas into the physical space offered by its containing window. The canvas
@@ -48,6 +59,7 @@ struct InterfaceScaleCanvas<Content: View>: View {
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
                 .clipped()
                 .environment(\.interfaceScale, effective)
+                .environment(\.interfaceScaleMaximum, maximum)
                 .background(WindowScaleReporter(controller: controller, maximumFit: maximum))
         }
     }
@@ -117,7 +129,9 @@ private struct InterfaceScaledPresentationSizeKey: PreferenceKey {
 /// canvas of their own. The window chrome stays AppKit-native while the presented content matches the
 /// scale of the surface that opened it.
 struct InterfaceScaledPresentation<Content: View>: View {
+    @EnvironmentObject private var controller: InterfaceScaleController
     @Environment(\.interfaceScale) private var interfaceScale
+    @Environment(\.interfaceScaleMaximum) private var interfaceScaleMaximum
     @State private var logicalSize: CGSize = .zero
     private let content: () -> Content
 
@@ -127,14 +141,18 @@ struct InterfaceScaledPresentation<Content: View>: View {
 
     var body: some View {
         content()
-            // Every current presented surface has a fixed logical width. Holding that width intrinsic
-            // avoids the outer physical frame feeding a scaled proposal back into the content itself.
-            .fixedSize(horizontal: true, vertical: false)
+            // Keep logical measurements intrinsic in both dimensions. Without the vertical fixed size,
+            // the outer physical height becomes the next logical proposal after scaling down, causing a
+            // capped ScrollView popover to measure smaller on every layout pass.
+            .fixedSize(horizontal: true, vertical: true)
             .background(
                 GeometryReader { proxy in
                     Color.clear.preference(key: InterfaceScaledPresentationSizeKey.self, value: proxy.size)
                 }
             )
+            // A sheet/popover is hosted in a distinct AppKit window. Register its inherited ceiling so
+            // Cmd− starts from its visible parent scale instead of the retained target.
+            .background(WindowScaleReporter(controller: controller, maximumFit: interfaceScaleMaximum))
             .scaleEffect(interfaceScale, anchor: .topLeading)
             .frame(width: logicalSize.width > 0 ? logicalSize.width * interfaceScale : nil,
                    height: logicalSize.height > 0 ? logicalSize.height * interfaceScale : nil,
