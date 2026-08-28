@@ -122,6 +122,12 @@ final class KeybindingsTests: XCTestCase {
             XCTAssertEqual(map(KeyChord("n", .command), ctx), .newCard)
             XCTAssertEqual(map(KeyChord("t", .command), ctx), .newShell)
             XCTAssertEqual(map(KeyChord("w", .command), ctx), .closeFrontmost)
+            // `charactersIgnoringModifiers` reports the standard Cmd-+ chord as `=`; accepting
+            // both forms keeps the pure policy independent of the AppKit event representation.
+            XCTAssertEqual(map(KeyChord("=", .command), ctx), .terminalZoom(.increase))
+            XCTAssertEqual(map(KeyChord("+", [.command, .shift]), ctx), .terminalZoom(.increase))
+            XCTAssertEqual(map(KeyChord("-", .command), ctx), .terminalZoom(.decrease))
+            XCTAssertEqual(map(KeyChord("0", .command), ctx), .terminalZoom(.reset))
         }
     }
 
@@ -172,6 +178,10 @@ final class KeybindingsTests: XCTestCase {
             XCTAssertEqual(base(KeyChord("n", .command), ctx), .newCard)
             XCTAssertEqual(base(KeyChord("t", .command), ctx), .newShell)
             XCTAssertEqual(base(KeyChord("w", .command), ctx), .closeFrontmost)
+            XCTAssertEqual(base(KeyChord("=", .command), ctx), .terminalZoom(.increase))
+            XCTAssertEqual(base(KeyChord("+", [.command, .shift]), ctx), .terminalZoom(.increase))
+            XCTAssertEqual(base(KeyChord("-", .command), ctx), .terminalZoom(.decrease))
+            XCTAssertEqual(base(KeyChord("0", .command), ctx), .terminalZoom(.reset))
         }
     }
 

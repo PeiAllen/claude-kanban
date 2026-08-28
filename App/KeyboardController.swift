@@ -157,6 +157,7 @@ final class KeyboardController {
         case .closeFrontmost:       model.closeFrontmost(); return true
         case .searchNext:           model.searchNext(); return true
         case .searchPrev:           model.searchPrev(); return true
+        case .terminalZoom(let action): TerminalZoomController.perform(action); return true
         case .resize(let d):        model.resizeFocusedPane(d); return true
         case .toggleCollapse:       model.toggleCollapseFocused(); return true
         case .hint:                 model.beginHint(); return true
