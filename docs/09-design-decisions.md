@@ -306,6 +306,15 @@ The control plane carries commands, state, and events — never PTY bytes. Swift
 `shell`/`inspect` attach to **tmux directly**. This keeps the daemon simple and the terminals fully
 interactive and real-time.
 
+### Desktop terminal zoom changes font metrics, not the attachment
+
+Desktop keeps one persisted terminal font size for every mounted agent and shell terminal. `⌘+`, `⌘-`,
+and `⌘0` are host-owned accelerators (also exposed in the Terminal menu), so the focused TUI never
+receives them. `AgentTerminalView` replaces SwiftTerm's font only when that size changes; SwiftTerm then
+recomputes its grid and resizes the existing local PTY, without recreating or reattaching the tmux client.
+Claude and Codex therefore take the same provider-neutral path, while a bounded 8–32pt policy recovers
+from malformed persisted values instead of producing an unusable terminal.
+
 ### Transcript images are published, opaque, and session-scoped
 
 Images are the deliberate exception to the rule above: an agent's screenshot or plot has to reach a human

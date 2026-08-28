@@ -66,6 +66,15 @@ struct OrchestraApp: App {
                 Button("Close") { model.closeFrontmost() }
                     .keyboardShortcut("w", modifiers: .command)
             }
+            CommandMenu("Terminal") {
+                Button("Zoom In") { TerminalZoomController.perform(.increase) }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Zoom Out") { TerminalZoomController.perform(.decrease) }
+                    .keyboardShortcut("-", modifiers: .command)
+                Divider()
+                Button("Actual Size") { TerminalZoomController.perform(.reset) }
+                    .keyboardShortcut("0", modifiers: .command)
+            }
         }
 
         Settings {

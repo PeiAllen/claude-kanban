@@ -47,6 +47,9 @@ struct AgentTerminalView: NSViewRepresentable {
     /// inactive. Reading it here makes SwiftUI re-run `updateNSView` when it flips, so the terminal parks
     /// and unparks with the rest of the board.
     @Environment(\.animationsActive) private var animationsActive
+    /// Shared by every desktop agent and shell terminal, and persisted across launches. Updating this
+    /// property re-runs `updateNSView`, where the mounted SwiftTerm view recalculates its normal grid.
+    @AppStorage(TerminalFontSize.preferenceKey) private var terminalFontSize = TerminalFontSize.defaultPointSize
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
@@ -74,7 +77,7 @@ struct AgentTerminalView: NSViewRepresentable {
         let term = ScrollableTerminalView(frame: .zero)
         term.installClipboardOSCHandler()
         term.processDelegate = context.coordinator
-        term.font = Self.terminalFont
+        term.font = Self.terminalFont(size: CGFloat(TerminalFontSize.normalized(terminalFontSize)))
         // SwiftTerm v1.13.0 defaults its 256-colour palette to a "base16 LAB" strategy that re-derives
         // the whole 16–255 cube from the active theme's colours. That remaps fixed xterm indices: e.g.
         // 231 (normally pure white) becomes the theme *foreground*, so a TUI that uses 48;5;231 for a
@@ -109,6 +112,12 @@ struct AgentTerminalView: NSViewRepresentable {
         return term
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
+        // A font assignment makes SwiftTerm recompute its cell grid and resize the existing pty. Guard it
+        // so unrelated SwiftUI updates (theme, telemetry, focus) do not repeatedly reflow the TUI.
+        let requestedFontSize = CGFloat(TerminalFontSize.normalized(terminalFontSize))
+        if abs(nsView.font.pointSize - requestedFontSize) > .ulpOfOne {
+            nsView.font = Self.terminalFont(size: requestedFontSize)
+        }
         applyColors(nsView, coordinator: context.coordinator)   // re-tint when the app toggles light/dark
         context.coordinator.loadTranscriptImage = loadTranscriptImage
         context.coordinator.transcriptImagePreview.onUnavailable = onTranscriptImageUnavailable
@@ -191,8 +200,7 @@ struct AgentTerminalView: NSViewRepresentable {
     /// A real monospace font (SwiftTerm's default lacks many glyphs). Prefers an installed Nerd Font so
     /// powerline / git prompt icons render; falls back to SF Mono, then Menlo. CoreText still cascades
     /// to a Nerd Font for individual missing glyphs if one is installed under any family name.
-    static let terminalFont: NSFont = {
-        let size: CGFloat = 12.5
+    static func terminalFont(size: CGFloat) -> NSFont {
         // Homebrew's nerd-font casks register families as "<Name> Nerd Font Mono"; the manual
         // nerd-fonts release also ships "<Name> NF". List both so either install is picked up. The
         // "Mono" variant is single-width (ideal for a terminal). Falls back to SF Mono, then Menlo.
@@ -203,7 +211,7 @@ struct AgentTerminalView: NSViewRepresentable {
             if let f = NSFont(name: name, size: size) { return f }
         }
         return .monospacedSystemFont(ofSize: size, weight: .regular)
-    }()
+    }
 
     private func applyColors(_ term: LocalProcessTerminalView, coordinator: Coordinator) {
         let bg = NSColor(background), fg = NSColor(foreground)
