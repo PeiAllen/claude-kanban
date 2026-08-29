@@ -1,5 +1,4 @@
 import Foundation
-import Dispatch
 
 private final class AgentObservationAttemptMarker: @unchecked Sendable {
     private let lock = NSLock()
@@ -140,39 +139,31 @@ extension OrchestraService {
         stopAgentObservation(card.id)
         runtime[card.id]?.agentObservationIdentity = identity
         _ = arm(card.id, .agentObservation) { token in
-            _Concurrency.Task.detached { [weak self, clock] in
+            _Concurrency.Task { [weak self, clock] in
                 var source: (any AgentObservationSource)? = firstSource
                 var failedAttempts = 0
                 while !_Concurrency.Task.isCancelled, let current = source {
                     let attempt = AgentObservationAttemptMarker()
-                    await withTaskCancellationHandler {
-                        guard !_Concurrency.Task.isCancelled else { return }
-                        do {
-                            try current.run { [weak self] raw in
-                                guard let self else { return }
+                    do {
+                        try await withTaskCancellationHandler {
+                            for try await raw in AgentObservationIngress(source: current).stream() {
+                                guard let self else { continue }
                                 attempt.markObserved()
-                                // `run` is a serial provider read loop. Back-pressure it until the actor
-                                // applies this event so a later turn-completed or disconnect cannot overtake
-                                // an earlier turn-started merely because two unstructured Tasks scheduled
-                                // in the opposite order.
-                                let applied = DispatchSemaphore(value: 0)
-                                _Concurrency.Task {
-                                    await self.receiveAgentObservation(
-                                        cardId: card.id,
-                                        identity: identity,
-                                        token: token,
-                                        raw: raw
-                                    )
-                                    applied.signal()
-                                }
-                                applied.wait()
+                                // The async sequence retains callback order and awaits each actor apply, so
+                                // a later completion or disconnect cannot overtake an earlier turn start.
+                                await self.receiveAgentObservation(
+                                    cardId: card.id,
+                                    identity: identity,
+                                    token: token,
+                                    raw: raw
+                                )
                             }
-                        } catch {
-                            // A closed/refused stream has one meaning for state: observation is unavailable.
-                            // The reconnect below is transport recovery, not provider-status polling.
+                        } onCancel: {
+                            current.shutdown()   // synchronously unblocks the dispatch-backed read
                         }
-                    } onCancel: {
-                        current.shutdown()   // synchronously unblocks the source's blocking receive
+                    } catch {
+                        // A closed/refused stream has one meaning for state: observation is unavailable.
+                        // The reconnect below is transport recovery, not provider-status polling.
                     }
 
                     if _Concurrency.Task.isCancelled { break }
