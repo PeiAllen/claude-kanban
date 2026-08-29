@@ -178,13 +178,18 @@ struct NeedsInputTests {
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
+        await env.svc.testSetTurnStatus(t.id, .running)
+        let oldPhaseDate = Date(timeIntervalSince1970: 1)
+        await env.svc.seedPhase(t.id, .live(.running), phaseChangedAt: oldPhaseDate)
 
         await env.svc.receiveAgentSignals(
             cardId: t.id,
             signals: [.init(sessionEpoch: epoch, turnID: "next-turn", kind: .turnStarted)]
         )
 
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+        let after = try #require(await card(env.svc, t.id))
+        #expect(after.pendingQuestion == nil)
+        #expect(after.phaseChangedAt > oldPhaseDate)
     }
 
     @Test("a Stop-drain delivery does not clear the declared question")

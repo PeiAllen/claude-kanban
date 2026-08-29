@@ -13,7 +13,8 @@ struct AgentObservationLifecycleTests {
     func liveLifecycle() async throws {
         let feed = ObservationTestFeed()
         let adapter = ObservationTestAdapter(feed: feed)
-        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let clock = TestClock()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]), clock: clock)
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc,
@@ -50,6 +51,8 @@ struct AgentObservationLifecycleTests {
         try await pollUntil("disconnect to make observation unavailable") {
             await state(env.svc, card.id)?.turnStatus == .unavailable
         }
+        await clock.parked(1, deadlineAtLeast: .milliseconds(250))
+        clock.advance(by: .milliseconds(250))
         try await pollUntil("observer to reconnect with a fresh source") {
             feed.source(at: 1)?.isStarted == true
         }
