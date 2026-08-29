@@ -51,10 +51,13 @@ struct AgentObservationLifecycleTests {
         try await pollUntil("disconnect to make observation unavailable") {
             await state(env.svc, card.id)?.turnStatus == .unavailable
         }
-        await clock.parked(1, deadlineAtLeast: .milliseconds(250))
-        clock.advance(by: .milliseconds(250))
         try await pollUntil("observer to reconnect with a fresh source") {
-            feed.source(at: 1)?.isStarted == true
+            // The service clock also owns unrelated debounce/timeout sleepers, so waiting for an
+            // undifferentiated parked sleeper can advance before the reconnect sleep exists. Advance
+            // inside convergence instead: whichever poll follows the reconnect's park releases it.
+            clock.advance(by: .milliseconds(250))
+            await _Concurrency.Task.yield()
+            return feed.source(at: 1)?.isStarted == true
         }
         let second = try #require(feed.source(at: 1))
         second.emit(.rpcNotification(
