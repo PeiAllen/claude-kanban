@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import OrchestraCore
+import TestSupport
 
 @Suite struct HandleHookTests {
     private func state(_ service: OrchestraService, _ id: UUID) async -> AgentState? {
@@ -180,6 +181,43 @@ import Foundation
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting(.init(resume: .init())))
     }
 
+    @Test("a provider SessionStart observed before the live landing survives the readiness handoff")
+    func sessionStartBeforeLiveLanding() async throws {
+        let adapter = HookSignalTestAdapter(capabilities: .claudeCode)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await env.svc.spawn(
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "hook-pre-live", agentId: adapter.id)
+        )
+        try await pollUntil("launch readiness waiter to register") {
+            await env.svc.reconcile()
+            return await env.svc.hasReadinessWaiter(card.id)
+        }
+        let launching = try #require(await env.svc.store.get(card.id))
+        let epoch = launching.sessionEpoch
+        #expect(launching.phase.kind == .launching)
+        #expect(launching.agentSessionId == "hook-session")
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "session", payload: .object([
+                "session_id": .string("hook-session"),
+                "source": .string("startup"),
+            ]))
+        )
+        try await env.svc.report(
+            card.id,
+            StatusReport(sessionSource: "startup"),
+            observedEpoch: epoch
+        )
+        try await pollUntil("provider-confirmed launch to apply its buffered waiting state") {
+            await state(env.svc, card.id)?.turnStatus == .waiting()
+        }
+
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
+    }
+
     @Test("hook observations are fenced by both launch epoch and current harness session")
     func hookPayloadIdentityFences() async throws {
         let adapter = HookSignalTestAdapter()
@@ -274,7 +312,11 @@ private struct HookSignalTestAdapter: Adapter {
     let icon = "bolt"
     let bin = "fake-hook-agent"
     let enabled = true
-    let capabilities = AgentCapabilities.stub
+    let capabilities: AgentCapabilities
+
+    init(capabilities: AgentCapabilities = .stub) {
+        self.capabilities = capabilities
+    }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1")] }
     func newSessionId() -> String? { "hook-session" }

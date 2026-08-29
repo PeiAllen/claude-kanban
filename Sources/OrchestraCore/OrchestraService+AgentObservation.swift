@@ -55,7 +55,6 @@ extension OrchestraService {
     ) async {
         guard let observedEpoch,
               let card = await store.get(cardId),
-              card.phase.kind == .live,
               card.sessionEpoch == observedEpoch,
               let adapter = try? registry.get(card.agentId)
         else { return }
@@ -64,11 +63,22 @@ extension OrchestraService {
             sessionEpoch: observedEpoch,
             harnessSessionId: card.agentSessionId
         )
-        await submitAgentSignals(
-            adapter.agentSignals(from: raw, context: context),
-            cardId: card.id,
-            context: context
-        )
+        let signals = adapter.agentSignals(from: raw, context: context)
+        guard !signals.isEmpty else { return }
+
+        switch card.phase.kind {
+        case .live:
+            await submitAgentSignals(signals, cardId: card.id, context: context)
+        case .launching, .relaunching:
+            guard ensureRuntime(for: card) else { return }
+            if runtime[card.id]?.pendingAgentSignals?.context == context {
+                runtime[card.id]?.pendingAgentSignals?.signals.append(contentsOf: signals)
+            } else {
+                runtime[card.id]?.pendingAgentSignals = .init(context: context, signals: signals)
+            }
+        default:
+            return
+        }
     }
 
     /// Make the structured source match the card's current live session. Repeated calls with the same
@@ -99,15 +109,24 @@ extension OrchestraService {
             return
         }
         if endpoint.isPushOnly {
+            let pending = runtime[card.id]?.pendingAgentSignals
             stopAgentObservation(card.id)
             runtime[card.id]?.agentObservationIdentity = identity
-            // Hooks do not replay a provider snapshot on bind. A reconstructed Claude source therefore
-            // starts unavailable until its next exactly-correlated hook establishes current observation.
-            await submitAgentSignals(
-                [.init(sessionEpoch: card.sessionEpoch, kind: .observationLost)],
-                cardId: card.id,
-                context: .init(sessionEpoch: card.sessionEpoch, harnessSessionId: sessionId)
+            let context = AgentSignalContext(
+                sessionEpoch: card.sessionEpoch,
+                harnessSessionId: sessionId
             )
+            if let pending, pending.context == context {
+                await submitAgentSignals(pending.signals, cardId: card.id, context: context)
+            } else {
+                // Hooks do not replay a provider snapshot on bind. A reconstructed Claude source therefore
+                // starts unavailable until its next exactly-correlated hook establishes current observation.
+                await submitAgentSignals(
+                    [.init(sessionEpoch: card.sessionEpoch, kind: .observationLost)],
+                    cardId: card.id,
+                    context: context
+                )
+            }
             return
         }
         guard let firstSource = adapter.makeObservationSource(
@@ -238,6 +257,7 @@ extension OrchestraService {
     private func stopAgentObservation(_ id: UUID) {
         disarm(id, .agentObservation)
         runtime[id]?.agentObservationIdentity = nil
+        runtime[id]?.pendingAgentSignals = nil
     }
 
     /// Route every source through the card-owned queue before touching durable state. The apply closure

@@ -63,6 +63,15 @@ struct CardRuntime {
     let agentObservationCoordinator = AgentObservationCoordinator()
     var agentObservationIdentity: AgentObservationIdentity?
 
+    /// Provider observations that arrived during the narrow readiness handoff before the stepper
+    /// published `.live`. These are normalized source facts, not a second effective-state snapshot;
+    /// the live landing drains them through the same coordinator/reducer as every later observation.
+    struct PendingAgentSignals: Sendable {
+        let context: AgentSignalContext
+        var signals: [AgentSignal]
+    }
+    var pendingAgentSignals: PendingAgentSignals?
+
     // MARK: - Readiness
 
     /// The inline-readiness waiter (launch/relaunch bring-up). Token-tagged per waiter
