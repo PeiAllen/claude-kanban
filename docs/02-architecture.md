@@ -441,8 +441,9 @@ metadata only: it discovers the session and reports context, model, and coarse a
 
 `humanNeed` describes the provider's current request and is not itself a second phase. The separate,
 durable `pendingQuestion` records a task-authored question. `Task.requiresHuman` is their pure OR, so an
-ordinary `waiting` turn is not a Needs You reason. `pendingQuestion` clears only when an identified next
-turn starts or when a completed session is replaced; reconnecting the same session, provider resolution,
+ordinary `waiting` turn is not a Needs You reason. `pendingQuestion` clears only when a positively
+identified **distinct** next turn starts, including `running → running`, or when a completed session is
+replaced; reconnecting the same session, provider resolution,
 opening the harness, sending a message, and inbox delivery leave it alone.
 
 This is a **two-way** channel. Agent → Orchestra carries metadata and provider observations; the current

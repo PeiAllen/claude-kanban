@@ -690,8 +690,9 @@ until the next turn. **F2 wake + the conclusion-watch have now landed too** (PR 
 block until a watched child concludes, with each conclusion coalescing into the parent's inbox and waking
 it — the reactive fan-out. **F1 resume-in-card has now landed too** (PR C3, below): a card resumes into a
 fresh process with clean context, seeded with an authored handoff/fork context folded together with its
-pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**. The
-Codex **send-keys wake (C4)** has since landed too (below), the **`handoff` Command (D1)** that *calls*
+pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**. Codex
+now wakes an ordinary waiting card through a resume-seed relaunch and drains a busy turn through its Stop
+hook; the **`handoff` Command (D1)** that *calls*
 the F1 seam shipped the first of the topology surfaces (below), and the new-card **fork / fan-out
 start-actions + the Handoff/Send card actions** have now landed as well (**D3**, below) — folding an
 authored `SpawnInput.seed` ahead of a new card's prompt — so **all four topologies are driveable from the
