@@ -10,11 +10,11 @@ import OrchestraUI
 ///   • **Read** — a `capture`-backed scroll render of the agent pane (D1: a non-attaching, size-capped
 ///     `capture-pane` scrape; ugly but zero-attach and sizing-safe) plus the live status pill / context
 ///     gauge / agent state from the board event stream (the header already carries status+ctx; this tab
-///     surfaces an ordinary wait or provider human need as an actionable banner).
+///     surfaces an ordinary wait or human-needed state as an actionable banner).
 ///   • **Steer** — a "Message the agent" bar → `send` (queued to the inbox, drained at turn-end) with a
 ///     constrained key row → `send-keys` (D2: Esc/↵/arrows/y/n/^C — no live attach, no resize pressure).
-///   • **Gates** — surfaced as Needs-You (M3), not here: a waiting-on-permission card shows a banner
-///     pointing at that queue. This tab deliberately does NOT reimplement approve/deny.
+///   • **Gates** — surfaced as Needs-You (M3), not here: any human-needed card shows a banner pointing
+///     at that queue. This tab deliberately does NOT reimplement approve/deny.
 ///   • **Take Over** — the explicit **Take Over Agent Terminal** button (the ONLY attach path) presents
 ///     T4's `AgentTakeoverView` full-screen under the exclusive owner lease.
 ///
@@ -58,10 +58,7 @@ struct AgentTab: View {
     }
 
     private var bannerKind: AgentBannerKind? {
-        if task.agentState?.humanNeed == .permission { return .permission }
-        if task.agentState?.humanNeed != nil { return .input }
-        if task.workInFlight == false { return .waiting }
-        return nil
+        agentBannerKind(for: task)
     }
 
     /// The one attach path (T4). Everything above is non-attaching; this is the deliberate, explicit door
@@ -89,9 +86,22 @@ struct AgentTab: View {
 
 // MARK: - Wait banner (status → Needs You)
 
-/// A compact banner surfacing *why* the card is waiting. Gates live in the Needs-You queue (M3); this only
-/// points there — it never renders approve/deny.
-private enum AgentBannerKind { case permission, input, waiting }
+/// A compact banner surfacing why the card needs attention or is waiting. Gates live in the Needs-You
+/// queue (M3); this only points there — it never renders approve/deny.
+/// This is an ephemeral display classification. `Task.requiresHuman` remains the sole membership fact;
+/// a provider subtype only refines the copy after that membership decision.
+enum AgentBannerKind: Equatable { case permission, input, humanRequired, waiting }
+
+func agentBannerKind(for task: Task) -> AgentBannerKind? {
+    if task.requiresHuman {
+        switch task.agentState?.humanNeed {
+        case .permission?: return .permission
+        case .input?: return .input
+        case .unspecified?, nil: return .humanRequired
+        }
+    }
+    return task.workInFlight == false ? .waiting : nil
+}
 
 private struct WaitBanner: View {
     let kind: AgentBannerKind
@@ -99,14 +109,15 @@ private struct WaitBanner: View {
 
     private var sem: SemColor {
         switch kind {
-        case .permission: return theme.amber
-        case .input, .waiting: return theme.blue
+        case .permission, .input, .humanRequired: return theme.amber
+        case .waiting: return theme.blue
         }
     }
     private var icon: String {
         switch kind {
         case .permission: return "lock.shield.fill"
         case .input: return "text.bubble.fill"
+        case .humanRequired: return "person.crop.circle.badge.exclamationmark"
         case .waiting: return "person.crop.circle.badge.questionmark"
         }
     }
@@ -114,15 +125,18 @@ private struct WaitBanner: View {
         switch kind {
         case .permission: return "Needs your approval"
         case .input: return "Needs your input"
+        case .humanRequired: return "Needs your attention"
         case .waiting: return "Waiting on you"
         }
     }
     private var detail: String {
         switch kind {
         case .permission:
-            return "The agent is blocked on a permission. Open its harness to resolve it."
+            return "The agent is blocked on a permission. Open Harness to resolve it."
         case .input:
-            return "The agent opened an interactive question. Open its terminal to answer it."
+            return "The agent opened an interactive question. Open Harness to answer it."
+        case .humanRequired:
+            return "A response is waiting for you. Open Harness to review and respond."
         case .waiting:
             return "The agent finished its turn and is waiting. Steer it below, or take over."
         }

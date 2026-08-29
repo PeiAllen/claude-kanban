@@ -110,6 +110,47 @@ final class IOSAppTests: XCTestCase {
         }
     }
 
+    // MARK: - Agent human-required banner
+
+    private func agentBannerTask(
+        phase: Phase,
+        pendingQuestion: PendingQuestion? = nil
+    ) -> Task {
+        Task(
+            title: "banner", pendingQuestion: pendingQuestion,
+            repo: "/repo", branch: "feat/banner", cwd: "/repo/.wt/banner",
+            model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+            order: 0, phase: phase, initialPrompt: "banner"
+        )
+    }
+
+    func testRunningPendingQuestionUsesHumanRequiredBanner() {
+        let task = agentBannerTask(
+            phase: .live(.running),
+            pendingQuestion: PendingQuestion(text: "Which base?", declaredAt: .now)
+        )
+
+        XCTAssertTrue(task.requiresHuman)
+        XCTAssertEqual(agentBannerKind(for: task), .humanRequired)
+    }
+
+    func testWaitingPendingQuestionUsesHumanRequiredBanner() {
+        let task = agentBannerTask(
+            phase: .live(.waiting),
+            pendingQuestion: PendingQuestion(text: "Which base?", declaredAt: .now)
+        )
+
+        XCTAssertTrue(task.requiresHuman)
+        XCTAssertEqual(agentBannerKind(for: task), .humanRequired)
+    }
+
+    func testOrdinaryWaitingUsesWaitingBanner() {
+        let task = agentBannerTask(phase: .live(.waiting))
+
+        XCTAssertFalse(task.requiresHuman)
+        XCTAssertEqual(agentBannerKind(for: task), .waiting)
+    }
+
     func testDiffBaselinesGateParentOnStackedCards() {
         // §3 Diff: Parent only appears for a stacked card carrying a parentBranch.
         XCTAssertEqual(diffBaselines(parentBranch: nil), [.working, .branch])

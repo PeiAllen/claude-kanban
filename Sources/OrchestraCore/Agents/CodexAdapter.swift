@@ -169,9 +169,9 @@ public struct CodexAdapter: Adapter {
                 kinds = [.turnStarted]
                 turnID = id
             case "turn/completed":
-                guard let id = params["turn"]?["id"]?.stringValue, !id.isEmpty else { return [] }
                 kinds = [.turnCompleted()]
-                turnID = id
+                let id = params["turn"]?["id"]?.stringValue
+                turnID = id?.isEmpty == false ? id : nil
             case "thread/status/changed":
                 kinds = reconciliations(from: params["status"])
                 turnID = nil

@@ -175,6 +175,38 @@ struct AgentSignalMappingTests {
         ) == [.init(sessionEpoch: epoch, turnID: "turn-1", kind: .turnCompleted())])
     }
 
+    @Test("Codex current-thread malformed completion loses observation through the coordinator")
+    func codexMalformedCompletionLosesObservation() async {
+        let adapter = CodexAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
+
+        for turn in [
+            JSONValue.object([:]),
+            .object(["id": .string("")]),
+        ] {
+            let coordinator = AgentObservationCoordinator()
+            let state = MappedAgentState()
+            let signals = adapter.agentSignals(
+                from: .rpcNotification(
+                    method: "turn/completed",
+                    params: .object(["threadId": .string("thread-1"), "turn": turn])
+                ),
+                context: context
+            )
+
+            #expect(signals == [.init(sessionEpoch: epoch, kind: .turnCompleted())])
+            await coordinator.submit(
+                scope: context,
+                signals: [.init(sessionEpoch: epoch, turnID: "turn-1", kind: .turnStarted)]
+            ) { await state.apply($0, epoch: epoch) }
+            await coordinator.submit(scope: context, signals: signals) {
+                await state.apply($0, epoch: epoch)
+            }
+
+            #expect(await state.snapshot() == AgentState(turnStatus: .unavailable))
+        }
+    }
+
     @Test("Codex hooks do not compete with app-server agent state")
     func codexHooksAreStateSilent() {
         let adapter = CodexAdapter()
@@ -308,5 +340,24 @@ struct AgentSignalMappingTests {
         #expect(adapter.agentSignals(
             from: .rpcNotification(method: "turn/started", params: other), context: context
         ).isEmpty)
+        #expect(adapter.agentSignals(
+            from: .rpcNotification(
+                method: "turn/completed",
+                params: .object(["threadId": .string("thread-2"), "turn": .object([:])])
+            ),
+            context: context
+        ).isEmpty)
     }
+}
+
+private actor MappedAgentState {
+    private var state = AgentState(turnStatus: .unavailable)
+
+    func apply(_ signals: [AgentSignal], epoch: Int) {
+        for signal in signals {
+            _ = AgentStateReducer.apply(signal, to: &state, currentSessionEpoch: epoch)
+        }
+    }
+
+    func snapshot() -> AgentState { state }
 }
