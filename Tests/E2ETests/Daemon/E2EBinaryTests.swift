@@ -143,11 +143,12 @@ struct E2EBinaryTests {
         // Non-blocking spawn (PR4b Task 3): the card is `.creatingWorktree`/`.launching` until the daemon's
         // reconcile loop cuts the worktree + brings the session up + confirms readiness (via the N=3
         // fallback — the fake agent fires no SessionStart hook). `exec` is gated until the card is `.live`,
-        // so poll the OBSERVABLE board state until the card reads `running` (was a 75×200ms usleep loop).
-        try await pollUntil("card \(shortId) reaches .live(.running)", timeout: .seconds(60)) {
+        // so poll the OBSERVABLE board state until its provider status reads `unavailable` (was a
+        // 75×200ms usleep loop).
+        try await pollUntil("card \(shortId) reaches .live(.unavailable)", timeout: .seconds(60)) {
             let listed = try? cli(["list"], ctlSock: fx.ctlSock)
             let out = listed?.stdout ?? ""
-            return out.contains(shortId) && out.lowercased().contains("running")   // list renders the phase title-cased ("Running")
+            return out.contains(shortId) && out.lowercased().contains("unavailable")   // list renders the phase title-cased ("Unavailable")
         }
         let sessions = try cli(["sessions", shortId, "--json"], ctlSock: fx.ctlSock)
 
