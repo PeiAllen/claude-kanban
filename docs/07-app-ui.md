@@ -215,6 +215,10 @@ stop waste — never merely because something is interesting or in progress. The
 and why the set is closed live in
 [Design decisions § The attention system](09-design-decisions.md#the-attention-system).
 
+The provider-human branch of that fold is one reason: `Task.requiresHuman`, the non-persisted OR of a
+current `AgentState.humanNeed` and a durable `pendingQuestion`. Permission, input, and unspecified need
+change the label, not membership or priority; an ordinary `waiting` card produces no Needs You reason.
+
 The same fold renders at four places, differing only in *subject*:
 
 | Surface | Subject | Shows |
@@ -231,7 +235,8 @@ twice on one line, by the eye's tint and inside the chip's count: deliberate, be
 amber chip, so the scan rule is unaffected. **Absence is information**: a quiet card renders no chip at
 all, which is why there is no empty or "OK" state to read past.
 
-One consequence of scoping the stall clock to the card and its reviewers (and not its descendants) is
+The current per-card quiescence stall row is a compatibility attention rule, so one consequence of scoping
+its clock to the card and its reviewers (and not its descendants) is
 that amber can **move** as a tree winds down: a root already quiet past the threshold ambers first, and
 once its children have been quiet that long too the amber settles onto them while the root switches to
 the rollup. Both readings are true when they appear — the root really had been silent that long — but
@@ -240,7 +245,8 @@ it's worth knowing the amber relocating downward is the system converging, not f
 Anything time-derived here (a card stalls by going *quiet* past a threshold) needs a clock, not a
 daemon message — so each card, and the drill header, runs **one** `TimelineView` above all of its
 surfaces. A per-line schedule would let L1 read "stalled 13m" while the same card's subtree count still
-claimed nobody needed you.
+claimed nobody needed you. The planned root-level watchdog — a root in Plan or Implementation whose
+members are all no longer `workInFlight` — is not implemented yet.
 
 ## The spawn sheet
 
@@ -285,7 +291,7 @@ Spawning shows a toast on success or failure and closes the sheet on success.
 
 Selecting a card opens the **inspector**, a resizable right-hand sidebar (default 392 pt, width
 persisted; drag the left edge to resize). A **live** card shows the agent chrome; a **dead** card shows
-the [Recovery panel](#recovery-panel) instead.
+the [Recovery panel](#onboarding-settings-recovery-and-popovers) instead.
 
 The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view). Immediately right
@@ -333,8 +339,8 @@ Send/Handoff/Fork buttons were removed in favor of it plus the natural-language 
   each time the popover opens. Desktop and iOS show immutable `From …` provenance above every editable
   body — Human, the sending Card title plus short id, Orchestra, or the legacy Unknown fallback — including
   while the desktop editor is open; editing changes the body, not its source. This is human-facing metadata;
-  the model delivery string uses its own operator-relayed header. Messages are delivered at the agent's next
-  turn-end.
+  the model delivery string uses its own operator-relayed header. The shipped Stop-drain claim/lease/receipt
+  path is transitional and state-silent: delivery never changes `AgentState` or clears `pendingQuestion`.
 
 **Handoff**, **Fork**, and board **Fan-out** are no longer buttons — those moves are driven by talking to
 the agent (which calls the `handoff` / `spawn` / `batch-spawn` MCP tools), where an exploratory fork now
@@ -590,15 +596,17 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
 
 ### Notifications
 
-Orchestra raises a macOS notification only when an agent needs *your* attention, on a **three-trigger
-attention model** — each trigger independently configured, surfaced as a pane in **Settings** (the
+Orchestra raises a macOS notification on a small set of attention edges. The **human-required** edge is
+one category, independent of whether its current source is a provider permission, provider input, or a
+declared question; each trigger is independently configured, surfaced as a pane in **Settings** (the
 General tab's Notifications section) and backed by `NotificationPrefs` + `AgentNotifier`:
 
 | Trigger | Raised on | Default scope | Default sound |
 |---|---|---|---|
-| 🔐 **Permission** | the agent is blocked on tool approval | **Always** — you're blocking it | Hero |
-| 🙋 **Needs you** | the agent genuinely ended its turn and is waiting on you | **Background only** — most frequent, so don't nag while you're watching | Submarine |
+| 🙋 **Human action needed** | `Task.requiresHuman` changes `false → true` | **Always** — you are blocking it | Hero |
 | 💀 **Died** | the card's session died | **Always** — rare but important | Basso |
+| 📪 **Delivery stuck** | a delivery-stuck edge | **Background only** | Submarine |
+| 🚧 **Merge stalled** | a merge-request-stalled edge | **Background only** | Submarine |
 
 Each trigger carries a **scope dial** ({`off` · `background` · `always`}) and a per-trigger **system
 sound** (Default / None / one of the 14 built-in macOS sounds), the sound set directly on the
@@ -608,12 +616,12 @@ notification's `content.sound` so there is no separate audio player. The firing 
 `[.banner, .sound]` so an `Always` alert still surfaces (with its configured sound, or silently when the
 sound pref is None) in the foreground, which macOS would otherwise suppress.
 
-The load-bearing subtlety is **automatic-resume suppression.** A Claude `Stop` whose payload carries a
-non-empty `background_tasks` or `session_crons` array closes the visible top-level turn, but also records
-the provider's commitment to resume. The Card therefore displays `Waiting` while `workInFlight` remains
-true, so no Needs-you alert or inbox wake fires. A later Stop with no such commitment becomes an ordinary
-wait and alerts normally. Codex reports turn boundaries through app-server and currently has no equivalent
-automatic-resume signal; its PermissionRequest hook still opens the same independent permission alert.
+The load-bearing subtlety is **the derived human edge.** A Claude `Stop` whose payload carries a non-empty
+`background_tasks` or `session_crons` array records the provider's commitment to resume, so
+`workInFlight` remains true. Neither that automatic-resume wait nor an ordinary wait creates a
+human-required notification by itself. The notifier fires only when `Task.requiresHuman` rises from false
+to true; a provider-source swap while it stays true is quiet. Codex reports both turn boundaries and its
+provider-human state through the app server, not through a PermissionRequest hook.
 
 ## The iPhone companion
 
@@ -649,10 +657,12 @@ all tinted from the attention fold, so an amber chip and an amber eye are one fa
 **Needs You.** The [Needs You](#attention-the-scan-rule) tab is fed by the **one** attention fold —
 `ownAttention`, the same definition the card chips use — so a card appears there exactly when it needs a
 human, and each row lists the card's own reasons with their labels; the most-blocked reason drives the
-row's colour and its primary action (Approve/Deny, a quick reply, Recover, or Open). Because membership is
-that single contract, a card that is merely idle between turns no longer sits in the queue — it surfaces
-only once it declares a question, requests a merge a human must grant, or goes quiescent past the stall
-threshold.
+row's colour and primary action. For the single `.humanRequired` reason, membership is
+`Task.requiresHuman` and the primary action is always **Open Harness**; a permission's guarded
+Approve/Deny controls remain secondary conveniences. Because membership is that single contract, a card
+that is merely idle between turns no longer sits in the queue — it surfaces only when its provider has a
+current human need, it declares a question, requests a merge a human must grant, dies, or reaches the
+current compatibility stall threshold.
 
 **Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
 client its own current-window *selection* but never an independent per-window *size* — so a narrow phone

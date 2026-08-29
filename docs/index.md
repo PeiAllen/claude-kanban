@@ -14,8 +14,8 @@ this manual is regenerated from.
 1. [**Concepts**](01-concepts.md) — What Orchestra is, what a *card* is, the columns and lifecycle, the
    four card modes, and the vocabulary used throughout the rest of the manual.
 2. [**Architecture**](02-architecture.md) — The background daemon, the unix-socket control plane, the
-   three clients (app / CLI / MCP), and the two-way agent report channel. How a command flows end to
-   end.
+   three clients (app / CLI / MCP), provider observation, metadata, and the transitional two-way hook
+   channel. How a command flows end to end.
 3. [**Data model**](03-data-model.md) — The `Task` (card) schema field by field, statuses and dead
    reasons, persistence and schema migration, configuration, on-disk paths, errors, and events.
 4. [**Cards, worktrees & sessions**](04-cards-worktrees-sessions.md) — The internals: git worktree

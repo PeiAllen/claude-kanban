@@ -125,10 +125,10 @@ Two mechanisms make the round trip safe:
 
 Drift between a live session's name and its card is therefore accepted and heals at the next relaunch.
 
-**Codex push is deferred.** The app-server `thread/name/set` call that would push a title into a live Codex
-thread is not built, because app-server integration has not merged; Codex cards are named on the board and
-gain session-name push when that lands. Nothing here is Claude-specific by design — the mirror is inert for
-Codex simply because Codex reports no session name.
+**Codex title push is deferred.** The app-server observer now supplies Codex runtime status and provider
+human need, but the separate `thread/name/set` call that would push a board title into a live Codex thread
+is not built. Codex cards are named on the board and gain session-name push when that lands. Nothing here
+is Claude-specific by design — the mirror is inert for Codex simply because Codex reports no session name.
 
 Splitting `titleProvisional` was the precondition for all of it. That one flag meant both "the title is a
 default" and "this card has never had its first genuine prompt", and only the second meaning is
@@ -158,24 +158,31 @@ what each card is for when every agent is idle.
 
 ### The status wire cutover: `Phase.live(AgentState)`
 
-Lifecycle and agent status share one persisted sum type: `Phase.live` carries the complete current
-`AgentState`, while every non-live phase carries none. This keeps invalid combinations unrepresentable —
-a dead or launching Card cannot retain a stale permission request — without making Core interpret Claude
-or Codex vocabulary. Adapters emit provider-neutral `AgentSignal`s, one generic reducer owns the live
-snapshot, and `transition()` remains the sole writer of `phase`.
+Lifecycle and current provider state are distinct. `Task.phase` remains the lifecycle authority, and its
+`live` case carries the current `AgentState`; every non-live phase discards that payload. This keeps a dead
+or launching card from retaining stale provider state without making Core interpret Claude or Codex
+vocabulary. Adapters emit provider-neutral `AgentSignal`s, one generic reducer owns the live snapshot, and
+`transition()` remains the sole writer of `phase`.
 
-`AgentState.turnStatus` has only `running`, `waiting(WaitingInfo)`, and `unavailable`. Running means a
-top-level harness turn is open; waiting means none is open; unavailable means Orchestra lacks current
-evidence. Permission/input requests and activity are independent fields, so a permission request does not
-pretend the turn ended. An automatic-resume marker on a wait means the provider still owns the next move.
-Inbox delivery therefore keys on `workInFlight == false`, while status UI reads only `turnStatus` and
-attention reads requests separately.
+`AgentState` holds `turnStatus`, optional activity, and optional
+`humanNeed: ProviderHumanNeed?` (`.permission`, `.input`, or `.unspecified`). A card enters `live` with
+`turnStatus: unavailable` until current provider evidence arrives. `running` means an identified top-level
+turn is open, `waiting` means the current provider says none is open, and `unavailable` means Orchestra
+lacks that proof. A provider human need is a display-only fact, not a phase; `Task.requiresHuman` is the
+non-persisted OR of its presence and the separate durable `pendingQuestion`. An ordinary wait is not a
+Needs You reason.
 
-`StatusReport` is now metadata/lifecycle-only; it has no `run` or `turnCompleted` field. The only
-compatibility is decode-time: both the old top-level `status`/`waitReason` shape and the intermediate
-`Phase.live(RunState)` shape preserve the live lifecycle but become `turnStatus: unavailable`. A required
-clean daemon restart then reconnects Codex and waits for fresh Claude hooks instead of guessing from stale
-persisted telemetry. The full mapping is in
+Codex's launch-local app-server observer is the only producer of Codex turn state and provider-human
+need. Its rollout tail supplies metadata only, and its SessionStart/Stop hooks supply orientation or the
+transitional inbox route, never status. Claude accepts only session- and prompt-correlated hook evidence;
+an exact OTLP interaction span is the missing-Stop fallback. A terminal event without required current
+identity fails closed to unavailable, while a positively stale terminal is ignored.
+
+`StatusReport` is metadata/lifecycle-only; it has no `run` or `turnCompleted` field. Decode-time
+compatibility preserves the live lifecycle while old status shapes and `activeRequests` become unavailable,
+then a clean daemon restart waits for fresh provider evidence instead of guessing from persisted telemetry.
+The shipped Stop-drain/lease/receipt inbox remains separate and state-silent: it does not create status or
+clear `pendingQuestion`. The full migration mapping is in
 [chapter 3](03-data-model.md#schema-migration--legacy-status-snapshots-become-live-but-unavailable).
 
 ### "Done" is not observable — success is agent-signalled, not inferred
@@ -225,29 +232,22 @@ line, and the card can surface it. The verb is set/replace with **no clear form*
 `needs-input` is the complement (the question that outlives the turn, and the only option for a backend
 with no such prompt), never a replacement.
 
-Retirement is keyed to **proof that the question is moot**, never to an intent. The first proof is the
-next normalized top-level turn starting from a non-running status. A permission approval resumes the
-same open turn, so request changes alone never clear a question. The second is a queued inbox batch being **handed back as a Stop
-continuation**, which is not redundant with the first: a Claude card given an injected answer that way
-resumes the same session with no `UserPromptSubmit`, and if it replies in prose it calls no tool either,
-so it may emit no separate turn-start hook.
+Retirement is keyed to **proof that the declaring turn is no longer current**, never to delivery intent.
+There are only two proofs: a positively identified **distinct next top-level turn** starts, or a completed
+session is replaced. The first rule applies even across `running → running`, so every prior turn detail and
+question retire before the new turn begins; a duplicate start for the same turn is a no-op. The second
+applies only once the prior session has completed. A same-session reconnect preserves the question.
 
-That second seam is keyed to the **claim** — the moment the payload is handed over — and the distinction
-is load-bearing in both directions. Keying it to the delivery *receipt* instead is wrong, because a
-stop-drain batch is confirmed on the Stop that **ends** the continuation turn, which is precisely when an
-agent that has run out of road declares its question: the receipt would erase the declaration a beat after
-it was made, on both backends. And the opposite rule — clear on any dispatch — is wrong for the relaunch
-path, where the seed is leased *before* the launch runs, so a failed launch would erase a question no
-agent ever saw. The relaunch path needs no seam of its own: its `.live` landing out of `.relaunching` is a
-completed session replacement, which is a third clear (alongside an id rollover and `/clear`), and those
-are generation-fenced so a dying session's late signal cannot erase what the incoming one declared.
-Nothing else clears it; selection cannot, because glancing at a question is not answering it.
+Nothing else clears it: provider permission/input resolution, opening or dismissing the harness, sending a
+message, old-turn completion, and the current Stop-drain claim or receipt all leave `pendingQuestion`
+unchanged. This keeps the existing inbox transport state-silent until its later native-delivery replacement
+and prevents a message that was merely offered, or a stale event, from erasing a declaration.
 
-Turn-starts now arrive on serial current-session sources: Claude's hook path or the Codex app-server
-observer. Both are fenced by Card epoch and provider session identity before the reducer clears the
+Turn starts arrive on serial current-session sources: Claude's correlated hook path or the Codex app-server
+observer. Both are fenced by card epoch and provider session identity before the reducer clears the
 question, so the old rollout-poll timestamp comparison no longer exists. `declaredAt` remains useful for
 attention display age and is persisted as fractional Unix seconds. The text and timestamp travel as one
-`PendingQuestion`, and a malformed persisted value drops only the question, never the Card.
+`PendingQuestion`, and a malformed persisted value drops only the question, never the card.
 
 ### Board animations pause when nobody is looking
 
@@ -653,8 +653,8 @@ The mechanisms that make the wholesale drop safe:
   each slot's epoch (epoch monotonicity is the store's stale-CAS safety; removing a slot would let
   a reopened card restart at epoch 1 and ABA-match a stale client). The `RolloutTailer` cursor is
   dropped at teardown, and bring-up seeds a fresh cursor at the rollout's post-kill EOF watermark —
-  a resumed/reopened card never replays rollout history into the seq-gated status funnel, whose
-  `lastSeq` the detach also reset.
+  a resumed/reopened card never replays rollout metadata into the seq-gated report path, whose
+  metadata cursor the detach also resets. Rollout replay cannot restore live status.
 - **`diffStatDebounce` is cancelled at teardown** like its twins (previously its only cleanup was
   its own self-clear, so an in-flight diffstat survived archive and recomputed against a dead card).
 
@@ -706,11 +706,20 @@ and global `AGENTS.md`, and the required launch argv is the provider-specific ad
 
 ### The durable inbox is the delivery SSOT: claim, then confirm
 
+This section records the **currently shipped, transitional** inbox transport. Its Stop-drain, wake,
+claim, lease, and receipt mechanics preserve durable text, but they are not a status authority: they do
+not emit `AgentSignal`, alter `AgentState`, infer provider human need, or clear `pendingQuestion`. Native
+best-effort provider delivery, handed-off/failed presentation, and reminders are later work, so none of
+the receipt terminology below promises that the model received or acted on a message.
+
 Delivery used to mean removal: `drain` took messages out of `inbox.json` and *then* handed them to a
 session. Every path removed before receipt, so a crash, a lost hook reply, or a dead session between
 those two steps lost the message silently — the queue was already empty and nothing retried.
 
-B1 lands the primitive for a new delivery model; the routes that carry it — the Stop-hook drain, the idle channel push, the relaunch seed — convert from remove-before-receipt to it across the PRs that follow, so this section describes the model, not yet the wired-through behavior. Under it, the inbox stays the source of truth until receipt is proven: a delivery path **claims** a FIFO batch —
+B1 lands the primitive for the current delivery model. The Stop-hook drain and relaunch seed convert from
+remove-before-receipt; the idle channel-push route remains a future capability seam, not current behavior.
+Under the shipped route, the inbox stays the source of truth until receipt is proven: a delivery path
+**claims** a FIFO batch —
 select + whole-message fit + lease + a fresh token, in ONE `Inbox.claim` actor call — and messages leave
 only through `confirm(token:)` on a route-specific receipt proof. One call, because a select/lease split
 races: two routes could claim the same message, and a render truncated after the select could confirm
@@ -980,14 +989,12 @@ suspends: it re-reads the queue first and the actor-local budget last, and emits
 subscriber ever observes a transient flip — which matters because B5b's tracker fires once on false→true and
 would send an irreversible push for a stuck state that never really existed.
 
-**The channel-push wake is built in the D increment, not on this ladder.** The Claude no-restart wake is a
-simple MCP server *push*: the wake empirics showed a correctly-configured `notifications/claude/channel`
-push autonomously wakes an idle interactive Claude at turn-end, so no daemon-side parked long-poll registry
-is needed. B's wake ladder therefore carries only the agent-agnostic rungs — CLI-wait defer,
-outstanding-lease defer, cold resume intent — and the channel route rides on top in D. `wakeTransport`'s
-`.controlChannel` case, the `claudeChannels` config switch, and the `DeliveryRoute.channelPush` lease flavor
-are the capability seam D routes on; they are inert here (no adapter reports `.controlChannel` yet), so the
-ladder never selects the channel rung.
+**The channel-push wake remains future, not on this ladder.** The observed Claude
+`notifications/claude/channel` behavior informed the capability seam, but no adapter currently reports
+`.controlChannel`. B's wake ladder therefore carries only the current agent-agnostic rungs — CLI-wait
+defer, outstanding-lease defer, and cold resume intent. `wakeTransport`'s `.controlChannel` case, the
+`claudeChannels` config switch, and the `DeliveryRoute.channelPush` lease flavor are inert until a later
+native delivery implementation selects them; the ladder never selects the channel rung today.
 
 Two smaller decisions ride along. The funnel's wake-on-live moves **below** the state broadcast rather than
 being detached: `wake` now records the cold resume intent inline (holding `deliveriesInFlight` across the
@@ -1082,7 +1089,7 @@ that (in some future path) both died and went stuck in one event still pushes th
 the stuck one — the banner can never disagree with the queue.
 
 **Merge-stall rides the identical seam.** `TreeStat.mergeStalled` — the merge-request loop's sticky give-up
-flag (its own rationale is [below](#branch-tree)) — means the same thing to a human as a delivery stuck ("this
+flag (its own rationale is [below](#tree-counters-daemon-observed-child-progress)) — means the same thing to a human as a delivery stuck ("this
 card is wedged, come look") from a different cause, so it surfaces through one stack, not a parallel one:
 `reason(for:)` returns `.mergeStalled` (🚧, below `.deliveryStuck`), and `currentStuckTrigger` treats it as the
 second stuck cause. It is read independent of the underlying `TreeState`, so a card that is both `.stale` and
@@ -1155,23 +1162,32 @@ generic quiescence test rather than a list of known failure modes: it subsumes u
 pairs, findings nobody consumed, silently-stopped agents, and forgotten declarations without naming any
 of them.
 
+This is the **current compatibility** per-card quiescence detector. The planned root-level watchdog is
+different and remains unimplemented: it will assess a root in Plan or Implementation only when every
+member is no longer `workInFlight`, then track root-level alert timing. The current detector must not be
+mistaken for that future orchestration rule.
+
 **The registry** (priority order — how hard-blocked the work is; the L1 chip shows the first and folds
 the rest into a `+N`):
 
 | # | Reason | Predicate | Label |
 |---|--------|-----------|-------|
 | 1 | dead | `phase == .dead` | "dead" |
-| 2 | permission | `phase.live.agentState.activeRequests` contains `.permission` | "permission" |
+| 2 | human required | `Task.requiresHuman` | "permission" / "input needed" / "action needed" / "question" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
-| 4 | needs input | `pendingQuestion != nil` | "question" |
-| 5 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
-| 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
+| 4 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
+| 5 | context critical | `ctxPct ≥ 85` | "ctx N%" |
+
+The human-required row is one category: `AgentState.humanNeed` and `pendingQuestion` are independent
+sources, but their non-persisted OR is the only membership test. A source swap while it remains true does
+not create a second alert, and a bare ordinary wait is not a row.
 
 Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent
 merges it (a grey ⏱, quiet — the owning agent's business, not yours), so only an **unowned** target
 routes to the human. It never degrades into a stall, because a declared state explains the quiet.
 
-**Stall is a conjunction of ways the quiet can be *explained*,** and each conjunct is a separate guard:
+**The current compatibility stall is a conjunction of ways the quiet can be *explained*,** and each
+conjunct is a separate guard:
 the card must be idle and *not human-paced*; its attached agents settled; nothing in the card, its
 reviewers, *or* its subtree holding queued work (a descendant with a pending delivery is imminently
 active, and must not let an ancestor announce "wave done"); no descendant active; no declared state
@@ -1234,32 +1250,23 @@ otherwise exempt it. The idle gate still applies, so a card that resumed running
 does not amber.
 
 **Two folds, one registry, all client-side** (`Attention` + `BoardStore+Attention`): **own** (a card's
-own reasons) and **subtree** (how many *descendants* hold at least one reason, self excluded). Mind the
-near-homonyms in `OrchestraUI` until the phone adopts this: **`Attention.Reason` / `AttentionSignal`**
-are this registry; **`AttentionReason` / `AttentionItem`** are the phone's older, separate queue in
-`NeedsYouQueue`. The eye
-tint is derived from the same fold rather than from phase, so an amber eye and an amber chip are the
-same fact — which also means a reviewer that asked a question or is nearly out of context now ambers the
-eye, where a phase-only mapping saw only "blocked or dead". Rendering is in
+own reasons) and **subtree** (how many *descendants* hold at least one reason, self excluded). The phone's
+`NeedsYouQueue` consumes that same `ownAttention` definition, so desktop chips, phone rows, and attached
+agent roll-ups agree on the one `humanRequired` reason. The eye tint is derived from the same fold rather
+than from phase, so an amber eye and an amber chip are the same fact — which also means a reviewer with a
+provider human need, a declared question, or near-critical context ambers the eye, where a phase-only
+mapping saw only "blocked or dead". Rendering is in
 [App UI § Attention](07-app-ui.md#attention-the-scan-rule).
 
 **Adding a row:** check it passes the contract; check it is derivable from broadcast state (if not, the
 *field* is a daemon change first — the reason stays client-side); then add a predicate, a label, and a
-priority slot. It flows into both folds and every desktop surface automatically. The phone's Needs You
-queue is NOT yet fed by this registry — it still derives its own older reason set in `NeedsYouQueue`, and
-adopting the fold is part of the iOS slice; until then a new row reaches the desktop only.
+priority slot. It flows into both folds and every client surface automatically.
 
-**One rung is still deliberately deferred, and it is one edit away.** The *detected* sibling of row 4 —
-an in-terminal choices box (Claude's `AskUserQuestion`), which blocks mid-turn exactly like a permission
-wait and self-clears by state — funnels to the same "question" amber. It is deferred because the daemon
-can't yet *detect* an open box, not because none exists: `AskUserQuestion` is real and bridged Claude
-sessions have it, but a probe couldn't confirm the daemon sees it — whether an open box fires a hook the
-control plane receives, and whether it renders in the tmux pane or on the claude.ai surface, are both
-unverified (a freshly-launched non-bridged CLI didn't even expose the tool, so there was nothing to
-observe). Codex has no equivalent — its approval prompt is already row 2. So row 4 ships on the declared
-verb alone until a detectable producer is confirmed; the natural place that lands is the agent-channels
-work (`orchestra://task/897d75` — "Redesign agent status and inbox delivery"), which reworks exactly the
-status/hook surface a box signal would ride.
+**Provider input is now part of the human-required row.** A strictly correlated Claude input event — such
+as `AskUserQuestion` or `ExitPlan` — maps to `.input`; an ambiguous blocking prompt maps to `.unspecified`.
+Codex maps current app-server approval/input flags the same way. Neither creates a request-specific
+attention category: `needs-input` remains supported for a durable question that outlives the turn, and all
+of these sources share the same Open Harness primary action.
 
 ### Whoever owns the scroll owns the pointer
 

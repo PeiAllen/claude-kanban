@@ -55,9 +55,11 @@ intercepts keys meant for the live agent terminal:
 - **Four card modes.** **Worktree** (isolated git branch), **Borrowed/Freeform** (run in any existing
   directory you point at), **Scratch** (a fresh throwaway dir Orchestra makes and deletes), and a
   **Read-only** access mode that lets an agent read/search/`git` but physically cannot write.
-- **Live state, never screen-scraped.** Cards show context-window %, current activity, model, and
-  status — sourced per agent through a normalized telemetry seam: Claude Code **pushes** via a hooks
-  channel, while Codex is **tailed** from its rollout JSONL by the daemon. Never screen-scraped.
+- **Live state, provider-owned.** A card's lifecycle stays separate from its current provider state:
+  `running`, `waiting`, or `unavailable`. Claude supplies strictly correlated hook observations (with a
+  narrow OTLP fallback), Codex supplies app-server thread/turn state, and a newly live card remains
+  unavailable until current evidence arrives. The Codex rollout tail is metadata only; neither it nor
+  inbox delivery manufactures status.
 - **See the diff on the board.** Each git card shows a live `+N −M / k files` diffstat in its footer,
   and the inspector has a read-only **Diff** view (difftastic-rendered when `difft` is installed, git's
   colored diff otherwise; a working / branch baseline toggle) — so you can review an agent's changes
@@ -133,19 +135,21 @@ flowchart TB
   TMUX --- CLAUDE["Claude Code agent"]
   TMUX --- CODEX["Codex agent"]
 
-  CLAUDE ==>|"PUSH — statusLine + hooks<br/>orchestra _report → hook RPC"| UDS
-  CODEX -->|"writes"| ROLL[("Codex rollout .jsonl")]
+  CLAUDE ==>|"PUSH — metadata + structured hooks<br/>orchestra _report → hook RPC"| UDS
+  CODEX --- AS["codex app-server"]
+  AS ==>|"current thread / turn events"| SVC
+  CODEX -->|"writes metadata"| ROLL[("Codex rollout .jsonl")]
   SVC -.->|"TAIL — pollTelemetry + RolloutTailer"| ROLL
 ```
 
 The app, the CLI, and the MCP bridge are all `ControlClient`s speaking the same JSON-RPC over the
 same user-only socket, so what the three can do can never drift — the CLI's verbs and the MCP tool
-list are generated from one `CommandRegistry`. The agents report back by *different* mechanisms, and
-that asymmetry is deliberate: Claude Code **pushes** (its statusLine and hooks shell out to
-`orchestra _report`, which sends one typed `hook` RPC back over the same socket), while Codex is
-**tailed** (it pushes nothing; the daemon polls its rollout JSONL). Both land as the same normalized
-telemetry, so nothing downstream branches on the agent. Terminals never cross this plane — SwiftTerm
-attaches to tmux directly.
+list are generated from one `CommandRegistry`. The agents report metadata by different mechanisms:
+Claude Code **pushes** through `orchestra _report`, while the daemon **tails** Codex rollout JSONL.
+Live turn and provider-human state follow a separate normalized path: Claude's current-session hooks and
+exactly correlated OTLP fallback feed it, while Codex's app-server observer feeds it. The generic reducer
+then owns the live snapshot, so no downstream consumer branches on the provider. Terminals never cross
+this plane — SwiftTerm attaches to tmux directly.
 
 - **`OrchestraCore`** — the shared library: all business logic (`OrchestraService`, `TaskStore`,
   `WorktreeManager`, `SessionManager`, `AgentRegistry`/`ClaudeCodeAdapter` + `CodexAdapter`, `PathResolver`,
@@ -222,4 +226,4 @@ how to pause or uninstall it.
 
 Backend (core + control plane + daemon + CLI + MCP) is the primary build target here and is fully
 unit-tested. The SwiftUI app sources match the Orchestra UI prototype; building the `.app` bundle
-requires Xcode + SwiftTerm. Current version: see [`Version.swift`](Sources/OrchestraCore/Version.swift).
+requires Xcode + SwiftTerm. Current version: see [`Version.swift`](Sources/OrchestraKit/Version.swift).

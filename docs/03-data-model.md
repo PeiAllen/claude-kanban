@@ -14,11 +14,11 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `id` | `UUID` | Identity. The tmux session is `orchestra-<id>`. |
 | `title` | `String` | The card's name, and the **SSOT** for it — derived at spawn from the card's own identity (branch → read-only target → prompt → directory) unless an explicit source set it. Pushed to the agent session as `--name` at every (re)launch. See [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot). |
 | `titleSource` | `TitleSource` | Where `title` came from: `branch` \| `attached` \| `prompt` \| `explicit`. `explicit` (a `spawn` title, `set-title`, or a mirrored in-session `/rename`) **pins** the title against every derived default. |
-| `awaitingFirstPrompt` | `Bool` | If `true`, this session has never received a genuine user prompt: it blank-launches with no positional and lands `waiting`. Set by a promptless spawn, `restart`, a blank `reopen`, and `SessionStart(clear)`; cleared by the first prompt. Lifecycle state, not a naming concept. A promptless (provisional) card is the human's first move, so it seeds [`humanPaced`](#the-task-card) `true` at launch — but the stall exemption keys on `humanPaced`, not this flag (which is sticky on Codex). |
+| `awaitingFirstPrompt` | `Bool` | If `true`, this session has never received a genuine user prompt. A blank launch has no positional prompt, and its live turn state remains `unavailable` until current provider evidence arrives. Set by a promptless spawn, `restart`, a blank `reopen`, and `SessionStart(clear)`; cleared by the first prompt. Lifecycle state, not a naming concept. A promptless (provisional) card is the human's first move, so it seeds [`humanPaced`](#the-task-card) `true` at launch — but the stall exemption keys on `humanPaced`, not this flag (which is sticky on Codex). |
 | `lastSessionName` | `String?` | The last session name seen for this card — the `--name` a launch pushed, or the last value the agent reported. The `session_name` mirror is a **delta** against this, so a live session echoing its launch name can't overwrite a newer title. |
-| `desc` | `String` | **Volatile** one-line blurb of what the agent is doing now, pushed by its hooks (pane-parse fallback). The report pipeline overwrites it every snapshot and `restart`/`/clear` blank it. |
+| `desc` | `String` | **Volatile** one-line blurb of what the agent is doing now, reported as metadata (Claude hooks or the Codex rollout tail; pane-parse fallback). The report pipeline overwrites it every snapshot and `restart`/`/clear` blank it. |
 | `note` | `String?` | **Durable** authored one-liner about what this card IS — e.g. `Wave 2/4 — lease/claim delivery`. Set only by `spawn(note:)` / `set-note`, never by telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it. See [desc vs note](09-design-decisions.md#desc-vs-note-volatile-status-vs-durable-narrative). |
-| `pendingQuestion` | `PendingQuestion?` | The agent's **declared** open question (`{text, declaredAt}`) — set by [`needs-input`](05-command-reference.md#registry-commands) when it ends a turn blocked on a decision only the card's owner can make. Set/replace only: the daemon retires it at proof the next turn started, when a queued batch is handed back as a Stop continuation, or after a completed session replacement. `declaredAt` supplies display age; the two fields travel as one value. nil ⇒ no open question. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
+| `pendingQuestion` | `PendingQuestion?` | The agent's **declared** open question (`{text, declaredAt}`) — set by [`needs-input`](05-command-reference.md#registry-commands) when it ends a turn blocked on a decision only the card's owner can make. It clears only when an identified distinct next turn starts or when a completed session is replaced; a same-session reconnect, provider resolution, opening the harness, sending a message, and Stop-drain delivery do not clear it. `declaredAt` supplies display age; the two fields travel as one value. nil ⇒ no open question. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
 | `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **cache** derived from the git-config lineage store: `set-parent`, `spawn --base`, and converge write it; nil means the card has no parent link. |
@@ -33,15 +33,15 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `order` | `Int` | Sort position within the column. |
 | `phase` | `Phase` | The **persisted lifecycle SSOT**. `creatingWorktree` \| `launching` \| `live(AgentState)` \| `relaunching` \| `dead(DeadReason)` \| `archived(teardownComplete:)`. The `transition()` funnel is its sole writer; provider-neutral `AgentSignal`s reduce the value carried by `live`. |
 | `sessionEpoch` | `Int` | Monotonic per-card session generation, bumped on each (re)launch entry so a stale signal (a late hook, a liveness poll) from a superseded session is fenced out. |
-| `phaseChangedAt` | `Date` | When the lifecycle phase or live `TurnStatus` last changed — live activity/request detail does not reset it. Drives status-relative timers and terminal-dwell checks. |
+| `phaseChangedAt` | `Date` | When the lifecycle phase or live `TurnStatus` last changed — live activity or human-need detail does not reset it. Drives status-relative timers and terminal-dwell checks. |
 | `pendingSeed` | `String?` | Handoff/seeded-wake seed staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared on the `.live` landing (see [migration & persistence](#persistence-and-migration)). |
 | `pendingModel` | `String?` | A [`--model` re-seat](05-command-reference.md#the---model-re-seat) staged for the NEXT (re)launch (`restart`/`handoff`/`resume`), consumed+cleared on the `.live` landing exactly like `pendingSeed`. Separate from `model` because it is the **launch intent**, and it is the one thing `report()` cannot clobber: the report path owns `model` and is not epoch-fenced, so the *dying* session's last statusline would otherwise revert the override before the relaunch read it (see [migration & persistence](#persistence-and-migration) and [ch. 9](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence)). |
 | `deadReason` | `DeadReason?` | Set together with `phase = .dead(_)`; carries the terminal reason. |
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`/`spawnFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer and the inspector header (axis 7), measured against the card's default baseline — parent-relative when it has a parent branch, else branch-relative. Nil for a non-git / zero-change / not-yet-computed card. |
-| `hasPendingDelivery` | `Bool` | Broadcast-only snapshot bit: the card has a claimable inbox message or a live delivery lease (`hasClaimable ∨ hasLiveLease`). Maintained in the per-tick delivery reconciler (so it arms even for a running card, whose `wake` returns before delivering, and disarms when the queue drains). Consumed by stall detection — a card with pending work in flight is not idle. Never authoritative state. |
-| `humanPaced` | `Bool` | Compatibility bit for the current client stall row: the card is the human's to pace, so per-card quiescence does not amber it. A human prompt or human-sourced `send` sets it; an agent/inbox delivery or handoff seed clears it; session-preserving relaunches preserve it. The launch's own machine prompt is generation-marked so the prompt report does not misclassify it as human input. This bit is separate from `AgentState` and is planned for removal when the orchestration-level stalled watchdog replaces the current attention rule. |
+| `hasPendingDelivery` | `Bool` | Broadcast-only snapshot bit: the card has a claimable inbox message or a live delivery lease (`hasClaimable ∨ hasLiveLease`). Maintained in the per-tick delivery reconciler (so it arms even for a running card, whose `wake` returns before delivering, and disarms when the queue drains). Consumed by the current compatibility stall detector — a card with pending work in flight is not idle. It is delivery bookkeeping only: never an `AgentState` or `pendingQuestion` authority. |
+| `humanPaced` | `Bool` | Compatibility bit for the current client stall row: the card is the human's to pace, so per-card quiescence does not amber it. A human prompt or human-sourced `send` sets it; an agent/inbox delivery or handoff seed clears it; session-preserving relaunches preserve it. The launch's own machine prompt is generation-marked so the prompt report does not misclassify it as human input. This bit is separate from `AgentState`; the proposed root-level stalled watchdog and removal of this compatibility rule are deferred. |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |
@@ -68,7 +68,7 @@ A `Task` is the single persisted record behind every card. Its fields:
   - `creatingWorktree` — materializing the cwd (worktree / scratch / borrow); **every** spawn enters here,
   - `launching` — cwd ready, bringing the agent session up,
   - `live(AgentState)` — the harness process is up and the payload is Orchestra's current provider-neutral
-    observation of its turn, activity, and requests,
+    observation of its turn, activity, and optional provider human need,
   - `relaunching` — a restart/resume in flight,
   - `dead(DeadReason)` — terminal-ish: session gone, awaiting recovery,
   - `archived(teardownComplete: Bool)` — off the board; the Bool distinguishes an archive whose
@@ -77,20 +77,21 @@ A `Task` is the single persisted record behind every card. Its fields:
   `archivedComplete`) flattens the `archived` Bool for stepper dispatch and terminal/bump checks;
   `isTerminal` is `dead(*)` or `archived(*)`.
 - **`AgentState`** — the complete current snapshot attached only to `Phase.live`: `turnStatus`, optional
-  `activity`, and `activeRequests`. Leaving `live` discards all three; entering `live` reconstructs them
-  from launch knowledge and structured provider observation.
+  `activity`, and optional `humanNeed`. Leaving `live` discards all three; entering `live` starts
+  unavailable and then reconstructs them from current structured provider observation.
 - **`TurnStatus`** — Orchestra's view of the top-level harness turn: `running`,
   `waiting(WaitingInfo)`, or `unavailable`. A wait may carry `AutomaticResume`, meaning the provider has
   committed to another turn without human or Orchestra input. `Task.workInFlight` derives `true` for a
   running turn or an automatic-resume wait, `false` for an ordinary wait, and nil for unavailable.
-- **`AgentRequest`** — an open human-action request (`permission` or `input`). Requests are orthogonal to
-  turn state: a permission prompt normally exists inside a running turn.
+- **`ProviderHumanNeed`** — an optional display-only provider fact: `.permission`, `.input`, or
+  `.unspecified`. It is orthogonal to turn state. `Task.requiresHuman` is the pure OR of its presence and
+  the separate durable `pendingQuestion` declaration.
 - **`PhaseDisplayKey`** — a coarse **display-only, non-wire, non-Codable** label derived from `phase` on
   demand (`Task.phaseDisplay`), never persisted, so the display vocabulary can evolve without touching the
   durable model: `starting` / `launching` / `relaunching` / `running` / `idle` / `unavailable` /
   `dead` / `done`. The being-born phases surface honestly (a spawning card reads `.starting`/`.launching`,
-  not a fake `.running`). Permission and input presentation comes from `AgentState.activeRequests`, not
-  from this lifecycle-derived display key.
+  not a fake `.running`). Provider-human presentation comes from `AgentState.humanNeed`, not from this
+  lifecycle-derived display key.
 - **`DeadReason`** — why a card died (set alongside `phase = .dead(_)`):
   - `agentExited` — a `SessionEnd` with reason exit/logout (usually mid-life and resumable),
   - `sessionVanished` — the tmux session is gone with no `SessionEnd` (crash or external kill),
@@ -159,6 +160,9 @@ decoders. Their contract:
   `live({name: running|waiting, ...})` value decodes as `live(AgentState(turnStatus: unavailable))`. The
   harness lifecycle remains live, but Orchestra waits for fresh structured observation before claiming
   whether a top-level turn is open.
+- **Legacy request arrays are not trusted.** A stored `activeRequests` payload also decodes to a live,
+  unavailable state. Current provider evidence must establish the optional `humanNeed`; a persisted
+  request list cannot prove either a current prompt or a current turn.
 - **Pre-phase seed.** When the `phase` key is absent, `phase` is seeded from the older
   `status`/`waitReason`/`deadReason`/`archived` keys. `waitReason` is accepted for decoding but cannot be
   trusted after the required clean daemon restart, so both old live statuses become unavailable:
@@ -231,6 +235,11 @@ a document transfer), and the agent's Stop hook claims it into the agent at its 
 [`hook` RPC](05-command-reference.md#server-only-built-in-methods)
 on the `stop` event — see the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)).
 
+This shipped claim/lease/receipt route is the current **transitional** inbox transport. Its claim,
+confirmation, and wake outcomes are state-silent: they do not emit `AgentSignal`, alter `AgentState`, or
+clear `pendingQuestion`. Native best-effort provider delivery and per-message handed-off or failed UI are
+later inbox work, not properties of this store today.
+
 ## The trust ledger (T1)
 
 A third durable store — the **`TrustLedger`** (`Agents/TrustLedger.swift`) — is Orchestra's
@@ -292,7 +301,7 @@ Derived paths (all keyed off `$HOME`, so state follows the user, not the bundle)
 | tmux socket | `orchestra` (override with `$ORCHESTRA_TMUX_SOCKET`) |
 
 `allowedRoots` is `[reposRoot, worktreesRoot] + allowlist` — the set `PathResolver` checks every repo
-and worktree path against (see [the security boundary](04-cards-worktrees-sessions.md#pathresolver-the-security-boundary)).
+and worktree path against (see [the security boundary](04-cards-worktrees-sessions.md#process-and-path-safety)).
 
 ### Status-line modes
 
@@ -332,8 +341,8 @@ most recent 200 in a ring buffer that is replayed to new subscribers.
 
 ### Metadata reports and agent-state signals
 
-The agent's `_report` hook channel carries two independent payloads in one RPC. `StatusReport` is the
-metadata/lifecycle patch, with two halves:
+Claude's `_report` hook channel carries metadata plus a current-session observation in one RPC.
+`StatusReport` is the metadata/lifecycle patch, with two halves:
 
 - the **event half** (`EventReport`) — causally-ordered fields: `sessionId`, `transcriptPath`,
   `sessionSource`, `endReason`, `promptText`;
@@ -344,9 +353,10 @@ How those halves are merged into the card (event half applied unconditionally an
 half seq-gated against a monotonic cursor) is detailed in
 [Cards, worktrees & sessions](04-cards-worktrees-sessions.md) and `OrchestraService+Report.swift`.
 
-The companion compact hook observation and Codex app-server messages go through
+Claude's current-session hook observations and Codex app-server messages go through
 `Adapter.agentSignals(from:context:)`. Adapters interpret provider vocabulary and emit normalized
 `AgentSignal`s; `AgentStateReducer` is the only generic fold, and `transition()` atomically persists its
-output as the new `Phase.live(AgentState)`. Every signal carries the launch `sessionEpoch`; held Codex
-sources are additionally bound to the provider thread id, and pushed Claude hooks are checked against
-the current session id. There is no status field in `StatusReport` and no second Core status reducer.
+output as the new `Phase.live(AgentState)`. Every signal carries the launch `sessionEpoch`; Codex sources
+are additionally bound to the provider thread id, and Claude hooks are checked against the current session
+and prompt identity. The Codex rollout tail and its SessionStart/Stop hooks remain metadata/orientation or
+transitional inbox paths only. There is no status field in `StatusReport` and no second Core status reducer.

@@ -171,11 +171,13 @@ the service manager for the daemon lifecycle.
 
 ## The hooks / `_report` channel
 
-Hooks are a **first-class, core-owned channel** — the primary bidirectional path between core and a
-running agent. Core owns the protocol (`HookEvent` + `HookResponse`) and the generic status reducer; each
-adapter owns provider interpretation (`parse` metadata, compact hook-observation projection,
+Hooks are a **first-class, core-owned channel** for metadata, orientation, and the current transitional
+delivery route. Claude also carries its strictly correlated runtime observations through this channel;
+Codex does not — its app-server observer is the sole Codex runtime-status and provider-human authority.
+Core owns the protocol (`HookEvent` + `HookResponse`) and the generic status reducer; each adapter owns
+provider interpretation (`parse` metadata, Claude hook-observation projection where applicable,
 `agentSignals`, response encoding, and hook rendering). The edge forwards only the small raw subset the
-adapter selected, so Core can fence it against the current Card epoch/session before normalization.
+adapter selected, so Core can fence it against the current card epoch/session before normalization.
 
 **Rendering (per launch, by the adapter).** Each adapter supplies its hook configuration from a bundled
 template — `claude-hooks.json` becomes Claude's managed `--settings` file, while `codex-hooks.json` is
@@ -204,9 +206,9 @@ the command carries a baked `--agent <id>` so the client can resolve its adapter
 
 The `--event` strings **are** the `HookEvent` raw values (Core), so the template, client, and daemon
 share one vocabulary. `Notification`/`Stop` and `PreToolUse`/`PostToolUse` each get a distinct event —
-so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires SessionStart, PermissionRequest,
-and Stop; its app-server connection supplies turn/status observations, while PermissionRequest remains a
-hook-sourced request and Stop remains the inbox-drain return channel. A card that also needs per-card settings (read-only enforcement — see [the
+so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires SessionStart and Stop; its
+app-server connection is the sole source of turn status and provider human need, while Stop remains the
+transitional inbox-drain return channel. A card that also needs per-card settings (read-only enforcement — see [the
 read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier)) does **not** get a second
 `--settings`; `SettingsComposer` deep-merges those overlays *onto* this base into one file (Claude applies
 multiple `--settings` last-file-wins, so a second file would silently drop the statusLine + hooks).
@@ -217,8 +219,9 @@ multiple `--settings` last-file-wins, so a second file would silently drop the s
 2. **Resolve this card's adapter** from `--agent` (`AgentRegistry`), guarding on `$ORCHESTRA_TASK_ID`
    (set by `SessionManager` at launch) and a known `HookEvent` — a plain `claude` you run does nothing.
 3. **Split at the edge:** `adapter.parse` extracts metadata/lifecycle into `StatusReport`,
-   `adapter.sessionSource` extracts SessionStart source, and `adapter.hookObservationPayload` selects the
-   bounded raw fields needed for status normalization. Large tool bodies die here.
+   `adapter.sessionSource` extracts SessionStart source, and Claude's `hookObservationPayload` selects the
+   bounded raw fields needed for current-session status normalization. Codex hook payloads do not produce
+   runtime state. Large tool bodies die here.
 4. **Send one typed `hook` RPC** — `{ref, event, report?, source?, observationPayload?}` — under a tight budget (~50 ms
    statusline fire-and-forget, ~2 s otherwise). The daemon's `OrchestraService.handleHook` dispatches
    both directions: it applies metadata, asks the Card's adapter for normalized `AgentSignal`s after
@@ -236,6 +239,8 @@ multiple `--settings` last-file-wins, so a second file would silently drop the s
    (`OrchestraService.payloadForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
    Stop→inject→Stop cycle. Delivery is claim-then-confirm: the batch is *leased* into the continuation and
    leaves the inbox only when the next same-epoch Stop proves the continuation ran (`stop_hook_active`).
+   This shipped route is transitional and state-silent: it does not emit `AgentSignal`, change
+   `AgentState`, or clear `pendingQuestion`.
 
 This single `hook` RPC replaced the former `report`/`drain`/`sessionBrief` methods. Because the daemon
 resolves the card's adapter from the persisted `agentId`, there is no agent identity on the wire beyond
@@ -262,8 +267,9 @@ Codex's `parse` also binds the provider session id from this hook before returni
 brief Claude receives.
 
 Both conversions remain adapter-owned. `parse(_:)` handles metadata from hooks or the Codex rollout
-tail; `agentSignals(from:context:)` maps the compact hook payload, Claude OTLP spans, or Codex app-server
-messages into the provider-neutral live state. The CLI never interprets provider fields itself.
+tail; `agentSignals(from:context:)` maps current Claude hook payloads and OTLP spans, or Codex app-server
+messages, into the provider-neutral live state. Codex rollout and hook data never supplies that state. The
+CLI never interprets provider fields itself.
 
 On the daemon side, `OrchestraService+Report.swift` merges the report's event half (for example
 `SessionEnd`→dead, session-id rollover, and prompt auto-title) and seq-gated metadata snapshot (`ctxPct`,
@@ -271,7 +277,8 @@ On the daemon side, `OrchestraService+Report.swift` merges the report's event ha
 signals through `AgentStateReducer` and atomically writes the resulting `Phase.live(AgentState)`.
 
 This same channel now carries the **first realized Orchestra → agent direction**: the F3 Stop-drain
-(step 4 above) injects the durable inbox back into the agent at its turn-end. The **F1 resume seed** (PR C3)
+(step 4 above) injects the durable inbox back into the agent at its turn-end. It remains a transitional,
+state-silent route rather than native best-effort delivery. The **F1 resume seed** (PR C3)
 adds a second injection path — an authored handoff/fork context folded with that same inbox, delivered as a
 resumed session's opening positional turn (argv, not this settings channel) — now callable end-to-end via
 the [`handoff` command](05-command-reference.md#notes-on-key-commands) (PR D1). The **new-card** counterpart

@@ -48,8 +48,9 @@ access-gated (default permissioning, or the read-only preset for a read-only car
 session id in Codex's native state, with context/model/detail metadata
 derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
 vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
-[chapter 9](09-design-decisions.md#shipped-feature-history)). Turn state now comes from Codex app-server
-notifications, while hook observations carry permission requests. These are single forest PRs, not whole axes,
+[chapter 9](09-design-decisions.md#shipped-feature-history)). Codex turn state and its classified provider
+human need now come only from app-server notifications; rollout data remains metadata and Codex hooks carry
+orientation or the transitional Stop-drain, not runtime state. These are single forest PRs, not whole axes,
 so their rows stay in the roadmap below. An eighth forest PR, **C3 — F1 resume-in-card with a seed**
 has now landed too: the **third and final
 live-delivery function**, which resumes a card into a fresh process with clean context — keeping its
@@ -88,8 +89,14 @@ Handoff/Send card actions) **and** the app `SpawnSheet` trust control T2 deferre
 read-only `trustState` query) — so **all 15 forest PRs are merged** (see
 [chapter 9](09-design-decisions.md#shipped-feature-history)). At forest close, Codex board-routed approval
 telemetry and the richer agent-integration surfaces were still open. The provider-neutral status cutover
-has since closed the approval gap through hook-carried `AgentRequest.permission`; axis 3's structured
-sub-status and more agent-facing commands remain (while launch-time delegation guidance has shipped).
+has since closed that gap through `AgentState.humanNeed`, reduced from app-server-only Codex observations
+and strictly correlated Claude observations; axis 3's structured sub-status and more agent-facing commands
+remain (while launch-time delegation guidance has shipped).
+
+The inbox machinery named above is the shipped **transitional** Stop-drain/lease/receipt route. It moves
+durable text but is state-silent: it neither produces runtime status nor clears `pendingQuestion`. Native
+best-effort provider delivery, delivered/handed-off/failed UI, reminder behavior, a root stalled watchdog,
+and any wait or `needs-input` deprecation remain future work.
 Separately from the forest, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam,
 the persisted `Connection` model + a Connections settings pane, the Linux daemon port, and the app-managed
 SSH tunnel that runs the Mac board against a remote Linux `orchestrad` — built once so the phone client
@@ -102,7 +109,7 @@ The principle is to design every change *toward* these axes, never away from the
 | # | Axis | Slug | One-line goal |
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
-| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with rollout-tail metadata, app-server turn observation, hook permission requests, relaunch-on-idle delivery, and Stop-hook busy delivery; it is startable from the UI/CLI through model→adapter routing and `enable-codex`. |
+| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with rollout-tail metadata, app-server-only turn and provider-human observation, SessionStart orientation, and transitional Stop-hook busy delivery; it is startable from the UI/CLI through model→adapter routing and `enable-codex`. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads has **shipped** as vendored resources + a shared `AgentGuidance` assembler (D2, ch. 9), packaged on every launch as Claude project skills or Codex `developer_instructions` overrides, and a **column-aware SessionStart orientation** (each agent learns its live column/mode/self-id and is nudged to self-move) has **shipped** on the same hook channel for both agents (ch. 9); structured sub-status + more agent commands remain. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |

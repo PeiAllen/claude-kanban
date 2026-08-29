@@ -9,7 +9,7 @@ read-only barrier, process and path safety, and crash/reboot recovery. These liv
 ## Worktrees
 
 Each `.worktree` card owns **exactly one git worktree** — a 1:1 relationship (see
-[Design decisions](09-design-decisions.md#11-worktree-card-ownership)). The **`WorktreeRegistry`** actor
+[Design decisions](09-design-decisions.md#11-worktree--card-ownership)). The **`WorktreeRegistry`** actor
 (`Sources/OrchestraCore/WorktreeRegistry.swift`) is the **sole owner** of worktree and borrow lifecycle:
 the concrete `WorktreeManager` — the struct that actually shells out to `git worktree add`/`remove` — is
 `fileprivate` inside the same file, a compile-time guarantee that nothing outside the registry can touch
@@ -118,10 +118,11 @@ window; also kills the window's view session), `capture` (`capture-pane`, a boun
 ## Agent adapters
 
 The agent provider is abstracted behind the **`Adapter`** protocol so Orchestra isn't wedded to Claude
-Code. Each adapter owns launch/session behavior, a capability descriptor, metadata parsing, compact hook
-projection, and provider-to-`AgentSignal` normalization. Claude uses hooks plus local OTLP traces; Codex
-uses hooks, a rollout metadata tail, and a launch-local app-server observer. Core consumes only the shared
-capabilities and normalized signals. An adapter declares its `id`,
+Code. Each adapter owns launch/session behavior, a capability descriptor, metadata parsing, and
+provider-to-`AgentSignal` normalization. Claude uses strictly correlated current-session hooks plus a
+narrow local OTLP fallback; Codex uses a rollout metadata tail, SessionStart/Stop hooks for orientation and
+the transitional inbox drain, and a launch-local app-server observer for live state. Core consumes only the
+shared capabilities and normalized signals. An adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
@@ -178,8 +179,9 @@ unseeded to read its id back from its own output post-launch), and `isResumable`
 exists. The [Codex adapter](#the-codex-adapter) advertises `discovered / fileTail / tokens / relaunch /
 stopHook / sandboxed / subscription / controlV / rolloutMeta`: `.discovered` leaves its session unseeded,
 `.fileTail` supplies metadata, `.relaunch` wakes an ordinary idle wait with a resume seed, and `.stopHook`
-drains the inbox at a busy turn boundary. Agent status itself comes through each adapter's structured
-observation seam, not through these metadata capability flags.
+drains the inbox at a busy turn boundary. This shipped Stop-drain/lease/receipt route is transitional and
+state-silent: it neither emits agent status nor clears a declared question. Agent status itself comes
+through each adapter's structured observation seam, not through these metadata capability flags.
 
 ### The Claude Code adapter
 
@@ -266,9 +268,11 @@ with a newest-matching-`.jsonl` fallback used only when no id was tracked.
 **Telemetry mapping**: Claude's adapter splits each `hooksPush` event at the edge. `parse(_:)` extracts
 only lifecycle/display metadata into `StatusReport`, while `hookObservationPayload` projects the small
 provider fields needed for `agentSignals(from:context:)` without forwarding large tool bodies. Prompt and
-Stop become top-level turn edges; permission notifications and tool hooks update requests independently.
-A non-`hooksPush` metadata input (for example a `fileTail` line) returns `nil` — Claude has no tail
-transport. See
+Stop become top-level turn edges; a known permission or input prompt updates the optional provider
+`humanNeed` only when it belongs to the current session and prompt. Resolution clears only that current
+human need, delayed notifications and child-tool activity cannot change the top-level state, and an exact
+OTLP interaction span is the missing-Stop fallback. A non-`hooksPush` metadata input (for example a
+`fileTail` line) returns `nil` — Claude has no tail transport. See
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
 
 ### The Codex adapter
@@ -295,8 +299,7 @@ core handles the difference purely through the descriptor:
   per-cwd Codex profile (`$CODEX_HOME/orch-<hash>.config.toml`), and `start`/`resume` select it with a tiny
   `-p <name>`. The profile carries the same three things the first cut inlined as `-c` overrides: the
   rendered `codex-hooks.json` handlers as `hooks.<event>` (SessionStart — the
-  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel) — PermissionRequest,
-  and Stop), the explicit `projects."<cwd>".trust_level`
+  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel) — and Stop), the explicit `projects."<cwd>".trust_level`
   (`trusted`/`untrusted`, so a stale native setting can't silently grant trust), and one
   `developer_instructions` value from the shared `AgentGuidance` delegation/tree sections. The move off inline
   `-c` is **load-bearing, not cosmetic**: the developer instructions alone are ~16KB, and a session is
@@ -321,7 +324,7 @@ core handles the difference purely through the descriptor:
 
 **Metadata tail plus structured agent state.** Codex has two deliberately separate observation paths.
 The rollout tail remains the source for session discovery, context usage, model, and coarse description;
-the launch-local app server is the sole source for turn state and active requests.
+the launch-local app server is the sole source for turn state and provider human need.
 
 - **Transport — `RolloutTailer`** (`RolloutTailer.swift`, a `public actor`): tracks a **per-card byte
   offset** into the rollout file and, on each poll, returns only the **newline-terminated** lines appended
@@ -347,15 +350,17 @@ the launch-local app server is the sole source for turn state and active request
   still refresh metadata, but it cannot change `AgentState`.
 
 Claude uses the same normalized contract from live hooks: `UserPromptSubmit` starts a turn, `Stop` ends
-it (and may carry an aggregate automatic-resume marker), permission notifications update requests, and
-the completed `claude_code.interaction` root span covers user interruption when Claude omits `Stop`.
-Claude hook observations are not read from transcripts or replayed after daemon restart; the state is
-unavailable until the next current-session hook/span.
+the exact current turn, and known permission/input prompts update `humanNeed`. The completed
+`claude_code.interaction` root span covers user interruption when Claude omits `Stop`. Claude hook
+observations are not read from transcripts or replayed after daemon restart; the state is unavailable until
+the next current-session hook/span.
 
 **Codex wake and drain.** A queued message never rides a synthetic TUI keystroke. If Codex is in an
 ordinary wait, Core claims the inbox batch and relaunches the same thread with that batch as the opening
-seed. If a turn is already open, the batch remains durable until Codex's Stop hook claims it as a native
-continuation. Running, unavailable, and automatic-resume waits are not idle-delivery targets.
+seed. If a turn is already open, the batch remains durable until Codex's Stop hook claims it as a
+Stop-hook continuation. Running, unavailable, and automatic-resume waits are not idle-delivery targets.
+This is the current transitional delivery path: claim, receipt, and wake effects do not alter `AgentState` or clear
+`pendingQuestion`; native best-effort delivery and delivery-state UI remain later inbox work.
 
 ## The orchestration seam (handoff · fork · fan-out · send · wait)
 
@@ -363,6 +368,11 @@ Agents orchestrating agents is not a fifth feature bolted on beside the other fo
 composes from one live-delivery seam** with three functions: **F1 seed** (authored context folded into
 a session's opening turn), **F2 wake** (getting a live-but-idle agent to take a turn), and **F3 inbox**
 (a durable per-card queue drained at the agent's natural turn-end).
+
+F3's current Stop-drain/claim/lease/receipt protocol is deliberately separate from provider observation:
+it moves durable text and proves receipt, but it does not make a turn running or waiting, infer a human
+need, or retire `pendingQuestion`. A native provider-delivery contract is a later slice; this chapter does
+not imply delivered, handed-off, or failed delivery states today.
 
 ```mermaid
 sequenceDiagram
@@ -644,4 +654,4 @@ It is cleared when the relaunch settles (`clearRelaunchClaimed`), which then re-
 message that a `send` queued *during* the claim window (nothing else would retry it).
 
 How a dead card is presented to you — the "why" line, the preserved-work actions, and the recover/
-restart/archive buttons — is covered in the [App UI chapter](07-app-ui.md#recovery-panel).
+restart/archive buttons — is covered in the [App UI chapter](07-app-ui.md#onboarding-settings-recovery-and-popovers).

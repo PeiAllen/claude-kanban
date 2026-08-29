@@ -19,8 +19,9 @@ Three facts define the shape of the product:
 - **The agent is the unit of work.** One card = one autonomous agent session.
 - **The daemon is the source of truth.** A background process (`orchestrad`) owns the tasks, worktrees,
   and sessions and keeps running with the app closed. The app is just one of three windows onto it.
-- **State is pushed, not polled.** The agent reports its own context-window usage, current activity,
-  and status back to the board through a hook channel, so the board reflects reality in near real time.
+- **Provider state is observed, not inferred.** The board separates lifecycle from a live provider
+  snapshot. Claude supplies current-session hook observations, Codex supplies app-server observations,
+  and rollout/status-line paths add metadata without pretending to know whether a turn is open.
 
 The authoritative high-fidelity UI is the **Orchestra** prototype on Claude Design; the app's visual
 language (light/linear, radial wallpaper, hairline borders, mono accents) matches it pixel-for-pixel.
@@ -101,7 +102,7 @@ stateDiagram-v2
     }
 
     note right of live
-      Permission and input requests are orthogonal
+      Provider human need is orthogonal
       to whether the top-level turn is open.
     end note
 
@@ -131,10 +132,15 @@ path. Note that `dead → live` is the one **signal-gated** edge (no verb may dr
 a live session can), and that archiving is not terminal — `reopen` sends an archived card back to
 `creatingWorktree`.
 
-The live agent state comes from provider observation: a prompt submission opens a top-level turn, a
-`Stop` closes it, and a permission notification opens an independent request without changing the turn.
-A `SessionEnd` is lifecycle evidence and can take the Card to `dead`. See
-[Architecture](02-architecture.md#the-report-channel) for how those arrive, and
+The live agent state comes from provider observation. A distinct identified provider turn opens
+`running`, an exact terminal observation can close it to `waiting`, and unavailable is the honest result
+when the current turn cannot be identified. `humanNeed` is an optional provider fact, separate from turn
+state; `.permission`, `.input`, and `.unspecified` only refine display copy. A `SessionEnd` is lifecycle
+evidence and can take the Card to `dead`.
+
+An ordinary `waiting` card is idle, not automatically **Needs You**. A card needs a person only when its
+current provider has a non-nil `humanNeed` or it has the separate durable `pendingQuestion` declaration.
+See [Architecture](02-architecture.md#provider-observation-and-metadata-channel) for how those arrive, and
 [Recovery, resume and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart) for what
 happens when one goes wrong.
 
