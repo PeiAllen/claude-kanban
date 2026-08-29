@@ -29,7 +29,7 @@ struct ReadinessSignalTests {
         // Non-blocking spawn: the reconciler drives the card to `.launching`, where its readiness waiter
         // blocks; spawnAwaited hand-delivers SessionStart(startup), which resolves it → the card lands `.live`.
         let live = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "do it", repo: repo, branch: "b"))
-        #expect(live.phase == .live(.running))   // a prompt was in flight → running (per the landing rule)
+        #expect(live.phase == .live(.init(turnStatus: .unavailable)))   // readiness proves liveness, not provider turn state
     }
 
     @Test("test_relaunchingToLive_onReady[claude]: SessionStart(resume) drives the resume to live")
@@ -44,7 +44,7 @@ struct ReadinessSignalTests {
         // readiness waiter is resolved by the delivered SessionStart(resume) (inject) → `.live`.
         _ = try await env.svc.resume(t.id)
         let live = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
-        #expect(live.phase == .live(.waiting))
+        #expect(live.phase == .live(.init(turnStatus: .unavailable)))
         #expect(live.deadReason == nil)
     }
 

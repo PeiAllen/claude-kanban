@@ -19,9 +19,9 @@ public struct AgentSignal: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case turnStarted
         case turnCompleted(resume: AutomaticResume? = nil)
-        case turnReconciled(TurnStatus)
+        case turnReconciled(TurnStatus, humanNeed: ProviderHumanNeed?)
         case activity(ActivitySummary?)
-        case requests([AgentRequest])
+        case humanNeedChanged(ProviderHumanNeed?)
         case observationLost
     }
 
@@ -52,11 +52,9 @@ public enum AgentStateReducer {
         let before = state
         switch signal.kind {
         case .turnStarted:
-            // A second start while already running is a duplicate observation of the same open turn. It
-            // must not erase activity or requests accumulated after the first start.
-            if state.turnStatus != .running {
-                state = AgentState(turnStatus: .running)
-            }
+            // The coordinator admits only a distinct provider turn here. Treat it as a semantic
+            // boundary even when the visible status was already running.
+            state = AgentState(turnStatus: .running)
 
         case .turnCompleted(let resume):
             // Providers can emit terminal spans for built-in commands that had no normalized turn start
@@ -64,21 +62,23 @@ public enum AgentStateReducer {
             // however, know that the just-closed turn will resume automatically (Claude Stop vs its root
             // interaction span), so allow that one monotonic enrichment regardless of arrival order.
             if case .waiting(let waiting) = state.turnStatus {
-                guard waiting.resume == nil, let resume else { return false }
+                if waiting.resume == nil, let resume {
+                    state.turnStatus = .waiting(.init(resume: resume))
+                }
+            } else {
                 state.turnStatus = .waiting(.init(resume: resume))
-                break
             }
-            state.turnStatus = .waiting(.init(resume: resume))
             state.activity = nil
+            state.humanNeed = nil
 
-        case .turnReconciled(let status):
-            applyTurnStatus(status, to: &state)
+        case .turnReconciled(let status, let humanNeed):
+            applyTurnSnapshot(status, humanNeed: humanNeed, to: &state)
 
         case .activity(let activity):
             state.activity = activity
 
-        case .requests(let requests):
-            state.activeRequests = requests
+        case .humanNeedChanged(let humanNeed):
+            state.humanNeed = humanNeed
 
         case .observationLost:
             state = AgentState(turnStatus: .unavailable)
@@ -87,15 +87,21 @@ public enum AgentStateReducer {
         return state != before
     }
 
-    private static func applyTurnStatus(_ status: TurnStatus, to state: inout AgentState) {
+    private static func applyTurnSnapshot(
+        _ status: TurnStatus,
+        humanNeed: ProviderHumanNeed?,
+        to state: inout AgentState
+    ) {
         switch status {
         case .running:
             if state.turnStatus != .running {
                 state = AgentState(turnStatus: .running)
             }
+            state.humanNeed = humanNeed
         case .waiting:
             state.turnStatus = status
             state.activity = nil
+            state.humanNeed = humanNeed
         case .unavailable:
             state = AgentState(turnStatus: .unavailable)
         }

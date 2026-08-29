@@ -102,13 +102,4 @@ extension OrchestraService {
         return saved
     }
 
-    /// Retire a declared question. Called from the daemon's proof-of-turn seams ONLY (never from a verb):
-    /// `transition`'s turn-start / session-landing edges and `confirmDelivery`'s receipt. Idempotent and
-    /// delta-gated — a card with no question costs one store read and writes nothing.
-    func clearPendingQuestion(_ id: UUID) async {
-        guard let t = await store.get(id), t.pendingQuestion != nil else { return }
-        if let (saved, rev) = try? await store.update(id, { $0.pendingQuestion = nil }) {
-            emit(.taskUpserted(saved), rev: rev)
-        }
-    }
 }

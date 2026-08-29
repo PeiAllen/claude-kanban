@@ -59,10 +59,14 @@ import Foundation
         #expect(r.first?.label == "dead")
     }
 
-    @Test func permissionRow() {
-        let r = reasons(card(phase: .live(.permissionRequested)))
-        #expect(r.first?.reason == .permission)
-        #expect(r.first?.label == "permission")
+    @Test func humanRequiredRowCombinesProviderAndQuestionSources() {
+        let provider = card(phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
+        let question = card(pendingQuestion: PendingQuestion(text: "which db?", declaredAt: t0))
+
+        #expect(provider.requiresHuman)
+        #expect(question.requiresHuman)
+        #expect(reasons(provider).first?.reason == .humanRequired)
+        #expect(reasons(question).first?.reason == .humanRequired)
     }
 
     /// Row 3 fires only when the merge target has NO owning card — the root→main case in practice.
@@ -82,31 +86,30 @@ import Foundation
         #expect(r.isEmpty)
     }
 
-    @Test func questionRow_declared() {
+    @Test func humanRequiredRow_declaredQuestion() {
         let c = card(pendingQuestion: PendingQuestion(text: "which db?", declaredAt: t0))
         let r = reasons(c)
-        #expect(r.first?.reason == .question)
+        #expect(r.first?.reason == .humanRequired)
         #expect(r.first?.label == "question")
     }
 
-    @Test func questionRow_detectedInputRequest() {
+    @Test func humanRequiredRow_detectedInput() {
         let state = AgentState(
             turnStatus: .running,
-            activeRequests: [.init(id: "input:p1", kind: .input)]
+            humanNeed: .input
         )
         let r = reasons(card(phase: .live(state)))
-        #expect(r.first?.reason == .question)
+        #expect(r.first?.reason == .humanRequired)
         #expect(r.first?.label == "input needed")
-        #expect(!r.contains { $0.reason == .permission })
     }
 
-    @Test func activeRequestExplainsAnIdleCardSoItDoesNotAlsoStall() {
+    @Test func humanNeedExplainsAnIdleCardSoItDoesNotAlsoStall() {
         let state = AgentState(
             turnStatus: .waiting(),
-            activeRequests: [.init(id: "input:p1", kind: .input)]
+            humanNeed: .input
         )
         let r = reasons(card(phase: .live(state)), now: late)
-        #expect(r.map(\.reason) == [.question])
+        #expect(r.map(\.reason) == [.humanRequired])
     }
 
     @Test func ctxCriticalRow_rendersPercent() {
@@ -199,7 +202,7 @@ import Foundation
     @Test func stall_declaredQuestionSuppressesIt() {
         let c = card(pendingQuestion: PendingQuestion(text: "q", declaredAt: t0))
         let r = reasons(c, now: late)
-        #expect(r.contains { $0.reason == .question })
+        #expect(r.contains { $0.reason == .humanRequired })
         #expect(!r.contains { $0.reason == .stalled })
     }
 
@@ -299,8 +302,8 @@ import Foundation
         let reviewer = card("02", access: .readOnly)
         #expect(!reasons(reviewer, canStall: false, now: late).contains { $0.reason == .stalled })
 
-        let blocked = card("02", phase: .live(.permissionRequested), access: .readOnly)
-        #expect(reasons(blocked, canStall: false, now: late).contains { $0.reason == .permission })
+        let blocked = card("02", phase: .live(.init(turnStatus: .running, humanNeed: .permission)), access: .readOnly)
+        #expect(reasons(blocked, canStall: false, now: late).contains { $0.reason == .humanRequired })
     }
 
     /// canStall gates every isStalled path, mergeStalled included.
@@ -312,22 +315,21 @@ import Foundation
     // MARK: - priority + overflow
 
     @Test func priority_isHardBlockedFirst() {
-        #expect(Attention.Reason.allCases.map(\.rawValue) == [0, 1, 2, 3, 4, 5])
-        #expect(Attention.Reason.dead.rawValue < Attention.Reason.permission.rawValue)
-        #expect(Attention.Reason.permission.rawValue < Attention.Reason.mergeRequested.rawValue)
-        #expect(Attention.Reason.mergeRequested.rawValue < Attention.Reason.question.rawValue)
-        #expect(Attention.Reason.question.rawValue < Attention.Reason.stalled.rawValue)
+        #expect(Attention.Reason.allCases.map(\.rawValue) == [0, 1, 2, 3, 4])
+        #expect(Attention.Reason.dead.rawValue < Attention.Reason.humanRequired.rawValue)
+        #expect(Attention.Reason.humanRequired.rawValue < Attention.Reason.mergeRequested.rawValue)
+        #expect(Attention.Reason.mergeRequested.rawValue < Attention.Reason.stalled.rawValue)
         #expect(Attention.Reason.stalled.rawValue < Attention.Reason.ctxCritical.rawValue)
     }
 
     /// Multi-reason cards sort hard-blocked-first, so the L1 chip's top label is the most urgent and
     /// the rest become its "+N".
     @Test func multipleReasons_sortByPriority() {
-        let c = card(phase: .live(.permissionRequested),
+        let c = card(phase: .live(.init(turnStatus: .running, humanNeed: .permission)),
                      pendingQuestion: PendingQuestion(text: "q", declaredAt: t0),
                      ctxPct: 91)
         let r = reasons(c, now: late)
-        #expect(r.map(\.reason) == [.permission, .question, .ctxCritical])
+        #expect(r.map(\.reason) == [.humanRequired, .ctxCritical])
     }
 
     @Test func quietCard_hasNoReasons() {
@@ -338,8 +340,8 @@ import Foundation
 
     @Test func chipText_topLabelThenOverflow() {
         #expect(Attention.chipText([]) == nil)                                   // quiet ⇒ nothing renders
-        #expect(Attention.chipText([.init(.permission, "permission")]) == "permission")
-        #expect(Attention.chipText([.init(.permission, "permission"),
+        #expect(Attention.chipText([.init(.humanRequired, "permission")]) == "permission")
+        #expect(Attention.chipText([.init(.humanRequired, "permission"),
                                     .init(.ctxCritical, "ctx 91%")]) == "permission +1")
     }
 

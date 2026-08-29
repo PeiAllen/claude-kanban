@@ -44,7 +44,7 @@ struct AgentSignalMappingTests {
         #expect(codex.hookObservationPayload(event: .stop, payload: permission) == nil)
     }
 
-    @Test("Claude prompt and Stop hooks map correlated turn edges and close requests")
+    @Test("Claude prompt and Stop hooks map correlated turn edges and clear human need")
     func claudeHookTurnEdges() {
         let adapter = ClaudeCodeAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
@@ -66,14 +66,14 @@ struct AgentSignalMappingTests {
         #expect(adapter.agentSignals(from: .hooksPush(kind: "stop", payload: stop), context: context)
             == [
                 .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted()),
-                .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([])),
+                .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(nil)),
             ])
 
         #expect(adapter.agentSignals(from: .hooksPush(kind: "pretool", payload: stop), context: context).isEmpty)
-        // A completed or failed tool can clear a resolved request, but never changes the top-level turn.
+        // A completed or failed tool can clear a resolved human need, but never changes the top-level turn.
         for kind in ["posttool", "posttoolfailure"] {
             #expect(adapter.agentSignals(from: .hooksPush(kind: kind, payload: stop), context: context)
-                == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([]))])
+                == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(nil))])
         }
         for kind in ["notification", "taskcompleted"] {
             #expect(adapter.agentSignals(from: .hooksPush(kind: kind, payload: stop), context: context).isEmpty)
@@ -86,12 +86,10 @@ struct AgentSignalMappingTests {
         ])
         #expect(adapter.agentSignals(
             from: .hooksPush(kind: "permission", payload: permission), context: context
-        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([
-            .init(id: "permission:prompt-1", kind: .permission)
-        ]))])
+        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(.permission))])
     }
 
-    @Test("Claude interaction tools map to input requests without becoming permissions")
+    @Test("Claude interaction tools map to input human need without becoming permissions")
     func claudeInputRequests() {
         let adapter = ClaudeCodeAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
@@ -105,9 +103,7 @@ struct AgentSignalMappingTests {
                 ])
                 #expect(adapter.agentSignals(
                     from: .hooksPush(kind: hook, payload: payload), context: context
-                ) == [.init(sessionEpoch: epoch, turnID: "prompt-2", kind: .requests([
-                    .init(id: "input:prompt-2", kind: .input)
-                ]))])
+                ) == [.init(sessionEpoch: epoch, turnID: "prompt-2", kind: .humanNeedChanged(.input))])
             }
         }
     }
@@ -126,7 +122,7 @@ struct AgentSignalMappingTests {
             #expect(adapter.agentSignals(from: .hooksPush(kind: "stop", payload: stop), context: context)
                 == [
                     .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted(resume: .init())),
-                    .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([])),
+                    .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(nil)),
                 ])
         }
     }
@@ -138,12 +134,13 @@ struct AgentSignalMappingTests {
 
         #expect(adapter.agentSignals(
             from: .traceSpanEnded(name: "claude_code.interaction", attributes: .object([
+                "session.id": .string("claude-session"),
                 "prompt.id": .string("prompt-1"),
             ])),
             context: context
         ) == [
             .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted()),
-            .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([])),
+            .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(nil)),
         ])
         #expect(adapter.agentSignals(
             from: .traceSpanEnded(name: "claude_code.tool", attributes: .object([:])),
@@ -189,7 +186,7 @@ struct AgentSignalMappingTests {
         }
     }
 
-    @Test("Codex status notifications reconcile turn and request dimensions independently")
+    @Test("Codex status notifications atomically reconcile turn and human-needed dimensions")
     func codexStatusNotifications() {
         let adapter = CodexAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
@@ -208,21 +205,72 @@ struct AgentSignalMappingTests {
             "type": .string("active"),
             "activeFlags": .array([.string("waitingOnApproval"), .string("waitingOnUserInput")]),
         ])) == [
-            .init(sessionEpoch: epoch, kind: .turnReconciled(.running)),
-            .init(sessionEpoch: epoch, kind: .requests([
-                .init(id: "permission", kind: .permission),
-                .init(id: "input", kind: .input),
-            ])),
+            .init(sessionEpoch: epoch, kind: .turnReconciled(.running, humanNeed: .unspecified)),
         ])
         #expect(signals(.object(["type": .string("idle")]))
             == [
-                .init(sessionEpoch: epoch, kind: .turnReconciled(.waiting())),
-                .init(sessionEpoch: epoch, kind: .requests([])),
+                .init(sessionEpoch: epoch, kind: .turnReconciled(.waiting(), humanNeed: nil)),
             ])
         #expect(signals(.object(["type": .string("notLoaded")]))
-            == [.init(sessionEpoch: epoch, kind: .turnReconciled(.unavailable))])
+            == [.init(sessionEpoch: epoch, kind: .observationLost)])
         #expect(signals(.object(["type": .string("systemError")]))
-            == [.init(sessionEpoch: epoch, kind: .turnReconciled(.unavailable))])
+            == [.init(sessionEpoch: epoch, kind: .observationLost)])
+    }
+
+    @Test("Codex status snapshots atomically map every human-need flag combination")
+    func codexHumanNeedSnapshots() {
+        let adapter = CodexAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
+
+        func signals(_ flags: [String]) -> [AgentSignal] {
+            adapter.agentSignals(
+                from: .rpcNotification(
+                    method: "thread/status/changed",
+                    params: .object([
+                        "threadId": .string("thread-1"),
+                        "status": .object([
+                            "type": .string("active"),
+                            "activeFlags": .array(flags.map(JSONValue.string)),
+                        ]),
+                    ])
+                ),
+                context: context
+            )
+        }
+
+        for (flags, need) in [
+            ([], nil),
+            (["waitingOnApproval"], .permission),
+            (["waitingOnUserInput"], .input),
+            (["waitingOnApproval", "waitingOnUserInput"], .unspecified),
+        ] as [([String], ProviderHumanNeed?)] {
+            #expect(signals(flags) == [
+                .init(sessionEpoch: epoch, kind: .turnReconciled(.running, humanNeed: need)),
+            ])
+        }
+    }
+
+    @Test("Claude maps known and ambiguous prompt requirements without changing turn state")
+    func claudeHumanNeedMappings() {
+        let adapter = ClaudeCodeAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
+
+        for (tool, need) in [
+            ("Bash", .permission),
+            ("AskUserQuestion", .input),
+            ("", .unspecified),
+        ] as [(String, ProviderHumanNeed)] {
+            let payload: JSONValue = .object([
+                "session_id": .string("claude-session"),
+                "prompt_id": .string("prompt-1"),
+                "tool_name": .string(tool),
+            ])
+            #expect(adapter.agentSignals(
+                from: .hooksPush(kind: "permission", payload: payload), context: context
+            ) == [
+                .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(need)),
+            ])
+        }
     }
 
     @Test("Codex subscribe/read responses supply one-time attach reconciliation")
@@ -240,8 +288,7 @@ struct AgentSignalMappingTests {
             #expect(adapter.agentSignals(
                 from: .rpcResponse(method: method, result: result), context: context
             ) == [
-                .init(sessionEpoch: epoch, kind: .turnReconciled(.waiting())),
-                .init(sessionEpoch: epoch, kind: .requests([])),
+                .init(sessionEpoch: epoch, kind: .turnReconciled(.waiting(), humanNeed: nil)),
             ])
         }
     }

@@ -134,7 +134,7 @@ extension OrchestraService {
     func markSeedTurn(_ id: UUID, flavor: LaunchFlavor, epoch: Int) {
         let deliversMachineTurn: Bool
         switch flavor {
-        case .blank(_, let p): deliversMachineTurn = !(p ?? "").isEmpty
+        case .blank(let p):    deliversMachineTurn = !(p ?? "").isEmpty
         case .resume(let s):   deliversMachineTurn = !(s ?? "").isEmpty
         }
         runtime[id]?.seedTurnEpoch = deliversMachineTurn ? epoch : nil
@@ -188,7 +188,7 @@ extension OrchestraService {
         let launchModel = task.pendingModel ?? task.model.id
         let observationEndpoint = preparedObservationEndpoint(for: task, adapter: adapter)
         switch flavor {
-        case .blank(_, let prompt):
+        case .blank(let prompt):
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
                                      sessionId: task.agentSessionId, prompt: prompt, name: task.title,
                                      orchestraBin: orchestraBin,

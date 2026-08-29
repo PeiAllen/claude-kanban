@@ -57,59 +57,66 @@ actor AgentObservationCoordinator {
             lastCompletedTurnID = nil
         }
 
-        return signals.filter(accept)
+        return signals.compactMap(accept)
     }
 
-    private func accept(_ signal: AgentSignal) -> Bool {
+    private func accept(_ signal: AgentSignal) -> AgentSignal? {
         switch signal.kind {
         case .turnStarted:
-            guard let turnID = signal.turnID else { return true }
+            guard let turnID = currentTurnID(signal) else { return nil }
+            guard activeTurnID != turnID else { return nil }
             activeTurnID = turnID
-            return true
+            lastCompletedTurnID = nil
+            return signal
 
         case .turnCompleted:
-            guard let turnID = signal.turnID else {
+            guard let turnID = currentTurnID(signal) else {
                 activeTurnID = nil
                 lastCompletedTurnID = nil
-                return true
+                return .init(sessionEpoch: signal.sessionEpoch, kind: .observationLost)
             }
-            if let activeTurnID {
-                guard activeTurnID == turnID else { return false }
-            } else if let lastCompletedTurnID {
-                guard lastCompletedTurnID == turnID else { return false }
+            if activeTurnID == turnID {
+                activeTurnID = nil
+                lastCompletedTurnID = turnID
+                return signal
             }
-            activeTurnID = nil
-            lastCompletedTurnID = turnID
-            return true
+            if lastCompletedTurnID == turnID {
+                return signal
+            }
+            return nil
 
-        case .requests(let requests):
-            guard let turnID = signal.turnID else { return true }
+        case .humanNeedChanged(let humanNeed):
+            guard let turnID = currentTurnID(signal) else { return nil }
             if let activeTurnID {
-                return activeTurnID == turnID
+                return activeTurnID == turnID ? signal : nil
             }
-            // A terminal event may clear its own request after marking the turn complete. A delayed
-            // request creation for a completed turn must never resurrect that prompt.
-            if requests.isEmpty {
-                return lastCompletedTurnID == nil || lastCompletedTurnID == turnID
+            // A terminal event may clear its own need immediately after completing the turn. A
+            // delayed positive fact must never resurrect a completed prompt.
+            if humanNeed == nil, lastCompletedTurnID == turnID {
+                return signal
             }
-            return lastCompletedTurnID == nil
+            return nil
 
         case .activity:
-            guard let turnID = signal.turnID else { return true }
-            if let activeTurnID { return activeTurnID == turnID }
-            return lastCompletedTurnID == nil
+            guard let turnID = currentTurnID(signal), activeTurnID == turnID else { return nil }
+            return signal
 
         case .observationLost:
             activeTurnID = nil
             lastCompletedTurnID = nil
-            return true
+            return signal
 
         case .turnReconciled:
             // Snapshot-style providers supersede event-pair history atomically. Claude also uses this
             // signal for session clear/resume, which must not retain the prior prompt's fence.
             activeTurnID = nil
             lastCompletedTurnID = nil
-            return true
+            return signal
         }
+    }
+
+    private func currentTurnID(_ signal: AgentSignal) -> String? {
+        guard let turnID = signal.turnID, !turnID.isEmpty else { return nil }
+        return turnID
     }
 }

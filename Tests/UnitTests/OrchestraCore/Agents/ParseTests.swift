@@ -87,20 +87,20 @@ struct ParseTests {
 
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.desc == "Running: ls")
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // metadata parse never changes AgentState
     }
 
-    @Test("Claude PermissionRequest maps to an independent permission request")
+    @Test("Claude PermissionRequest maps to an independent human-needed fact")
     func test_claude_permission_path() throws {
-        let payload = try JSONValue.parse(Data(#"{"prompt_id":"p1","tool_name":"Bash"}"#.utf8))
+        let payload = try JSONValue.parse(Data(#"{"session_id":"session-1","prompt_id":"p1","tool_name":"Bash"}"#.utf8))
         let signals = ClaudeCodeAdapter().agentSignals(
             from: .hooksPush(kind: "permission", payload: payload),
-            context: .init(sessionEpoch: 1, harnessSessionId: nil)
+            context: .init(sessionEpoch: 1, harnessSessionId: "session-1")
         )
         #expect(signals == [.init(
             sessionEpoch: 1,
             turnID: "p1",
-            kind: .requests([.init(id: "permission:p1", kind: .permission)])
+            kind: .humanNeedChanged(.permission)
         )])
     }
 }

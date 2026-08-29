@@ -10,7 +10,7 @@ import OrchestraUI
 ///   • **Read** — a `capture`-backed scroll render of the agent pane (D1: a non-attaching, size-capped
 ///     `capture-pane` scrape; ugly but zero-attach and sizing-safe) plus the live status pill / context
 ///     gauge / agent state from the board event stream (the header already carries status+ctx; this tab
-///     surfaces an ordinary wait or a permission request as an actionable banner).
+///     surfaces an ordinary wait or provider human need as an actionable banner).
 ///   • **Steer** — a "Message the agent" bar → `send` (queued to the inbox, drained at turn-end) with a
 ///     constrained key row → `send-keys` (D2: Esc/↵/arrows/y/n/^C — no live attach, no resize pressure).
 ///   • **Gates** — surfaced as Needs-You (M3), not here: a waiting-on-permission card shows a banner
@@ -58,8 +58,8 @@ struct AgentTab: View {
     }
 
     private var bannerKind: AgentBannerKind? {
-        if task.agentState?.hasRequest(kind: .permission) == true { return .permission }
-        if task.agentState?.hasRequest(kind: .input) == true { return .input }
+        if task.agentState?.humanNeed == .permission { return .permission }
+        if task.agentState?.humanNeed != nil { return .input }
         if task.workInFlight == false { return .waiting }
         return nil
     }
@@ -120,7 +120,7 @@ private struct WaitBanner: View {
     private var detail: String {
         switch kind {
         case .permission:
-            return "The agent is blocked on a permission — approve or deny it in Needs You."
+            return "The agent is blocked on a permission. Open its harness to resolve it."
         case .input:
             return "The agent opened an interactive question. Open its terminal to answer it."
         case .waiting:

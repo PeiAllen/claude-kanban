@@ -81,11 +81,6 @@ extension OrchestraService {
                     // `/clear` wipes the context and returns the card to awaiting a first prompt — the
                     // human's move again, so it is human-paced (its quiet is legitimate). See `Task.humanPaced`.
                     if attributable { task.humanPaced = true }
-                    // `/clear` replaces the session's whole context: whatever it was blocked on is gone.
-                    // Fenced like the phase write beside it (and unlike `desc`/`awaitingFirstPrompt`,
-                    // which are harmless either way) — erasing the incoming generation's question on the
-                    // word of the outgoing session's SessionStart is not harmless.
-                    if attributable { task.pendingQuestion = nil }
                 case "resume":
                     task.desc = ""
                     resolveReadiness(id, true, observedEpoch: observedEpoch)   // confirm a pending RELAUNCH's inline readiness wait (epoch-fenced)
@@ -93,7 +88,7 @@ extension OrchestraService {
                     // Claude `.sessionStartHook` readiness for a fresh LAUNCH: the agent's own
                     // SessionStart(startup) is the launch's ready marker, so resolve the spawn/reopen's
                     // inline waiter for a still-launching card. No phase write here — the launch verb owns
-                    // the landing (prompt-in-flight → running, else waiting) once its await unblocks.
+                    // the live/unavailable landing once its await unblocks.
                     if before.phase.kind == .launching { resolveReadiness(id, true, observedEpoch: observedEpoch) }
                 default:
                     break   // compact: no status change
@@ -106,8 +101,7 @@ extension OrchestraService {
                 // Human-pacing: a prompt typed into a session that was idle-WAITING on the human is a DIRECT
                 // human turn — it paces the card, so the stall row must exempt it forever after (docs/09).
                 // But a MACHINE opening positional (a spawn/handoff seed, or a wake-delivered inbox batch)
-                // reaches here as a `promptText` too, and a resume lands `.waiting` (see
-                // `landing(of:)` in PhaseStepper), so the seed would satisfy the gate and wrongly exempt
+                // reaches here as a `promptText` too, so the seed would satisfy the gate and wrongly exempt
                 // AGENT work from the stall row. `finishLaunch` marks the generation that owes such a turn;
                 // the FIRST prompt of that generation consumes the marker and is NOT treated as human — only
                 // a prompt with no machine turn owed, on an idle human-wait, is. Fenced (`attributable`) so a

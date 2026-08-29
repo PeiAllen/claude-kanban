@@ -26,18 +26,15 @@ public enum AttentionTransition {
     /// The push trigger a status transition warrants, or `nil`. Mirrors the macOS notifier exactly
     /// (`BoardModel.apply`):
     /// - `prev == nil` (a freshly-appended card / the post-reconnect wholesale set) → **never** fires.
-    /// - a new permission request → `.permission`, independently of whether the turn is open.
-    /// - work ownership changing to an ordinary wait with no automatic resume → `.needsYou`.
+    /// - `Task.requiresHuman` rising false→true → `.humanRequired`, independently of its source.
     /// - `prev != .dead && status == .dead` → `.died`.
     ///
     /// **Automatic-resume suppression is by construction:** `waiting(resume != nil)` still has work in
     /// flight, so it never produces a Needs-You transition.
-    public static func trigger(prev: Phase?, task: Task) -> NotifyTrigger? {
+    public static func trigger(prev: Task?, task: Task) -> NotifyTrigger? {
         guard let prev else { return nil }
-        let now = task.phase
-        if !prev.hasPermissionRequest, now.hasPermissionRequest { return .permission }
-        if !prev.needsHumanTurn, now.needsHumanTurn { return .needsYou }
-        if prev.kind != .dead, now.kind == .dead { return .died }
+        if !prev.requiresHuman, task.requiresHuman { return .humanRequired }
+        if prev.phase.kind != .dead, task.phase.kind == .dead { return .died }
         return nil
     }
 
@@ -62,29 +59,15 @@ public enum AttentionTransition {
 
     /// The single notification a snapshot warrants — the phase edge and the stuck rise reconciled into ONE
     /// trigger, with a fixed precedence over the push triggers (daemon-side; independent of the client's
-    /// `ownAttention` Needs You fold): a recovery/permission-critical phase edge (`died`/`permission`) outranks a stuck rise,
-    /// which in turn outranks `needsYou`. The sole precedence authority for both the daemon tracker and the
-    /// mac `BoardStore` — so the two paths can't drift. (The died/permission-vs-stuck collision needs a single
-    /// event carrying BOTH a fresh death and a fresh stuck flip, which no single store write produces today;
+    /// `ownAttention` Needs You fold): a recovery/human-required edge (`died`/`humanRequired`) outranks a
+    /// stuck rise. The sole precedence authority for both the daemon tracker and the mac `BoardStore` — so
+    /// the two paths can't drift. (The died/human-required-vs-stuck collision needs a single event carrying
+    /// BOTH a fresh death and a fresh stuck flip, which no single store write produces today;
     /// deciding it here is defense-in-depth, keeping the more-urgent recovery push from ever being dropped.)
-    public static func notifyTrigger(prev: Phase?, wasStuck: Bool, seen: Bool, task: Task) -> NotifyTrigger? {
+    public static func notifyTrigger(prev: Task?, wasStuck: Bool, seen: Bool, task: Task) -> NotifyTrigger? {
         let phase = trigger(prev: prev, task: task)
-        if phase == .permission || phase == .died { return phase }
+        if phase == .humanRequired || phase == .died { return phase }
         return stuckRise(wasStuck: wasStuck, seen: seen, cur: task) ?? phase
-    }
-}
-
-private extension Phase {
-    var hasPermissionRequest: Bool {
-        if case .live(let state) = self { return state.hasRequest(kind: .permission) }
-        return false
-    }
-
-    var needsHumanTurn: Bool {
-        guard case .live(let state) = self,
-              case .waiting(let info) = state.turnStatus
-        else { return false }
-        return info.resume == nil
     }
 }
 
@@ -92,7 +75,7 @@ private extension Phase {
 /// genuine transition. Pure (no I/O) so the whole transition→intent path is unit-testable. Confined to a
 /// single event-consuming context (the daemon's `PushNotifier` actor owns it); not thread-safe by itself.
 public final class AttentionTracker {
-    private var lastPhase: [UUID: Phase] = [:]
+    private var lastTask: [UUID: Task] = [:]
     /// Per-card "was stuck" memory — the state a phase snapshot can't carry, so the stuck one-shot fires
     /// exactly once on the false→true rise and re-arms only after the card clears.
     private var stuckCards: Set<UUID> = []
@@ -101,16 +84,16 @@ public final class AttentionTracker {
     /// Feed the latest task snapshot; returns a `NotificationIntent` iff this snapshot is a genuine
     /// attention transition. An archived card is reaped (and never fires) so a later re-add starts fresh.
     public func observe(_ task: Task) -> NotificationIntent? {
-        if task.archived { lastPhase[task.id] = nil; stuckCards.remove(task.id); return nil }
-        let seen = lastPhase[task.id] != nil
+        if task.archived { lastTask[task.id] = nil; stuckCards.remove(task.id); return nil }
+        let seen = lastTask[task.id] != nil
         let wasStuck = stuckCards.contains(task.id)
-        let prev = lastPhase[task.id]
-        lastPhase[task.id] = task.phase
+        let prev = lastTask[task.id]
+        lastTask[task.id] = task
         // Update the stuck memory every observe, regardless of what we return.
         if AttentionTransition.currentStuckTrigger(task) != nil { stuckCards.insert(task.id) }
         else { stuckCards.remove(task.id) }
-        // One trigger per observe, reconciled by the shared precedence authority (died/permission > stuck
-        // > needsYou) so the push can't disagree with the Needs You queue.
+        // One trigger per observe, reconciled by the shared precedence authority (died/human-required >
+        // stuck) so the push can't disagree with the Needs You queue.
         let trigger = AttentionTransition.notifyTrigger(prev: prev, wasStuck: wasStuck, seen: seen, task: task)
         guard let trigger else { return nil }
         return NotificationIntent(trigger: trigger, cardId: task.id,
@@ -118,7 +101,7 @@ public final class AttentionTracker {
     }
 
     /// Forget a removed card so a re-created id starts fresh (no phantom `prev`).
-    public func forget(_ id: UUID) { lastPhase[id] = nil; stuckCards.remove(id) }
+    public func forget(_ id: UUID) { lastTask[id] = nil; stuckCards.remove(id) }
 }
 
 // MARK: - Delivery gating (scope), mirrors AgentNotifier.shouldFire
@@ -152,18 +135,17 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
         public var sound: NotifySound
         public init(scope: NotifyScope, sound: NotifySound) { self.scope = scope; self.sound = sound }
     }
-    public var permission: Entry
-    public var needsYou: Entry
+    public var humanRequired: Entry
     public var died: Entry
     public var deliveryStuck: Entry
     public var mergeStalled: Entry
 
     /// The two stuck triggers default to their designed prefs so the existing 3-arg call sites
     /// (`snapshot()`, test helpers) keep compiling without change.
-    public init(permission: Entry, needsYou: Entry, died: Entry,
+    public init(humanRequired: Entry, died: Entry,
                 deliveryStuck: Entry = Self.defaultEntry(.deliveryStuck),
                 mergeStalled: Entry = Self.defaultEntry(.mergeStalled)) {
-        self.permission = permission; self.needsYou = needsYou; self.died = died
+        self.humanRequired = humanRequired; self.died = died
         self.deliveryStuck = deliveryStuck; self.mergeStalled = mergeStalled
     }
 
@@ -173,7 +155,7 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case permission, needsYou, died, deliveryStuck, mergeStalled
+        case humanRequired, permission, needsYou, died, deliveryStuck, mergeStalled
     }
 
     /// Hand-rolled so the two triggers added after the wire format shipped decode tolerantly: an
@@ -183,17 +165,29 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
     /// NOT silently-Off, so an old phone still surfaces stuck pushes.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.permission = try c.decode(Entry.self, forKey: .permission)
-        self.needsYou = try c.decode(Entry.self, forKey: .needsYou)
+        let current = try c.decodeIfPresent(Entry.self, forKey: .humanRequired)
+        let legacyPermission = try c.decodeIfPresent(Entry.self, forKey: .permission)
+        let legacyNeedsYou = try c.decodeIfPresent(Entry.self, forKey: .needsYou)
+        self.humanRequired = current
+            ?? legacyPermission
+            ?? legacyNeedsYou
+            ?? Self.defaultEntry(.humanRequired)
         self.died = try c.decode(Entry.self, forKey: .died)
         self.deliveryStuck = try c.decodeIfPresent(Entry.self, forKey: .deliveryStuck) ?? Self.defaultEntry(.deliveryStuck)
         self.mergeStalled = try c.decodeIfPresent(Entry.self, forKey: .mergeStalled) ?? Self.defaultEntry(.mergeStalled)
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(humanRequired, forKey: .humanRequired)
+        try c.encode(died, forKey: .died)
+        try c.encode(deliveryStuck, forKey: .deliveryStuck)
+        try c.encode(mergeStalled, forKey: .mergeStalled)
+    }
+
     public func entry(for t: NotifyTrigger) -> Entry {
         switch t {
-        case .permission:    return permission
-        case .needsYou:      return needsYou
+        case .humanRequired: return humanRequired
         case .died:          return died
         case .deliveryStuck: return deliveryStuck
         case .mergeStalled:  return mergeStalled
@@ -205,8 +199,7 @@ public extension NotificationPrefs {
     /// Snapshot the current per-trigger scope + sound for a device registration.
     func snapshot() -> NotifyPrefsSnapshot {
         NotifyPrefsSnapshot(
-            permission:    .init(scope: scope(.permission),    sound: sound(.permission)),
-            needsYou:      .init(scope: scope(.needsYou),      sound: sound(.needsYou)),
+            humanRequired: .init(scope: scope(.humanRequired), sound: sound(.humanRequired)),
             died:          .init(scope: scope(.died),          sound: sound(.died)),
             deliveryStuck: .init(scope: scope(.deliveryStuck), sound: sound(.deliveryStuck)),
             mergeStalled:  .init(scope: scope(.mergeStalled),  sound: sound(.mergeStalled)))
@@ -233,8 +226,7 @@ public enum APNsPayload {
     /// The alert body per trigger — matches the macOS `AgentNotifier.body(for:)` wording.
     public static func body(for trigger: NotifyTrigger) -> String {
         switch trigger {
-        case .permission:    return "Agent needs your approval"
-        case .needsYou:      return "Agent finished — waiting on you"
+        case .humanRequired: return "Agent needs you — open harness"
         case .died:          return "Agent session ended — needs recovery"
         case .deliveryStuck: return "Agent can't reach you — delivery stuck"
         case .mergeStalled:  return "Merge request needs you — agent gave up asking"

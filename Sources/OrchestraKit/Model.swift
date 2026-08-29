@@ -494,7 +494,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// `awaitingFirstPrompt`.
     public var titleSource: TitleSource
     /// true => this session has never received a genuine user prompt, so it blank-launches with no
-    /// positional and lands `.waiting`. Set at a promptless spawn, `restart`, a blank `reopen`, and
+    /// positional. Provider observation supplies the later live turn state. Set at a promptless spawn, `restart`, a blank `reopen`, and
     /// `SessionStart(clear)`; cleared by the first prompt. Load-bearing LIFECYCLE state
     /// (`deriveLaunchFlavor`, the wake ladder, the delivery-stuck gates) — NOT a naming concept.
     public var awaitingFirstPrompt: Bool
@@ -515,8 +515,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var note: String?
     /// The agent's DECLARED open question — "I ended my turn blocked on a decision only you can make".
     /// Set by `needs-input` (set/replace only; there is no clear form), and cleared by the daemon at the
-    /// only events that can retire it: proof that the agent's next turn started (a landed turn-start, or a
-    /// continuation handed back at Stop), and a completed session replacement. It exists because an agent
+    /// only events that can retire it: proof that the agent's next distinct turn started, and a completed
+    /// session replacement. It exists because an agent
     /// asking a question in its own terminal is otherwise indistinguishable from an ordinary idle card —
     /// the human never learns they are the blocker. `declaredAt` supplies the question's display age.
     /// nil ⇒ no open question.
@@ -540,7 +540,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// Additive-optional Codable (mirrors `pendingSeed`). nil for every other death.
     public var deadResource: HostResourceReport?
     /// Persisted lifecycle phase — the convergence SSOT. A live phase owns the current `AgentState`;
-    /// leaving live discards that provider observation along with its activity and requests.
+    /// leaving live discards that provider observation along with its activity and human-needed fact.
     public var phase: Phase
     /// Monotonic per-card session generation — bumped on each (re)launch so stale-session signals
     /// (liveness polls, late hooks) from a superseded generation can be fenced out.
@@ -627,7 +627,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         deadReason: DeadReason? = nil,
         deadDetail: String? = nil,
         deadResource: HostResourceReport? = nil,
-        phase: Phase = .live(.running),
+        phase: Phase = .live(.init(turnStatus: .unavailable)),
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
         sessionDiscoverySince: Date? = nil,
@@ -938,6 +938,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
 
     public var turnStatus: TurnStatus? { agentState?.turnStatus }
     public var workInFlight: Bool? { agentState?.workInFlight }
+    /// Human attention is the union of the current provider fact and the separate durable declaration.
+    /// It is intentionally derived so neither source can overwrite or clear the other.
+    public var requiresHuman: Bool {
+        agentState?.humanNeed != nil || pendingQuestion != nil
+    }
 }
 
 // MARK: - Command result shapes

@@ -14,15 +14,15 @@ struct ReportTests {
     }
     typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
 
-    @Test("Task encodes and decodes AgentState requests independently of turn status")
+    @Test("Task encodes and decodes AgentState human need independently of turn status")
     func agentStateCodable() async throws {
         let (_, t) = try await spawned()
         var card = t
-        card.phase = .live(.permissionRequested)
+        card.phase = .live(.init(turnStatus: .running, humanNeed: .permission))
         let data = try JSONEncoder().encode(card)
         let back = try JSONDecoder().decode(Task.self, from: data)
         #expect(back.turnStatus == .running)
-        #expect(back.agentState?.hasRequest(kind: .permission) == true)
+        #expect(back.agentState?.humanNeed == .permission)
     }
 
     @Test("merges only present fields; ctxPct/desc/model update in place")
@@ -33,7 +33,7 @@ struct ReportTests {
         #expect(after.ctxPct == 42)
         #expect(after.desc == "Editing Foo.swift")
         #expect(after.model.id == "m2")   // a reported launch id updates the model (never a display label)
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // metadata reports never manufacture provider status
     }
 
     @Test("a reported display label updates modelDisplay only — never the launch id")
@@ -121,7 +121,7 @@ struct ReportTests {
         var after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Now do something else")
         #expect(after.awaitingFirstPrompt == false)
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // a prompt report is metadata, not a turn observation
         // a later prompt does NOT re-title
         try await env.svc.report(t.id, StatusReport(promptText: "And another thing"))
         after = try #require(await env.svc.list().first { $0.id == t.id })
@@ -213,7 +213,7 @@ struct ReportTests {
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.awaitingFirstPrompt == false)
         #expect(after.title == "a normal turn")
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // current provider observation owns live status
     }
 
     @Test("no-delta report = no persist, no event (idempotent)")
@@ -279,7 +279,10 @@ struct ReportTests {
         let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
         await env.svc.receiveAgentSignals(
             cardId: t.id,
-            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
+            signals: [
+                .init(sessionEpoch: epoch, turnID: "activity-turn", kind: .turnStarted),
+                .init(sessionEpoch: epoch, turnID: "activity-turn", kind: .turnCompleted()),
+            ]
         )
         try await pollUntil("statusChanged activity delivered") {
             await collector.activities.contains { $0.kind == .statusChanged }
@@ -298,9 +301,24 @@ struct ReportTests {
 
     private func turn(_ kind: AgentSignal.Kind, on task: Task, in service: OrchestraService) async {
         let epoch = (await service.store.get(task.id))?.sessionEpoch ?? task.sessionEpoch
+        let turnID = UUID().uuidString
+        let signals: [AgentSignal]
+        switch kind {
+        case .turnCompleted(let resume):
+            // A terminal only describes a known current provider turn. Give the test a real pair
+            // rather than relying on the old uncorrelated completion compatibility path.
+            signals = [
+                .init(sessionEpoch: epoch, turnID: turnID, kind: .turnStarted),
+                .init(sessionEpoch: epoch, turnID: turnID, kind: .turnCompleted(resume: resume)),
+            ]
+        case .turnStarted:
+            signals = [.init(sessionEpoch: epoch, turnID: turnID, kind: kind)]
+        default:
+            signals = [.init(sessionEpoch: epoch, turnID: turnID, kind: kind)]
+        }
         await service.receiveAgentSignals(
             cardId: task.id,
-            signals: [.init(sessionEpoch: epoch, kind: kind)]
+            signals: signals
         )
     }
 

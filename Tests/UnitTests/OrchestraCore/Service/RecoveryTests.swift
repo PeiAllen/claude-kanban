@@ -57,7 +57,7 @@ struct RecoveryTests {
         #expect(bArgv.contains("--resume"))
     }
 
-    @Test("resume success: confirmed within grace → .waiting, deadReason cleared, same id kept")
+    @Test("resume success: confirmed within grace → unavailable, deadReason cleared, same id kept")
     func resumeSuccess() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
@@ -70,7 +70,7 @@ struct RecoveryTests {
         let intent = try await env.svc.resume(t.id)
         #expect(intent.phase.kind == .relaunching)
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
-        #expect(updated.workInFlight == false)
+        #expect(updated.turnStatus == .unavailable)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id (no new mint)
     }
@@ -105,7 +105,7 @@ struct RecoveryTests {
 
         let updated = try #require(await env.svc.store.get(t.id))
         #expect(updated.phase.kind == .live)
-        #expect(updated.workInFlight == false)
+        #expect(updated.turnStatus == .unavailable)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id
     }
@@ -153,7 +153,7 @@ struct RecoveryTests {
         #expect(after.deadDetail?.contains("timed out") == true)
     }
 
-    @Test("restart: fresh id (old→prior), blank (no prompt), status waiting, provisional, deadReason cleared, initialPrompt intact")
+    @Test("restart: fresh id (old→prior), blank (no prompt), unavailable status, provisional, deadReason cleared, initialPrompt intact")
     func restart() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
@@ -171,7 +171,7 @@ struct RecoveryTests {
         #expect(newId != oldId)
         #expect(intent.priorSessionIds.contains(oldId))
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
-        #expect(updated.workInFlight == false)
+        #expect(updated.turnStatus == .unavailable)
         #expect(updated.initialPrompt == "Original ask")    // intact, not re-sent
         // launch argv carries --name <title> as its last pair; NO positional prompt follows it
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -221,7 +221,7 @@ struct RecoveryTests {
         }
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == p.id })
-        #expect(after.workInFlight == false)        // blank-restarted (idle waiting), NOT marked dead
+        #expect(after.turnStatus == .unavailable)   // blank-restarted, but provider state is unknown
         #expect(after.deadReason == nil)
         // Relaunched via a fresh `start` (no --resume) — the RelaunchStepper's provisional blank path.
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(p.id)])

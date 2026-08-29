@@ -59,7 +59,7 @@ struct ResumeSeedTests {
         #expect(intent.pendingSeed == "SEEDED-CTX")
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
 
-        #expect(updated.workInFlight == true)    // the seed owns the opening turn
+        #expect(updated.turnStatus == .unavailable) // the seed owns launch argv, not a status claim
         #expect(updated.agentSessionId == oldId)   // resume keeps the id — NOT a fresh restart
         #expect(updated.pendingSeed == nil)         // consumed + cleared on readiness
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])

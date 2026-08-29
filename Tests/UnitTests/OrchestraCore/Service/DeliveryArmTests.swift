@@ -92,12 +92,12 @@ struct DeliveryArmTests {
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])
     }
 
-    @Test("the arm never fires on a permission-parked card — it is mid-turn")
-    func armSkipsPermissionWaiting() async throws {
+    @Test("the arm never fires on a human-required card — it is mid-turn")
+    func armSkipsHumanRequiredRunning() async throws {
         let env = TestEnv.make(grace: 2)
         let card = try await idleWithMessage(env)
         await env.svc.testSetTurnStatus(card.id, .running)
-        await env.svc.testSetRequests(card.id, [.init(id: "permission", kind: .permission)])
+        await env.svc.testSetHumanNeed(card.id, .permission)
 
         await env.svc.reconcile()
 

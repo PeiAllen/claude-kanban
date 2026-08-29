@@ -20,42 +20,72 @@ final class PushCoreTests: XCTestCase {
     // MARK: transition → trigger
 
     func testTransitionsMapToTriggers() {
-        // running → waiting(permission) fires permission
-        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
-            task: card(phase: .live(.permissionRequested))), .permission)
-        // running → waiting(humanTurn) fires needsYou
-        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
-            task: card(phase: .live(.waiting))), .needsYou)
+        let running = card(phase: .live(.running))
+        let blocked = card(id: running.id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
+        XCTAssertEqual(AttentionTransition.trigger(prev: running, task: blocked), .humanRequired)
+        XCTAssertNil(AttentionTransition.trigger(
+            prev: running,
+            task: card(id: running.id, phase: .live(.waiting))
+        ))
         // any → dead fires died
-        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
-            task: card(phase: .dead(.agentExited))), .died)
-        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.waiting),
-            task: card(phase: .dead(.sessionVanished))), .died)
+        XCTAssertEqual(AttentionTransition.trigger(
+            prev: running,
+            task: card(id: running.id, phase: .dead(.agentExited))
+        ), .died)
+        let waiting = card(phase: .live(.waiting))
+        XCTAssertEqual(AttentionTransition.trigger(
+            prev: waiting,
+            task: card(id: waiting.id, phase: .dead(.sessionVanished))
+        ), .died)
+    }
+
+    func testHumanRequiredNotifiesOnlyOnAggregateFalseToTrue() {
+        let idle = card(phase: .live(.waiting))
+        let provider = card(
+            id: idle.id,
+            phase: .live(.init(turnStatus: .waiting(), humanNeed: .permission))
+        )
+        var question = provider
+        question.phase = .live(.init(turnStatus: .waiting(), humanNeed: nil))
+        question.pendingQuestion = PendingQuestion(text: "Which base?", declaredAt: .now)
+
+        XCTAssertEqual(AttentionTransition.trigger(prev: idle, task: provider), .humanRequired)
+        XCTAssertNil(AttentionTransition.trigger(prev: provider, task: question))
+        XCTAssertNil(AttentionTransition.trigger(prev: idle, task: card(phase: .live(.waiting))))
+        let clear = card(id: idle.id, phase: .live(.waiting))
+        XCTAssertNil(AttentionTransition.trigger(prev: question, task: clear))
+        XCTAssertEqual(AttentionTransition.trigger(prev: clear, task: provider), .humanRequired)
     }
 
     func testFreshCardNeverFires() {
         // prev == nil: a freshly-appended card / post-reconnect wholesale set never fires.
-        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .live(.permissionRequested))))
+        XCTAssertNil(AttentionTransition.trigger(
+            prev: nil,
+            task: card(phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
+        ))
         XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .dead(.agentExited))))
     }
 
-    func testIndependentRequestTransitionStillFires() {
-        // Turn status and requests are independent: a permission request opening while the previous
-        // snapshot was waiting is still a new permission edge and must fire.
-        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.waiting),
-            task: card(phase: .live(.permissionRequested))), .permission)
+    func testHumanNeedTransitionStillFiresWithoutChangingTurnStatus() {
+        let waiting = card(phase: .live(.waiting))
+        XCTAssertEqual(AttentionTransition.trigger(
+            prev: waiting,
+            task: card(id: waiting.id, phase: .live(.init(turnStatus: .waiting(), humanNeed: .permission)))
+        ), .humanRequired)
         // Already-dead stays dead → no repeat fire.
-        XCTAssertNil(AttentionTransition.trigger(prev: .dead(.agentExited),
-            task: card(phase: .dead(.agentExited))))
+        let dead = card(phase: .dead(.agentExited))
+        XCTAssertNil(AttentionTransition.trigger(prev: dead, task: card(id: dead.id, phase: .dead(.agentExited))))
     }
 
     func testBackgroundWaitProducesNoPush() {
         // The turn is closed, but the provider has committed to resume automatically. Work remains in
-        // flight, so this is not a Needs-You edge even though the visible turn status is waiting.
+        // flight, so it has no human-required edge even though the visible turn status is waiting.
         let autoResume = AgentState(turnStatus: .waiting(.init(resume: .init())))
-        XCTAssertNil(AttentionTransition.trigger(prev: .live(.running), task: card(phase: .live(autoResume))))
+        let running = card(phase: .live(.running))
+        XCTAssertNil(AttentionTransition.trigger(prev: running, task: card(id: running.id, phase: .live(autoResume))))
         // Even a genuinely-running card that was previously waiting (turn resumed) doesn't push.
-        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting), task: card(phase: .live(.running))))
+        let waiting = card(phase: .live(.waiting))
+        XCTAssertNil(AttentionTransition.trigger(prev: waiting, task: card(id: waiting.id, phase: .live(.running))))
     }
 
     // MARK: AttentionTracker (stateful observer)
@@ -65,13 +95,13 @@ final class PushCoreTests: XCTestCase {
         let id = UUID()
         // First sighting (prev == nil) never fires, even if already waiting.
         XCTAssertNil(tracker.observe(card(id: id, phase: .live(.running))))
-        // running → waiting fires once…
-        let intent = tracker.observe(card(id: id, phase: .live(.permissionRequested)))
-        XCTAssertEqual(intent?.trigger, .permission)
+        // Human-needed rises once…
+        let intent = tracker.observe(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission))))
+        XCTAssertEqual(intent?.trigger, .humanRequired)
         XCTAssertEqual(intent?.cardId, id)
-        // …and does not re-fire while it stays waiting.
-        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.permissionRequested))))
-        // waiting → dead fires died.
+        // …and does not re-fire while the aggregate stays true.
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))))
+        // Human-required → dead fires died.
         XCTAssertEqual(tracker.observe(card(id: id, phase: .dead(.agentExited)))?.trigger, .died)
     }
 
@@ -80,8 +110,8 @@ final class PushCoreTests: XCTestCase {
         let id = UUID()
         _ = tracker.observe(card(id: id, phase: .live(.running)))
         // Archiving reaps state; a later re-add is a fresh card (prev == nil) so it won't fire.
-        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.permissionRequested), archived: true)))
-        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.permissionRequested))))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)), archived: true)))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))))
         // But the NEXT transition off that fresh baseline fires.
         XCTAssertNil(tracker.observe(card(id: id, phase: .live(.running))))
         XCTAssertEqual(tracker.observe(card(id: id, phase: .dead(.agentExited)))?.trigger, .died)
@@ -111,30 +141,28 @@ final class PushCoreTests: XCTestCase {
     func testPrefsSnapshotMatchesDefaults() {
         let defaults = UserDefaults(suiteName: "push-core-snapshot-\(UUID().uuidString)")!
         let snap = NotificationPrefs(defaults: defaults).snapshot()
-        XCTAssertEqual(snap.permission.scope, .always)
-        XCTAssertEqual(snap.permission.sound, .hero)
-        XCTAssertEqual(snap.needsYou.scope, .background)
-        XCTAssertEqual(snap.needsYou.sound, .submarine)
+        XCTAssertEqual(snap.humanRequired.scope, .always)
+        XCTAssertEqual(snap.humanRequired.sound, .hero)
         XCTAssertEqual(snap.died.scope, .always)
         XCTAssertEqual(snap.died.sound, .basso)
-        XCTAssertEqual(snap.entry(for: .needsYou).scope, .background)
+        XCTAssertEqual(snap.entry(for: .humanRequired).scope, .always)
     }
 
     // MARK: APNs payload
 
     func testPayloadCarriesDeepLinkKeys() throws {
         let id = UUID()
-        let intent = NotificationIntent(trigger: .permission, cardId: id,
+        let intent = NotificationIntent(trigger: .humanRequired, cardId: id,
                                         cardTitle: "Fix auth", cardRef: "fix-auth")
         let payload = APNsPayload.build(intent: intent, sound: .hero)
         // Custom keys the deep-link reads.
         XCTAssertEqual(payload["taskId"]?.stringValue, id.uuidString)
-        XCTAssertEqual(payload["trigger"]?.stringValue, "permission")
+        XCTAssertEqual(payload["trigger"]?.stringValue, "humanRequired")
         XCTAssertEqual(payload["ref"]?.stringValue, "fix-auth")
         // aps.alert + sound.
         let aps = payload["aps"]
         XCTAssertEqual(aps?["alert"]?["title"]?.stringValue, "Fix auth")
-        XCTAssertEqual(aps?["alert"]?["body"]?.stringValue, "Agent needs your approval")
+        XCTAssertEqual(aps?["alert"]?["body"]?.stringValue, "Agent needs you — open harness")
         // A named macOS sound (Hero) isn't bundled on iOS, so it maps to the system default (not
         // "Hero.aiff", which the phone has no file for → APNs would drop the sound silently). See #2.
         XCTAssertEqual(aps?["sound"]?.stringValue, "default")
@@ -272,9 +300,7 @@ final class PushCoreTests: XCTestCase {
         XCTAssertNil(tracker.observe(stuckCard(id: id, deliveryStuck: true)))
     }
 
-    func testStuckTakesPrecedenceOverNeedsYouInOneObserve() {
-        // A single event that is BOTH a turn edge (→ ordinary waiting) AND a stuck rise fires the stuck
-        // trigger (more specific), not needsYou.
+    func testStuckTakesPrecedenceOverAnOrdinaryWaitInOneObserve() {
         let tracker = AttentionTracker()
         let id = UUID()
         _ = tracker.observe(stuckCard(id: id, phase: .live(.running)))
@@ -282,8 +308,8 @@ final class PushCoreTests: XCTestCase {
         XCTAssertEqual(intent?.trigger, .deliveryStuck)
     }
 
-    func testDiedAndPermissionPhaseEdgesOutrankACoincidentStuckRise() {
-        // Notification precedence mirrors the queue: a recovery/permission-critical phase edge wins over a
+    func testDiedAndHumanRequiredEdgesOutrankACoincidentStuckRise() {
+        // Notification precedence mirrors the queue: a recovery/human-required edge wins over a
         // stuck rise in the same observe, so the recovery-critical push is never dropped for a stuck one.
         let died = AttentionTracker()
         let d = UUID()
@@ -293,8 +319,11 @@ final class PushCoreTests: XCTestCase {
         let perm = AttentionTracker()
         let p = UUID()
         _ = perm.observe(stuckCard(id: p, phase: .live(.running)))
-        XCTAssertEqual(perm.observe(stuckCard(id: p, phase: .live(.permissionRequested), deliveryStuck: true))?.trigger,
-                       .permission)
+        XCTAssertEqual(perm.observe(stuckCard(
+            id: p,
+            phase: .live(.init(turnStatus: .running, humanNeed: .permission)),
+            deliveryStuck: true
+        ))?.trigger, .humanRequired)
     }
 
     // Prefs defaults + APNs body for the new triggers
@@ -309,10 +338,9 @@ final class PushCoreTests: XCTestCase {
 
     // NotifyPrefsSnapshot wire tolerance (MAJOR-2 pin)
 
-    func testSnapshotThreeArgInitStillCompilesAndDefaults() {
-        // The pre-existing 3-arg call site keeps compiling; the two new triggers default to their designed prefs.
+    func testSnapshotDefaultsStuckEntries() {
         let e = NotifyPrefsSnapshot.Entry(scope: .always, sound: .glass)
-        let snap = NotifyPrefsSnapshot(permission: e, needsYou: e, died: e)
+        let snap = NotifyPrefsSnapshot(humanRequired: e, died: e)
         XCTAssertEqual(snap.deliveryStuck.scope, .background)
         XCTAssertEqual(snap.mergeStalled.sound, .submarine)
     }
@@ -323,13 +351,13 @@ final class PushCoreTests: XCTestCase {
         let stuck = NotifyPrefsSnapshot.Entry(scope: .always, sound: .frog)     // != .background/.submarine
         let stall = NotifyPrefsSnapshot.Entry(scope: .off,    sound: .glass)
         let base  = NotifyPrefsSnapshot.Entry(scope: .always, sound: .hero)
-        let snap = NotifyPrefsSnapshot(permission: base, needsYou: base, died: base,
+        let snap = NotifyPrefsSnapshot(humanRequired: base, died: base,
                                        deliveryStuck: stuck, mergeStalled: stall)
         let data = try JSONEncoder().encode(snap)
-        // The encoder writes ALL FIVE keys (a synthesized encoder over 5 stored props would; guards a
+        // The encoder writes every current key (guards a
         // hand-rolled encoder regression that dropped one).
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(Set(obj.keys), ["permission", "needsYou", "died", "deliveryStuck", "mergeStalled"])
+        XCTAssertEqual(Set(obj.keys), ["humanRequired", "died", "deliveryStuck", "mergeStalled"])
         // Non-default values survive the round trip unchanged.
         let decoded = try JSONDecoder().decode(NotifyPrefsSnapshot.self, from: data)
         XCTAssertEqual(decoded, snap)
@@ -342,7 +370,7 @@ final class PushCoreTests: XCTestCase {
         let e = NotifyPrefsSnapshot.Entry(scope: .always, sound: .hero)
         let json = try JSONEncoder().encode(["permission": e, "needsYou": e, "died": e])
         let decoded = try JSONDecoder().decode(NotifyPrefsSnapshot.self, from: json)
-        XCTAssertEqual(decoded.permission, e)
+        XCTAssertEqual(decoded.humanRequired, e)
         // Missing keys fill with the trigger's DESIGNED default entry (not Off) so an old phone still pushes.
         XCTAssertEqual(decoded.deliveryStuck, NotifyPrefsSnapshot.defaultEntry(.deliveryStuck))
         XCTAssertEqual(decoded.mergeStalled, NotifyPrefsSnapshot.defaultEntry(.mergeStalled))

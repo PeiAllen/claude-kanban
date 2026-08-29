@@ -10,23 +10,12 @@ public struct ActivitySummary: Codable, Equatable, Sendable {
     }
 }
 
-/// One currently-open request for human action. Requests are orthogonal to turn status: a permission
-/// request can sit inside a running turn, while an input request can remain after the turn has ended.
-public struct AgentRequest: Codable, Equatable, Sendable, Identifiable {
-    public enum Kind: String, Codable, Equatable, Sendable {
-        case permission
-        case input
-    }
-
-    public var id: String
-    public var kind: Kind
-    public var prompt: String?
-
-    public init(id: String, kind: Kind, prompt: String? = nil) {
-        self.id = id
-        self.kind = kind
-        self.prompt = prompt
-    }
+/// The provider's current aggregate reason it needs a person. This is deliberately a fact, rather
+/// than a list of request objects: the provider is authoritative for its own active prompt state.
+public enum ProviderHumanNeed: String, Codable, Equatable, Sendable {
+    case unspecified
+    case permission
+    case input
 }
 
 /// Aggregate provider commitment to start another turn without human or Orchestra input. Providers may
@@ -92,16 +81,45 @@ public enum TurnStatus: Codable, Equatable, Sendable {
 public struct AgentState: Codable, Equatable, Sendable {
     public var turnStatus: TurnStatus
     public var activity: ActivitySummary?
-    public var activeRequests: [AgentRequest]
+    public var humanNeed: ProviderHumanNeed?
 
     public init(
         turnStatus: TurnStatus,
         activity: ActivitySummary? = nil,
-        activeRequests: [AgentRequest] = []
+        humanNeed: ProviderHumanNeed? = nil
     ) {
         self.turnStatus = turnStatus
         self.activity = activity
-        self.activeRequests = activeRequests
+        self.humanNeed = humanNeed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case turnStatus
+        case activity
+        case humanNeed
+        // A previous release persisted this array. Its detailed state is stale after a restart, so
+        // decode the containing snapshot but deliberately expose observation as unavailable.
+        case activeRequests
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard !container.contains(.activeRequests) else {
+            self.init(turnStatus: .unavailable)
+            return
+        }
+        self.init(
+            turnStatus: try container.decode(TurnStatus.self, forKey: .turnStatus),
+            activity: try container.decodeIfPresent(ActivitySummary.self, forKey: .activity),
+            humanNeed: try container.decodeIfPresent(ProviderHumanNeed.self, forKey: .humanNeed)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(turnStatus, forKey: .turnStatus)
+        try container.encodeIfPresent(activity, forKey: .activity)
+        try container.encodeIfPresent(humanNeed, forKey: .humanNeed)
     }
 
     /// Whether the provider owns the next move. `nil` means observation is unavailable, not false.
@@ -121,18 +139,12 @@ public struct AgentState: Codable, Equatable, Sendable {
         return false
     }
 
-    public func hasRequest(kind: AgentRequest.Kind) -> Bool {
-        activeRequests.contains { $0.kind == kind }
+    public var providerRequiresHuman: Bool {
+        humanNeed != nil
     }
 }
 
 extension AgentState {
     public static var running: AgentState { .init(turnStatus: .running) }
     public static var waiting: AgentState { .init(turnStatus: .waiting()) }
-    public static var permissionRequested: AgentState {
-        .init(
-            turnStatus: .running,
-            activeRequests: [.init(id: "permission", kind: .permission)]
-        )
-    }
 }

@@ -151,6 +151,7 @@ public struct ClaudeCodeAdapter: Adapter {
             let turnID = promptID(in: payload)
             switch hook {
             case "prompt":
+                guard validTurnID(turnID) else { return [] }
                 return [signal(.turnStarted, context: context, turnID: turnID)]
             case "stop":
                 return [
@@ -159,29 +160,27 @@ public struct ClaudeCodeAdapter: Adapter {
                         context: context,
                         turnID: turnID
                     ),
-                    signal(.requests([]), context: context, turnID: turnID),
+                    signal(.humanNeedChanged(nil), context: context, turnID: turnID),
                 ]
-            case "session" where ["clear", "resume"].contains(payload["source"]?.stringValue):
+            case "session" where ["startup", "clear", "resume"].contains(payload["source"]?.stringValue):
                 return [
-                    signal(.turnReconciled(.waiting()), context: context),
-                    signal(.requests([]), context: context),
+                    signal(.turnReconciled(.waiting(), humanNeed: nil), context: context),
                 ]
             case "permission":
-                let kind = requestKind(for: payload["tool_name"]?.stringValue)
                 return [signal(
-                    .requests([request(kind: kind, payload: payload)]),
+                    .humanNeedChanged(humanNeed(for: payload["tool_name"]?.stringValue)),
                     context: context,
                     turnID: turnID
                 )]
             case "pretool":
-                guard requestKind(for: payload["tool_name"]?.stringValue) == .input else { return [] }
+                guard humanNeed(for: payload["tool_name"]?.stringValue) == .input else { return [] }
                 return [signal(
-                    .requests([request(kind: .input, payload: payload)]),
+                    .humanNeedChanged(.input),
                     context: context,
                     turnID: turnID
                 )]
             case "posttool", "posttoolfailure":
-                return [signal(.requests([]), context: context, turnID: turnID)]
+                return [signal(.humanNeedChanged(nil), context: context, turnID: turnID)]
             default:
                 return []
             }
@@ -194,7 +193,7 @@ public struct ClaudeCodeAdapter: Adapter {
             let turnID = promptID(in: attributes)
             return [
                 signal(.turnCompleted(), context: context, turnID: turnID),
-                signal(.requests([]), context: context, turnID: turnID),
+                signal(.humanNeedChanged(nil), context: context, turnID: turnID),
             ]
 
         case .fileTail, .rpcNotification, .rpcResponse:
@@ -214,15 +213,9 @@ public struct ClaudeCodeAdapter: Adapter {
         payload["prompt_id"]?.stringValue ?? payload["prompt.id"]?.stringValue
     }
 
-    private func requestKind(for toolName: String?) -> AgentRequest.Kind {
-        ["AskUserQuestion", "ExitPlanMode"].contains(toolName) ? .input : .permission
-    }
-
-    private func request(kind: AgentRequest.Kind, payload: JSONValue) -> AgentRequest {
-        let identity = promptID(in: payload)
-            ?? payload["tool_name"]?.stringValue
-            ?? "request"
-        return .init(id: "\(kind.rawValue):\(identity)", kind: kind)
+    private func humanNeed(for toolName: String?) -> ProviderHumanNeed {
+        guard let toolName, !toolName.isEmpty else { return .unspecified }
+        return ["AskUserQuestion", "ExitPlanMode"].contains(toolName) ? .input : .permission
     }
 
     private func hasAutomaticResume(_ payload: JSONValue) -> Bool {
@@ -231,9 +224,14 @@ public struct ClaudeCodeAdapter: Adapter {
     }
 
     private func belongsToHarnessSession(_ payload: JSONValue, context: AgentSignalContext) -> Bool {
-        guard let expected = context.harnessSessionId else { return true }
+        guard let expected = context.harnessSessionId, !expected.isEmpty else { return false }
         let observed = payload["session_id"]?.stringValue ?? payload["session.id"]?.stringValue
-        return observed == nil || observed == expected
+        return observed == expected
+    }
+
+    private func validTurnID(_ turnID: String?) -> Bool {
+        guard let turnID else { return false }
+        return !turnID.isEmpty
     }
 
     /// Receive-direction format: wrap core's neutral `HookResponse` in Claude's hook stdout envelope.

@@ -74,7 +74,7 @@ extension OrchestraService {
     /// Make the structured source match the card's current live session. Repeated calls with the same
     /// identity are no-ops, so boot adoption, phase transitions, and session-id binding can all converge
     /// through this one function without reconnect churn.
-    func reconcileAgentObservation(_ card: Task) {
+    func reconcileAgentObservation(_ card: Task) async {
         guard ensureRuntime(for: card) else { return }
         guard card.phase.kind == .live else {
             stopAgentObservation(card.id)
@@ -101,6 +101,13 @@ extension OrchestraService {
         if endpoint.isPushOnly {
             stopAgentObservation(card.id)
             runtime[card.id]?.agentObservationIdentity = identity
+            // Hooks do not replay a provider snapshot on bind. A reconstructed Claude source therefore
+            // starts unavailable until its next exactly-correlated hook establishes current observation.
+            await submitAgentSignals(
+                [.init(sessionEpoch: card.sessionEpoch, kind: .observationLost)],
+                cardId: card.id,
+                context: .init(sessionEpoch: card.sessionEpoch, harnessSessionId: sessionId)
+            )
             return
         }
         guard let firstSource = adapter.makeObservationSource(
@@ -274,6 +281,10 @@ extension OrchestraService {
         else { return }
 
         let before = state
+        let acceptedDistinctTurnStart = signals.contains { signal in
+            if case .turnStarted = signal.kind { return true }
+            return false
+        }
         for signal in signals {
             _ = AgentStateReducer.apply(
                 signal,
@@ -281,16 +292,16 @@ extension OrchestraService {
                 currentSessionEpoch: card.sessionEpoch
             )
         }
-        guard state != before else { return }
+        guard state != before || acceptedDistinctTurnStart else { return }
 
-        let turnStarted = before.turnStatus != .running && state.turnStatus == .running
         let result = await transition(
             card.id,
             to: .live(state),
             observedEpoch: card.sessionEpoch,
-            expecting: .live
+            expecting: .live,
+            refreshPhaseAge: acceptedDistinctTurnStart
         ) { task in
-            if turnStarted { task.pendingQuestion = nil }
+            if acceptedDistinctTurnStart { task.pendingQuestion = nil }
         }
         guard result == .applied else { return }
 

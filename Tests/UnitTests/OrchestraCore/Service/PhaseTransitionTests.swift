@@ -134,13 +134,13 @@ struct PhaseTransitionTests {
             $0.phaseChangedAt = originalDate
         }
 
-        let withRequest = AgentState(
+        let withHumanNeed = AgentState(
             turnStatus: .running,
-            activeRequests: [.init(id: "permission-1", kind: .permission)]
+            humanNeed: .permission
         )
         #expect(await env.svc.transition(
             card.id,
-            to: .live(withRequest),
+            to: .live(withHumanNeed),
             observedEpoch: epoch,
             expecting: .live
         ) == .applied)

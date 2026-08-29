@@ -440,7 +440,7 @@ struct StaleBringUpFenceTests {
         #expect(!e.sessions.isAliveTest(card.id))
 
         // The step dispatched back when the card was `.launching` finally runs — the card is `.live` now.
-        let outcome = await e.svc.finishLaunch(card.id, flavor: .blank(landing: .running, prompt: nil),
+        let outcome = await e.svc.finishLaunch(card.id, flavor: .blank(prompt: nil),
                                                expecting: .launching, epoch: epoch)
 
         #expect(outcome == .superseded)                   // stood down — a newer landing owns the card
@@ -464,7 +464,7 @@ struct StaleBringUpFenceTests {
         await e.svc.seedPhase(card.id, .launching, sessionEpoch: staleEpoch + 1)   // a newer generation owns it
         e.sessions.setAlive(card.id, false)
 
-        let outcome = await e.svc.finishLaunch(card.id, flavor: .blank(landing: .running, prompt: nil),
+        let outcome = await e.svc.finishLaunch(card.id, flavor: .blank(prompt: nil),
                                                expecting: .launching, epoch: staleEpoch)
         #expect(outcome == .superseded)
         #expect(!e.sessions.isAliveTest(card.id))
@@ -545,7 +545,7 @@ struct StaleBringUpFenceTests {
         e.sessions.onEnsure = { entered.signal(); release.wait() }
 
         let bringUp = _Concurrency.Task {
-            await e.svc.finishLaunch(card.id, flavor: .blank(landing: .running, prompt: nil),
+            await e.svc.finishLaunch(card.id, flavor: .blank(prompt: nil),
                                      expecting: .launching, epoch: epoch)
         }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
@@ -655,4 +655,3 @@ struct StartupAbortRetryEpochTests {
         #expect(stamped == card.sessionEpoch)
     }
 }
-

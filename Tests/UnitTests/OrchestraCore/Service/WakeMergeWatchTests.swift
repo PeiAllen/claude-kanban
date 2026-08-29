@@ -6,6 +6,21 @@ import TestSupport
 @Suite("C2 · wake + merge-watch (real card state; subscriber; settled-terminal)")
 struct WakeMergeWatchTests {
 
+    /// Provider terminals are accepted only for their exact current turn. This fixture emits a complete
+    /// correlated pair so these wait/conclusion tests exercise ordinary idle behavior rather than the
+    /// missing-identity safety fallback.
+    private func completeCurrentTurn(_ service: OrchestraService, cardID: UUID) async {
+        guard let card = await service.store.get(cardID) else { return }
+        let turnID = UUID().uuidString
+        await service.receiveAgentSignals(
+            cardId: cardID,
+            signals: [
+                .init(sessionEpoch: card.sessionEpoch, turnID: turnID, kind: .turnStarted),
+                .init(sessionEpoch: card.sessionEpoch, turnID: turnID, kind: .turnCompleted()),
+            ]
+        )
+    }
+
     /// Run `body` with a deadline. Returns nil if it did not finish in time — so a LOST conclusion
     /// fails the test instead of suspending it forever (the suite-wide `--parallel` hang this guards).
     /// Backed by TestSupport's yield-based `withDeadline` (no wall-clock sleep in the race).
@@ -281,6 +296,7 @@ struct WakeMergeWatchTests {
             agentId: "codex",
             cwd: base + "/cwd",
             access: .readOnly))
+        let before = try #require(await env.svc.list().first { $0.id == child.id })
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
@@ -289,7 +305,7 @@ struct WakeMergeWatchTests {
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.turnStatus == .running)                      // app-server turn/completed is authoritative
+        #expect(after.agentState == before.agentState)             // rollout task_complete is state-silent
         #expect(after.archived == false)
         waiting.cancel(); _ = await waiting.value
     }
@@ -302,6 +318,7 @@ struct WakeMergeWatchTests {
         try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
         let parent = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "p"))
         let child = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "summarize", cwd: cwd, access: .readOnly))
+        let before = try #require(await env.svc.list().first { $0.id == child.id })
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
@@ -310,7 +327,7 @@ struct WakeMergeWatchTests {
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.turnStatus == .running)                      // only a top-level turn end closes the turn
+        #expect(after.agentState == before.agentState)             // child-task event is state-silent
         #expect(after.archived == false)
         waiting.cancel(); _ = await waiting.value
     }
@@ -324,16 +341,11 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        let epoch = try #require(await env.svc.store.get(child.id)).sessionEpoch
-        await env.svc.receiveAgentSignals(
-            cardId: child.id,
-            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
-        )
+        await completeCurrentTurn(env.svc, cardID: child.id)
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.workInFlight == false)
         #expect(after.turnStatus == .waiting())
         waiting.cancel(); _ = await waiting.value
     }
@@ -349,11 +361,7 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        let epoch = try #require(await env.svc.store.get(child.id)).sessionEpoch
-        await env.svc.receiveAgentSignals(
-            cardId: child.id,
-            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
-        )
+        await completeCurrentTurn(env.svc, cardID: child.id)
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
@@ -371,16 +379,11 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        let epoch = try #require(await env.svc.store.get(child.id)).sessionEpoch
-        await env.svc.receiveAgentSignals(
-            cardId: child.id,
-            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
-        )
+        await completeCurrentTurn(env.svc, cardID: child.id)
         await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.workInFlight == false)
         #expect(after.turnStatus == .waiting())
         waiting.cancel(); _ = await waiting.value
     }
@@ -391,6 +394,7 @@ struct WakeMergeWatchTests {
         let cwd = env.base + "/borrowed"
         try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
         let child = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "summarize", cwd: cwd, access: .readOnly))
+        let before = try #require(await env.svc.list().first { $0.id == child.id })
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
@@ -402,8 +406,7 @@ struct WakeMergeWatchTests {
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.workInFlight == true)
-        #expect(after.turnStatus == .running)
+        #expect(after.agentState == before.agentState)  // notification is not a provider turn edge
         waiting.cancel(); _ = await waiting.value
     }
 

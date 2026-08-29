@@ -89,20 +89,20 @@ struct SpawnPhaseTests {
         #expect(await env.svc.list(includeArchived: true).first { $0.id == l.id }?.phase.kind == .launching)
     }
 
-    @Test("a prompted spawn lands .live(.running)")
-    func test_promptedSpawnLandsRunning() async throws {
+    @Test("a prompted spawn lands live but unavailable until provider observation")
+    func test_promptedSpawnLandsUnavailable() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "do the thing", repo: repo, branch: "b"))
-        #expect(t.phase == .live(.running))
+        #expect(t.phase == .live(.init(turnStatus: .unavailable)))
     }
 
-    @Test("a promptless (provisional) spawn lands .live(.waiting)")
-    func test_provisionalSpawnLandsWaiting() async throws {
+    @Test("a promptless spawn also lands live but unavailable until provider observation")
+    func test_provisionalSpawnLandsUnavailable() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
-        #expect(t.phase == .live(.waiting))
+        #expect(t.phase == .live(.init(turnStatus: .unavailable)))
     }
 
     @Test("relaunch supersede: a second relaunching self-edge bumps the epoch; the first attempt's completion is dropped")
@@ -217,7 +217,7 @@ struct SpawnPhaseTests {
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)             // reconciler blank-launches
 
         #expect(updated.archived == false)
-        #expect(updated.phase == .live(.waiting))
+        #expect(updated.phase == .live(.init(turnStatus: .unavailable)))
         #expect(updated.agentSessionId != oldId)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(!argv.contains("--resume"))

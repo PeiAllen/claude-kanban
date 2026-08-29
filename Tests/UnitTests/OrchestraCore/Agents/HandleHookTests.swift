@@ -44,7 +44,18 @@ import Foundation
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
         try await env.svc.send(card.id, "DRAIN-ME")
 
-        let payload: JSONValue = .object(["session_id": .string("hook-session")])
+        let payload: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-a"),
+        ])
+        _ = await env.svc.handleHook(
+            card.id.uuidString,
+            event: .userPrompt,
+            report: nil,
+            source: nil,
+            observedEpoch: epoch,
+            observationPayload: payload
+        )
         let r = await env.svc.handleHook(
             card.id.uuidString,
             event: .stop,
@@ -79,7 +90,7 @@ import Foundation
         #expect(r == nil)
         let after = try await svc.resolveRef(card.id.uuidString)
         #expect(after.desc == "Running: ls")
-        #expect(after.turnStatus == .running)   // legacy `run` is no longer status authority
+        #expect(after.turnStatus == .unavailable)   // metadata reports are no longer status authority
     }
 
     @Test("fresh hook payloads update the authoritative provider-neutral state")
@@ -95,7 +106,7 @@ import Foundation
                        branch: "hook-shadow", agentId: adapter.id)
         )
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
         let launchEnv = try #require(env.sessions.ensureEnv[env.sessions.sessionName(card.id)])
         #expect(launchEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] ==
                 "http://127.0.0.1:43181/test-token/v1/traces/\(card.id.uuidString.lowercased())/\(epoch)")
@@ -120,13 +131,13 @@ import Foundation
             observedEpoch: epoch, observationPayload: permission
         )
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
-        #expect(await state(env.svc, card.id)?.hasRequest(kind: .permission) == true)
+        #expect(await state(env.svc, card.id)?.humanNeed == .permission)
 
         _ = await env.svc.handleHook(
             card.shortId, event: .postToolUse, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
-        #expect(await state(env.svc, card.id)?.activeRequests.isEmpty == true)
+        #expect(await state(env.svc, card.id)?.humanNeed == nil)
 
         _ = await env.svc.handleHook(
             card.shortId, event: .statusLine, report: StatusReport(ctxPct: 12), source: nil,
@@ -179,7 +190,10 @@ import Foundation
                        branch: "hook-fences", agentId: adapter.id)
         )
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        let prompt: JSONValue = .object(["session_id": .string("hook-session")])
+        let prompt: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-a"),
+        ])
         _ = await env.svc.handleHook(
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt

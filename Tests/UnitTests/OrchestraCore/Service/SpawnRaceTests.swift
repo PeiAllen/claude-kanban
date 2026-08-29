@@ -72,7 +72,7 @@ struct SpawnRaceTests {
         let restarted = try await env.svc.restart(t.id, source: .app)
         #expect(restarted.phase.kind == .relaunching)
         let live = try await TestEnv.reconcileToLive(env.svc, t.id)
-        #expect(live.workInFlight == false)
+        #expect(live.turnStatus == .unavailable)
 
         // The killed old process's SessionEnd hook arrives out-of-band; the epoch bump + isAlive probe fence it.
         try await env.svc.report(t.id, StatusReport(endReason: "exit"))

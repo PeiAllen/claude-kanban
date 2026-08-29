@@ -106,8 +106,7 @@ struct NotificationsSettingsSection: View {
 
     static func emoji(_ t: NotifyTrigger) -> String {
         switch t {
-        case .permission:    return "🔐"
-        case .needsYou:      return "🙋"
+        case .humanRequired: return "🙋"
         case .died:          return "💀"
         case .deliveryStuck: return "📪"
         case .mergeStalled:  return "🚧"
@@ -115,8 +114,7 @@ struct NotificationsSettingsSection: View {
     }
     static func title(_ t: NotifyTrigger) -> String {
         switch t {
-        case .permission:    return "Permission needed"
-        case .needsYou:      return "Needs you"
+        case .humanRequired: return "Human action needed"
         case .died:          return "Card died"
         case .deliveryStuck: return "Delivery stuck"
         case .mergeStalled:  return "Merge stalled"

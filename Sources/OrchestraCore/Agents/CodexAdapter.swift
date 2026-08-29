@@ -91,7 +91,8 @@ public struct CodexAdapter: Adapter {
         // `ORCHESTRA_TASK_ID`. Codex provides its generated `session_id` on the hook's stdin, so this is a
         // direct card ↔ session correlation even when multiple primary rollouts share one cwd. Binding it
         // here avoids relying on rollout discovery for the normal launch path; discovery remains a safe
-        // fallback if the hook is unavailable. Agent state and requests come only from app-server.
+        // fallback if the hook is unavailable. Agent state and human-needed facts come only from the
+        // app-server.
         if case let .hooksPush(kind, payload) = raw {
             if kind == HookEvent.sessionStart.rawValue,
                let sid = payload["session_id"]?.stringValue, !sid.isEmpty {
@@ -155,7 +156,7 @@ public struct CodexAdapter: Adapter {
     }
 
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
-        guard let expectedThreadId = context.harnessSessionId else { return [] }
+        guard let expectedThreadId = context.harnessSessionId, !expectedThreadId.isEmpty else { return [] }
 
         let kinds: [AgentSignal.Kind]
         let turnID: String?
@@ -164,11 +165,13 @@ public struct CodexAdapter: Adapter {
             guard params["threadId"]?.stringValue == expectedThreadId else { return [] }
             switch method {
             case "turn/started":
+                guard let id = params["turn"]?["id"]?.stringValue, !id.isEmpty else { return [] }
                 kinds = [.turnStarted]
-                turnID = params["turn"]?["id"]?.stringValue
+                turnID = id
             case "turn/completed":
+                guard let id = params["turn"]?["id"]?.stringValue, !id.isEmpty else { return [] }
                 kinds = [.turnCompleted()]
-                turnID = params["turn"]?["id"]?.stringValue
+                turnID = id
             case "thread/status/changed":
                 kinds = reconciliations(from: params["status"])
                 turnID = nil
@@ -196,20 +199,24 @@ public struct CodexAdapter: Adapter {
         switch status?["type"]?.stringValue {
         case "active":
             let flags = status?["activeFlags"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            var requests: [AgentRequest] = []
-            if flags.contains("waitingOnApproval") {
-                requests.append(.init(id: "permission", kind: .permission))
-            }
-            if flags.contains("waitingOnUserInput") {
-                requests.append(.init(id: "input", kind: .input))
-            }
-            return [.turnReconciled(.running), .requests(requests)]
+            return [.turnReconciled(.running, humanNeed: humanNeed(for: flags))]
         case "idle":
-            return [.turnReconciled(.waiting()), .requests([])]
+            return [.turnReconciled(.waiting(), humanNeed: nil)]
         case "notLoaded", "systemError":
-            return [.turnReconciled(.unavailable)]
+            return [.observationLost]
         default:
             return []
+        }
+    }
+
+    private func humanNeed(for flags: [String]) -> ProviderHumanNeed? {
+        let approval = flags.contains("waitingOnApproval")
+        let input = flags.contains("waitingOnUserInput")
+        return switch (approval, input) {
+        case (false, false): nil
+        case (true, false): .permission
+        case (false, true): .input
+        case (true, true): .unspecified
         }
     }
 

@@ -164,7 +164,7 @@ import Foundation
 
         // NEEDS-YOU-NOW DOMINATES: a permission block ambers even beside a running reviewer.
         m.tasks = [target, reviewer("02", .live(.running)),
-                   reviewer("03", .live(.permissionRequested))]
+                   reviewer("03", .live(.init(turnStatus: .running, humanNeed: .permission)))]
         #expect(m.attachedLiveness(of: target) == .needsAttention)
 
         // Dead is needs-you-now too.
@@ -177,12 +177,17 @@ import Foundation
     }
 
     @Test func livenessTier_perAgentClassification() {
-        #expect(BoardStore.AttachedLiveness(phase: .live(.running)) == .running)
-        #expect(BoardStore.AttachedLiveness(phase: .launching) == .running)
-        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting)) == .idle)
-        #expect(BoardStore.AttachedLiveness(phase: .live(.init(turnStatus: .unavailable))) == .running)
-        #expect(BoardStore.AttachedLiveness(phase: .live(.permissionRequested)) == .needsAttention)
-        #expect(BoardStore.AttachedLiveness(phase: .dead(.sessionVanished)) == .needsAttention)
+        func task(_ phase: Phase) -> Task {
+            // `uuid(_:)` above deliberately accepts a two-hex-digit suffix; identity does not
+            // matter to this per-agent classifier fixture.
+            worktree("0f", branch: UUID().uuidString, phase: phase)
+        }
+        #expect(BoardStore.AttachedLiveness(task: task(.live(.running))) == .running)
+        #expect(BoardStore.AttachedLiveness(task: task(.launching)) == .running)
+        #expect(BoardStore.AttachedLiveness(task: task(.live(.waiting))) == .idle)
+        #expect(BoardStore.AttachedLiveness(task: task(.live(.init(turnStatus: .unavailable)))) == .running)
+        #expect(BoardStore.AttachedLiveness(task: task(.live(.init(turnStatus: .running, humanNeed: .permission)))) == .needsAttention)
+        #expect(BoardStore.AttachedLiveness(task: task(.dead(.sessionVanished))) == .needsAttention)
     }
 
     // MARK: base BoardStore (iOS) never strands

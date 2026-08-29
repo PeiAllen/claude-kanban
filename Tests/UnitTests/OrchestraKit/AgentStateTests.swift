@@ -12,19 +12,36 @@ struct AgentStateTests {
         #expect(AgentState(turnStatus: .unavailable).workInFlight == nil)
     }
 
-    @Test("agent state round-trips all independent fields")
-    func codableRoundTrip() throws {
-        let state = AgentState(
-            turnStatus: .waiting(.init(resume: .init())),
-            activity: .init(text: "Running tests"),
-            activeRequests: [
-                .init(id: "permission-1", kind: .permission, prompt: "Allow Bash?")
-            ]
-        )
+    @Test("human need round-trips every optional provider classification")
+    func humanNeedCodableRoundTrip() throws {
+        for need: ProviderHumanNeed? in [nil, .unspecified, .permission, .input] {
+            let state = AgentState(
+                turnStatus: .waiting(.init(resume: .init())),
+                activity: .init(text: "Running tests"),
+                humanNeed: need
+            )
 
-        let data = try JSONEncoder().encode(state)
+            let data = try JSONEncoder().encode(state)
 
-        #expect(try JSONDecoder().decode(AgentState.self, from: data) == state)
+            #expect(try JSONDecoder().decode(AgentState.self, from: data) == state)
+            #expect(state.providerRequiresHuman == (need != nil))
+        }
+    }
+
+    @Test("a persisted request-array snapshot restarts as unavailable without stale request detail")
+    func requestArraySnapshotRestartsUnavailable() throws {
+        let legacy = Data(#"""
+        {
+          "turnStatus": { "name": "running" },
+          "activity": { "text": "stale tool" },
+          "activeRequests": [
+            { "id": "permission-1", "kind": "permission", "prompt": "Allow Bash?" }
+          ]
+        }
+        """#.utf8)
+
+        #expect(try JSONDecoder().decode(AgentState.self, from: legacy)
+            == AgentState(turnStatus: .unavailable))
     }
 
     @Test("turn status has a stable name/detail wire shape")

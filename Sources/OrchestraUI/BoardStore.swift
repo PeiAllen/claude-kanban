@@ -340,7 +340,7 @@ public class BoardStore: ObservableObject {
     // MARK: attached agents (read-only reviewers embedded behind their target)
 
     /// Eye-tint tier for attached agents — a THREE-tier priority, not a binary. `needsAttention` (a
-    /// reviewer on a permission prompt, or dead) is a distinct warning that DOMINATES everything; `running`
+    /// reviewer requiring a human, or dead) is a distinct warning that DOMINATES everything; `running`
     /// (any reviewer active or still being born) DOMINATES `idle`; `idle` (a reviewer that finished its
     /// turn — an ordinary wait — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
     /// is `idle`, NOT attention: a running sibling keeps the eye green, and only a genuine block (or an
@@ -348,14 +348,14 @@ public class BoardStore: ObservableObject {
     public enum AttachedLiveness: Equatable {
         case running        // green — active work in progress (dominates idle)
         case idle           // grey  — all attached agents have finished their turn, none blocked
-        case needsAttention // amber — a reviewer is blocked on a permission prompt or has died
+        case needsAttention // amber — a reviewer requires a human or has died
 
         /// The tier a single agent's phase maps to.
-        public init(phase: Phase) {
-            switch phase {
+        public init(task: Task) {
+            switch task.phase {
             case .dead:
                 self = .needsAttention
-            case .live(let state) where state.hasRequest(kind: .permission):
+            case .live where task.requiresHuman:
                 self = .needsAttention
             case .live(let state) where state.workInFlight == false:
                 self = .idle
@@ -436,7 +436,7 @@ public class BoardStore: ObservableObject {
     public func attachedLiveness(of target: Task) -> AttachedLiveness? {
         let agents = attachedAgents(of: target)
         guard !agents.isEmpty else { return nil }
-        let tiers = agents.map { AttachedLiveness(phase: $0.phase) }
+        let tiers = agents.map(AttachedLiveness.init(task:))
         if tiers.contains(.needsAttention) { return .needsAttention }
         if tiers.contains(.running) { return .running }
         return .idle
@@ -917,7 +917,6 @@ public class BoardStore: ObservableObject {
                 // `tasks` wholesale, bypassing `apply`) never fire a notification. The array IS the mac
                 // path's per-card memory (no separate stuck-state store needed).
                 let prevTask = tasks.first { $0.id == t.id }
-                let prevPhase = prevTask?.phase
                 let wasStuck = prevTask.map { AttentionTransition.currentStuckTrigger($0) != nil } ?? false
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
@@ -925,11 +924,11 @@ public class BoardStore: ObservableObject {
                 // Genuine transitions → the matching notification trigger, decided by the SHARED
                 // `AttentionTransition.notifyTrigger` core (the same mapping + precedence the phone's push
                 // path uses) so the macOS banner can't drift from the phone push. It reconciles the phase
-                // edge and a "card stuck" rise into ONE trigger (died/permission > stuck > needsYou). A fresh
+                // edge and a "card stuck" rise into ONE trigger (died/human-required > stuck). A fresh
                 // card (`prevTask == nil`, so `seen: false`) yields nil and never fires.
                 // Host-only: the macOS notifier surfaces these as system banners; iOS notifications are N1.
                 #if os(macOS)
-                if let trigger = AttentionTransition.notifyTrigger(prev: prevPhase, wasStuck: wasStuck,
+                if let trigger = AttentionTransition.notifyTrigger(prev: prevTask, wasStuck: wasStuck,
                                                                    seen: prevTask != nil, task: t) {
                     notifier.notify(trigger, task: t)
                 }

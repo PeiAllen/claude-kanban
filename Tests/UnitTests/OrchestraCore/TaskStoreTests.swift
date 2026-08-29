@@ -20,7 +20,7 @@ struct TaskStoreTests {
         let store = TaskStore(path: tempPath())
         let t = try await store.create(sample()).task
         #expect(t.order == 0)
-        #expect(t.phaseDisplay == .running)
+        #expect(t.turnStatus == .unavailable)  // the generic Task default is a safe unknown
         let t2 = try await store.create(sample("Second")).task
         #expect(t2.order == 1)  // appended after the first in the same column
     }

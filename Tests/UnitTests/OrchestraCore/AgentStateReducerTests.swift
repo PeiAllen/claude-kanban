@@ -5,16 +5,12 @@ import Testing
 struct AgentStateReducerTests {
     private let epoch = 4
 
-    private var permission: AgentRequest {
-        AgentRequest(id: "permission-1", kind: .permission, prompt: "Allow Bash?")
-    }
-
-    @Test("turn start enters running and retires prior-turn detail")
-    func turnStarted() {
+    @Test("an accepted distinct turn start resets old detail even while remaining running")
+    func turnStartedResetsRunningDetail() {
         var state = AgentState(
-            turnStatus: .waiting(),
+            turnStatus: .running,
             activity: .init(text: "old activity"),
-            activeRequests: [.init(id: "old-question", kind: .input, prompt: "Old question")]
+            humanNeed: .permission
         )
 
         let changed = AgentStateReducer.apply(
@@ -27,31 +23,12 @@ struct AgentStateReducerTests {
         #expect(state == AgentState(turnStatus: .running))
     }
 
-    @Test("a duplicate turn start preserves current-turn detail")
-    func duplicateTurnStarted() {
-        let original = AgentState(
-            turnStatus: .running,
-            activity: .init(text: "Running Bash"),
-            activeRequests: [permission]
-        )
-        var state = original
-
-        let changed = AgentStateReducer.apply(
-            .init(sessionEpoch: epoch, kind: .turnStarted),
-            to: &state,
-            currentSessionEpoch: epoch
-        )
-
-        #expect(!changed)
-        #expect(state == original)
-    }
-
-    @Test("turn completion waits, clears activity, and preserves unresolved requests")
+    @Test("turn completion waits and clears provider detail")
     func turnCompleted() {
         var state = AgentState(
             turnStatus: .running,
             activity: .init(text: "Running Bash"),
-            activeRequests: [permission]
+            humanNeed: .permission
         )
 
         let changed = AgentStateReducer.apply(
@@ -61,10 +38,7 @@ struct AgentStateReducerTests {
         )
 
         #expect(changed)
-        #expect(state == AgentState(
-            turnStatus: .waiting(.init(resume: .init())),
-            activeRequests: [permission]
-        ))
+        #expect(state == AgentState(turnStatus: .waiting(.init(resume: .init()))))
     }
 
     @Test("a terminal event recovers unavailable observation to waiting")
@@ -81,13 +55,12 @@ struct AgentStateReducerTests {
         #expect(state == AgentState(turnStatus: .waiting()))
     }
 
-    @Test("an unmatched completion does not disturb an already-waiting agent")
-    func unmatchedCompletion() {
-        let original = AgentState(
+    @Test("an accepted terminal clears stale human need from an already-waiting agent")
+    func terminalClearsWaitingHumanNeed() {
+        var state = AgentState(
             turnStatus: .waiting(.init(resume: .init())),
-            activeRequests: [.init(id: "question-1", kind: .input, prompt: "Still open")]
+            humanNeed: .input
         )
-        var state = original
 
         let changed = AgentStateReducer.apply(
             .init(sessionEpoch: epoch, kind: .turnCompleted()),
@@ -95,8 +68,8 @@ struct AgentStateReducerTests {
             currentSessionEpoch: epoch
         )
 
-        #expect(!changed)
-        #expect(state == original)
+        #expect(changed)
+        #expect(state == AgentState(turnStatus: .waiting(.init(resume: .init()))))
     }
 
     @Test("a duplicate completion may enrich waiting with automatic resume")
@@ -113,27 +86,26 @@ struct AgentStateReducerTests {
         #expect(state == AgentState(turnStatus: .waiting(.init(resume: .init()))))
     }
 
-    @Test("request snapshots never change running or waiting")
-    func requestsAreOrthogonal() {
-        let question = AgentRequest(id: "question-1", kind: .input, prompt: "Choose A or B")
+    @Test("human-need changes never change turn status")
+    func humanNeedIsOrthogonal() {
         var running = AgentState(turnStatus: .running)
         var waiting = AgentState(turnStatus: .waiting())
 
         _ = AgentStateReducer.apply(
-            .init(sessionEpoch: epoch, kind: .requests([question])),
+            .init(sessionEpoch: epoch, kind: .humanNeedChanged(.permission)),
             to: &running,
             currentSessionEpoch: epoch
         )
         _ = AgentStateReducer.apply(
-            .init(sessionEpoch: epoch, kind: .requests([question])),
+            .init(sessionEpoch: epoch, kind: .humanNeedChanged(.input)),
             to: &waiting,
             currentSessionEpoch: epoch
         )
 
         #expect(running.turnStatus == .running)
-        #expect(running.activeRequests == [question])
+        #expect(running.humanNeed == .permission)
         #expect(waiting.turnStatus == .waiting())
-        #expect(waiting.activeRequests == [question])
+        #expect(waiting.humanNeed == .input)
     }
 
     @Test("activity snapshots never change turn status")
@@ -156,7 +128,7 @@ struct AgentStateReducerTests {
         var state = AgentState(
             turnStatus: .running,
             activity: .init(text: "Running Bash"),
-            activeRequests: [permission]
+            humanNeed: .permission
         )
 
         let changed = AgentStateReducer.apply(
@@ -169,32 +141,32 @@ struct AgentStateReducerTests {
         #expect(state == AgentState(turnStatus: .unavailable))
     }
 
-    @Test("turn reconciliation uses the same field lifecycle as turn edges")
+    @Test("turn reconciliation atomically replaces turn and human-need facts")
     func turnReconciliation() {
         var state = AgentState(
             turnStatus: .waiting(),
             activity: .init(text: "old activity"),
-            activeRequests: [permission]
+            humanNeed: .input
         )
 
         _ = AgentStateReducer.apply(
-            .init(sessionEpoch: epoch, kind: .turnReconciled(.running)),
+            .init(sessionEpoch: epoch, kind: .turnReconciled(.running, humanNeed: .permission)),
             to: &state,
             currentSessionEpoch: epoch
         )
-        #expect(state == AgentState(turnStatus: .running))
+        #expect(state == AgentState(turnStatus: .running, humanNeed: .permission))
 
         state.activity = .init(text: "new activity")
-        state.activeRequests = [permission]
+        state.humanNeed = .permission
         _ = AgentStateReducer.apply(
-            .init(sessionEpoch: epoch, kind: .turnReconciled(.waiting())),
+            .init(sessionEpoch: epoch, kind: .turnReconciled(.waiting(), humanNeed: nil)),
             to: &state,
             currentSessionEpoch: epoch
         )
-        #expect(state == AgentState(turnStatus: .waiting(), activeRequests: [permission]))
+        #expect(state == AgentState(turnStatus: .waiting()))
 
         _ = AgentStateReducer.apply(
-            .init(sessionEpoch: epoch, kind: .turnReconciled(.unavailable)),
+            .init(sessionEpoch: epoch, kind: .turnReconciled(.unavailable, humanNeed: nil)),
             to: &state,
             currentSessionEpoch: epoch
         )

@@ -23,7 +23,7 @@ struct OrchestraServiceTests {
         #expect(task.desc == "")
         #expect(task.initialPrompt == "Add OAuth login flow\nwith refresh")
         #expect(task.column == .plan)
-        #expect(task.phaseDisplay == .running)
+        #expect(task.turnStatus == .unavailable)   // launch argv does not imply provider turn state
         let sid = try #require(task.agentSessionId)
         // launch argv carries --session-id <that id> + the prompt
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(task.id)])
@@ -121,24 +121,24 @@ struct OrchestraServiceTests {
         #expect(env.worktrees.removed.contains(b.cwd))
     }
 
-    @Test("spawn with no prompt → provisional title (branch), status .waiting, no positional prompt handed to launch")
-    func spawnNoPromptIsWaiting() async throws {
+    @Test("spawn with no prompt → provisional title (branch), unavailable status, no positional prompt handed to launch")
+    func spawnNoPromptIsUnavailable() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
 
         let blank = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "   ", repo: repo, branch: "feat-x"))
         #expect(blank.awaitingFirstPrompt == true)
         #expect(blank.title == "feat-x")       // branch-name placeholder
-        #expect(blank.workInFlight == false)       // idle, awaiting the first user prompt
+        #expect(blank.turnStatus == .unavailable)  // lifecycle cannot claim the harness is idle
         // No junk prompt is handed to the launch (a whitespace prompt must not be submitted).
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(blank.id)])
         let nameIdx = try #require(argv.firstIndex(of: "--name"))
         // Only the model flag trails --name <value>; no positional → no junk prompt was submitted.
         #expect(Array(argv[(nameIdx + 2)...]) == ["--model", "m1"])
 
-        // A real prompt still spawns running + non-provisional.
+        // A real prompt changes launch argv + provisional state, never the provider status.
         let real = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Do the thing", repo: repo, branch: "feat-y"))
-        #expect(real.phaseDisplay == .running)
+        #expect(real.turnStatus == .unavailable)
         #expect(real.awaitingFirstPrompt == false)
     }
 

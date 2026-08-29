@@ -43,6 +43,7 @@ extension OrchestraService {
     ///     landing carries the same single-winner fence as the bring-up.
     @discardableResult
     func transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil, expecting: Phase.Kind? = nil,
+                    refreshPhaseAge: Bool = false,
                     mutate: @Sendable (inout Task) -> Void = { _ in }) async -> TransitionResult {
         guard let card = await store.get(id) else { return .noop }
         let from = card.phase
@@ -53,7 +54,7 @@ extension OrchestraService {
 
         // 1 · Idempotency — but the `relaunching → relaunching` supersede self-edge must NOT be swallowed
         //     (it re-arms a fresh generation), so it falls through to apply.
-        if to == from && from.kind != .relaunching { return .noop }
+        if to == from && from.kind != .relaunching && !refreshPhaseAge { return .noop }
 
         // 2 · A signal carries the epoch it observed (`viaSignal`); a verb-driven transition carries none.
         //     Fence out a superseded generation: a signal whose `observedEpoch` no longer matches the card's
@@ -73,7 +74,7 @@ extension OrchestraService {
         }
 
         // 4 · One field-delta patch: phase + status timestamp + epoch bump + companion writes,
-        //     atomically. Live activity and request snapshots are detail within the current status, so
+        //     atomically. Live activity and human-need snapshots are detail within the current status, so
         //     they must not reset the user-facing Running/Waiting age.
         let updated: Task, rev: Int
         do {
@@ -87,7 +88,7 @@ extension OrchestraService {
                     statusChanged = true
                 }
                 t.phase = to
-                if statusChanged { t.phaseChangedAt = transitionAt }
+                if statusChanged || refreshPhaseAge { t.phaseChangedAt = transitionAt }
                 // Bump the generation on every (re)launch entry — spawn's `creatingWorktree`, reopen's
                 // `creatingWorktree`, and every `relaunching` entry INCLUDING the supersede self-edge.
                 // `launching` is intentionally omitted (the machine only enters it from the already-bumped
@@ -104,20 +105,10 @@ extension OrchestraService {
                 } else if to.kind == .live, t.agentSessionId != nil {
                     t.sessionDiscoverySince = nil
                 }
-                // A declared `needs-input` question is retired by PROOF that it is moot — never an intent.
-                // THIS seam handles only a COMPLETED SESSION REPLACEMENT: a `.live` landing out of a
-                // bring-up phase, where the session that asked the question is provably gone. It is
-                // unconditional and correct precisely because it is a replacement (a blank restart even
-                // lands `.waiting`, which the turn-start rule would miss). Deliberately NOT on
-                // ENTRY to `.relaunching`/`.creatingWorktree`: `resume` persists that intent before any
-                // launch runs, so a failed bring-up would erase a question the agent never saw — and that
-                // card is now `.dead`, where the human needs the question more, not less.
-                // The other proof — the next normalized turn start — is applied by AgentObservation on a
-                // live-to-live transition. Keeping it there lets this lifecycle seam handle replacements only.
-                if t.pendingQuestion != nil,
-                   to.kind == .live, [.relaunching, .launching, .creatingWorktree].contains(from.kind) {
-                    t.pendingQuestion = nil
-                }
+                // A live landing alone does not prove a provider-session replacement: a reconnect can
+                // resume the same conversation, whose declared question must survive. `report()` clears
+                // the declaration only when it attributes an actual session-id replacement; the distinct
+                // provider turn-start proof is applied by AgentObservation above.
             }
         } catch {
             return .noop   // unknown card raced away between the load and the patch
@@ -149,11 +140,11 @@ extension OrchestraService {
         // Structured observation follows the durable lifecycle edge. Entering/live churn converges to the
         // exact endpoint + epoch + provider session; leaving live cancels the blocking source. The live
         // AgentState is part of `phase`, so leaving live discards the snapshot in the same transition.
-        reconcileAgentObservation(updated)
+        await reconcileAgentObservation(updated)
 
         // 7 · Wake-on-live — the single structural release point for a message parked while the card
         //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
-        //     relaunchSeed lease is left alone (B3 D5) and a `.live(.running)` entry falls through.
+        //     relaunchSeed lease is left alone (B3 D5) and a live/unavailable entry falls through.
         if to.kind == .live { await wakeIfPending(id) }
         // A card ENTERING `.live` may be the OWNER a pending merge-request has been waiting for: `spawn`
         // creates the card and `reopen` un-archives it, and `derivedCard` counts either the instant it

@@ -187,23 +187,21 @@ struct LaunchStepperTests {
         }
         #expect(seed == "SEED")
 
-        // A real (non-provisional) card with NO transcript → blank, initialPrompt submitted, landing .running.
+        // A real (non-provisional) card with NO transcript → blank, with the initial prompt submitted.
         let blankReal = try #require(await env.svc.store.get(
             try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "do it", repo: repo, branch: "c")).id))
-        guard case .blank(let land, let prompt) = deriveLaunchFlavor(blankReal, env.adapter) else {
+        guard case .blank(let prompt) = deriveLaunchFlavor(blankReal, env.adapter) else {
             Issue.record("expected .blank"); return
         }
         #expect(prompt == "do it")
-        #expect(land == .running)
 
-        // A never-prompted (provisional) card → blank with NO positional, landing .waiting.
+        // A never-prompted (provisional) card → blank with no positional prompt.
         let provisional = try #require(await env.svc.store.get(
             try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "d")).id))
-        guard case .blank(let land2, let prompt2) = deriveLaunchFlavor(provisional, env.adapter) else {
+        guard case .blank(let prompt2) = deriveLaunchFlavor(provisional, env.adapter) else {
             Issue.record("expected .blank"); return
         }
         #expect(prompt2 == nil)
-        #expect(land2 == .waiting)
     }
 
     @Test("test_launchStepReachesLiveOnReady_immediate")   // .relaunchLiveness (stub) lands on ensure

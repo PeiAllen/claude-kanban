@@ -1018,7 +1018,10 @@ struct NotifyPreservedTests {
         let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
         await env.svc.receiveAgentSignals(
             cardId: task.id,
-            signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
+            signals: [
+                .init(sessionEpoch: epoch, turnID: "stop-turn", kind: .turnStarted),
+                .init(sessionEpoch: epoch, turnID: "stop-turn", kind: .turnCompleted()),
+            ]
         )
         let st = try await env.svc.status(task.id)
         #expect(st.task.turnStatus == .waiting())

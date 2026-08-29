@@ -12,7 +12,7 @@ struct ModelCodableTests {
             .launching,
             .live(.init(turnStatus: .running,
                         activity: .init(text: "Running tests"),
-                        activeRequests: [.init(id: "approval-1", kind: .permission)])),
+                        humanNeed: .permission)),
             .live(.init(turnStatus: .waiting(.init(resume: .init())))),
             .live(.init(turnStatus: .unavailable)),
             .relaunching,
@@ -47,7 +47,7 @@ struct ModelCodableTests {
         let live = try obj(.live(.init(
             turnStatus: .waiting(.init(resume: .init())),
             activity: .init(text: "Waiting for a timer"),
-            activeRequests: [.init(id: "question-1", kind: .input, prompt: "Continue?")]
+            humanNeed: .input
         )))
         #expect(live["name"] as? String == "live")
         let state = live["detail"] as? [String: Any]
@@ -55,7 +55,7 @@ struct ModelCodableTests {
         #expect(turn?["name"] as? String == "waiting")
         #expect((turn?["detail"] as? [String: Any])?["resume"] is [String: Any])
         #expect((state?["activity"] as? [String: Any])?["text"] as? String == "Waiting for a timer")
-        #expect((state?["activeRequests"] as? [[String: Any]])?.first?["kind"] as? String == "input")
+        #expect(state?["humanNeed"] as? String == "input")
         // DeadReason stays a raw String in `detail`.
         let dead = try obj(.dead(.agentExited))
         #expect(dead["name"] as? String == "dead")
@@ -106,7 +106,7 @@ struct ModelCodableTests {
         let state = AgentState(
             turnStatus: .running,
             activity: .init(text: "Running Bash"),
-            activeRequests: [.init(id: "approval-1", kind: .permission, prompt: "Allow Bash?")]
+            humanNeed: .permission
         )
         t.phase = .live(state)
         t.sessionEpoch = 3

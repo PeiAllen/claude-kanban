@@ -753,7 +753,7 @@ private struct DebugLaunchHook: ViewModifier {
                          diff: DiffStat(filesChanged: 4, insertions: 38, deletions: 9))
         // OWN chip: blocked mid-turn on a tool approval — the hardest block short of death.
         let blocked = mk("pr/wake-endpoint", "pr/wake-endpoint", .impl,
-                         .live(.permissionRequested), 1, desc: "Wake endpoint + route ladder",
+                         .live(.init(turnStatus: .running, humanNeed: .permission)), 1, desc: "Wake endpoint + route ladder",
                          diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28))
         // OWN chip + overflow: a declared question on a card that is also nearly out of context.
         let asking = mk("plan/codex-restart", "plan/codex-restart", .plan,
@@ -884,7 +884,7 @@ private struct DebugLaunchHook: ViewModifier {
                diff: DiffStat(filesChanged: 8, insertions: 188, deletions: 40), ageMinutes: 47,
                parentBranch: "feat/live-wake"),
             mk("You are the **D (Claude channels) card** — wire MCP channel push into the delivery arm",
-               "pr/claude-channels", .impl, .live(.permissionRequested), 9,
+               "pr/claude-channels", .impl, .live(.init(turnStatus: .running, humanNeed: .permission)), 9,
                desc: "MCP channel push wiring", ageMinutes: 9, parentBranch: "feat/live-wake"),
             mk("You are the **wake-endpoint + route-ladder** PR card for the live-wake-delivery redesign",
                "pr/wake-route", .review, .live(.waiting), 10,

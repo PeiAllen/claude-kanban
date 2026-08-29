@@ -106,27 +106,13 @@ private func transcriptExists(_ card: Task, _ adapter: any Adapter) -> Bool {
     return FileManager.default.fileExists(atPath: tp)
 }
 
-/// The initial provider-neutral state known from the launch command itself. Extracted so Launch/Relaunch
-/// share the rule — and
-/// the reconciler's epoch-identity adopt (`+Reconcile`), which jumps `.launching→.live` WITHOUT the
-/// LaunchStepper, so it must derive the same landing itself.
-func landing(of flavor: LaunchFlavor) -> AgentState {
-    if case .blank(let l, _) = flavor { return l }
-    if case .resume(let seed) = flavor, let seed, !seed.isEmpty { return .running }
-    return .init(turnStatus: .waiting())
-}
-
 /// Derive the launch flavor from persisted fields alone (crash-recovery re-derives from disk): a card
-/// with a resumable transcript resumes (`pendingSeed` folded); else a blank launch that submits the
-/// `initialPrompt` only for a real (non-provisional) first launch, landing `.running`; a provisional
-/// (never-prompted) card lands `.waiting` with no positional.
+/// with a resumable transcript resumes (`pendingSeed` folded); else a blank launch submits the
+/// `initialPrompt` only for a real (non-provisional) first launch. It does not imply a provider status.
 func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
     if transcriptExists(card, adapter) { return .resume(seed: card.pendingSeed) }
-    let land: AgentState = card.awaitingFirstPrompt
-        ? .init(turnStatus: .waiting())
-        : .running
     let prompt: String? = card.awaitingFirstPrompt ? nil : (card.initialPrompt.isEmpty ? nil : card.initialPrompt)
-    return .blank(landing: land, prompt: prompt)
+    return .blank(prompt: prompt)
 }
 
 /// Conclude a bring-up that could not create a session at all, with the reason we actually hold.
@@ -204,13 +190,12 @@ public struct LaunchStepper: PhaseStepper {
     public func step(_ card: Task, _ ctx: ConvergeContext) async throws {
         guard let adapter = try? ctx.adapters.get(card.agentId) else { return }
         let flavor = deriveLaunchFlavor(card, adapter)
-        let land = landing(of: flavor)
         let epoch = card.sessionEpoch
         switch await ctx.finishLaunch(card.id, flavor, .launching, epoch) {
         case .confirmed:
             // `expecting: .launching` — the landing carries the same fence as the bring-up: if the launch
             // timeout concluded the card while we were confirming readiness, do NOT revive it.
-            _ = await ctx.transition(card.id, .live(land), epoch, .launching) { t in
+            _ = await ctx.transition(card.id, .live(.init(turnStatus: .unavailable)), epoch, .launching) { t in
                 t.pendingSeed = nil
                 consumeModelReseat(&t, adapter)
             }
@@ -265,16 +250,16 @@ public struct RelaunchStepper: PhaseStepper {
         let batch = await ctx.claimSeed(card.id, epoch)
 
         // Resume when resumable (seeded with the claimed payload); a provisional card blank-launches with the
-        // payload as its opening positional (landing `.running` when a prompt is submitted); a non-provisional
+        // payload as its opening positional; a non-provisional
         // card whose transcript vanished can't resume → fail safe.
         let flavor: LaunchFlavor
         if transcriptExists(fresh, adapter) {
             flavor = .resume(seed: batch?.payload)
         } else if fresh.awaitingFirstPrompt {
             if let payload = batch?.payload, !payload.isEmpty {
-                flavor = .blank(landing: .running, prompt: payload)   // a prompt IS submitted → running
+                flavor = .blank(prompt: payload)
             } else {
-                flavor = .blank(landing: .waiting, prompt: nil)
+                flavor = .blank(prompt: nil)
             }
         } else {
             _ = await ctx.transition(card.id, .dead(.resumeFailed), nil, .relaunching) { t in
@@ -282,10 +267,9 @@ public struct RelaunchStepper: PhaseStepper {
             }
             return
         }
-        let land = landing(of: flavor)
         switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
         case .confirmed(let via):
-            _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in
+            _ = await ctx.transition(card.id, .live(.init(turnStatus: .unavailable)), epoch, .relaunching) { t in
                 t.pendingSeed = nil
                 consumeModelReseat(&t, adapter)
             }

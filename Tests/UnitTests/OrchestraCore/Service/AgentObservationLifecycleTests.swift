@@ -26,11 +26,21 @@ struct AgentObservationLifecycleTests {
             feed.source(at: 0)?.isStarted == true
         }
         #expect(feed.requests == [.init(endpoint: .unixSocket(path: endpoint), sessionId: "thread-1")])
-        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
         #expect(await env.svc.agentObservationActive(card.id))
 
         let first = try #require(feed.source(at: 0))
-        first.emit(.rpcNotification(method: "test/turn-completed", params: .object([:])))
+        first.emit(.rpcNotification(
+            method: "test/turn-started",
+            params: .object(["turn_id": .string("turn-1")])
+        ))
+        try await pollUntil("started turn to reach the durable reducer") {
+            await state(env.svc, card.id)?.turnStatus == .running
+        }
+        first.emit(.rpcNotification(
+            method: "test/turn-completed",
+            params: .object(["turn_id": .string("turn-1")])
+        ))
         try await pollUntil("completed turn to reach the durable reducer") {
             await state(env.svc, card.id)?.turnStatus == .waiting()
         }
@@ -44,7 +54,10 @@ struct AgentObservationLifecycleTests {
             feed.source(at: 1)?.isStarted == true
         }
         let second = try #require(feed.source(at: 1))
-        second.emit(.rpcNotification(method: "test/turn-started", params: .object([:])))
+        second.emit(.rpcNotification(
+            method: "test/turn-started",
+            params: .object(["turn_id": .string("turn-2")])
+        ))
         try await pollUntil("reconnected source to restore running") {
             await state(env.svc, card.id)?.turnStatus == .running
         }
@@ -67,7 +80,14 @@ struct AgentObservationLifecycleTests {
         )
         try await pollUntil { feed.source(at: 0)?.isStarted == true }
         let old = try #require(feed.source(at: 0))
-        old.emit(.rpcNotification(method: "test/turn-completed", params: .object([:])))
+        old.emit(.rpcNotification(
+            method: "test/turn-started",
+            params: .object(["turn_id": .string("turn-1")])
+        ))
+        old.emit(.rpcNotification(
+            method: "test/turn-completed",
+            params: .object(["turn_id": .string("turn-1")])
+        ))
         try await pollUntil { await state(env.svc, card.id)?.turnStatus == .waiting() }
 
         try await env.svc.report(card.id, StatusReport(sessionId: "thread-2"))
@@ -78,7 +98,10 @@ struct AgentObservationLifecycleTests {
         #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
 
         let replacement = try #require(feed.source(at: 1))
-        replacement.emit(.rpcNotification(method: "test/turn-started", params: .object([:])))
+        replacement.emit(.rpcNotification(
+            method: "test/turn-started",
+            params: .object(["turn_id": .string("turn-2")])
+        ))
         try await pollUntil { await state(env.svc, card.id)?.turnStatus == .running }
     }
 
@@ -219,12 +242,14 @@ private struct ObservationTestAdapter: Adapter {
         feed.makeSource(endpoint: endpoint, sessionId: harnessSessionId)
     }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
-        guard case .rpcNotification(let method, _) = raw else { return [] }
+        guard case .rpcNotification(let method, let params) = raw,
+              let turnID = params["turn_id"]?.stringValue, !turnID.isEmpty
+        else { return [] }
         switch method {
         case "test/turn-started":
-            return [.init(sessionEpoch: context.sessionEpoch, kind: .turnStarted)]
+            return [.init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: .turnStarted)]
         case "test/turn-completed":
-            return [.init(sessionEpoch: context.sessionEpoch, kind: .turnCompleted())]
+            return [.init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: .turnCompleted())]
         default:
             return []
         }

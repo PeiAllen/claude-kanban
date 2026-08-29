@@ -7,7 +7,7 @@ extension OrchestraService {
         guard let card = await store.get(id) else { return }
         await receiveAgentSignals(
             cardId: id,
-            signals: [.init(sessionEpoch: card.sessionEpoch, kind: .turnReconciled(status))]
+            signals: [.init(sessionEpoch: card.sessionEpoch, kind: .turnReconciled(status, humanNeed: nil))]
         )
     }
 
@@ -15,15 +15,23 @@ extension OrchestraService {
         guard let card = await store.get(id) else { return }
         await receiveAgentSignals(
             cardId: id,
-            signals: [.init(sessionEpoch: card.sessionEpoch, kind: .turnCompleted(resume: resume))]
+            signals: [
+                .init(sessionEpoch: card.sessionEpoch, turnID: "test-turn", kind: .turnStarted),
+                .init(sessionEpoch: card.sessionEpoch, turnID: "test-turn", kind: .turnCompleted(resume: resume)),
+            ]
         )
     }
 
-    func testSetRequests(_ id: UUID, _ requests: [AgentRequest]) async {
+    func testSetHumanNeed(_ id: UUID, _ humanNeed: ProviderHumanNeed?) async {
         guard let card = await store.get(id) else { return }
         await receiveAgentSignals(
             cardId: id,
-            signals: [.init(sessionEpoch: card.sessionEpoch, kind: .requests(requests))]
+            signals: [
+                .init(
+                    sessionEpoch: card.sessionEpoch,
+                    kind: .turnReconciled(card.agentState?.turnStatus ?? .unavailable, humanNeed: humanNeed)
+                ),
+            ]
         )
     }
 }

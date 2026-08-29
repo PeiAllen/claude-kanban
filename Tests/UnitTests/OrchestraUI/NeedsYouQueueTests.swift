@@ -45,21 +45,21 @@ final class NeedsYouQueueTests: XCTestCase {
         // A plain running card holds no reason → absent. A permission-blocked card and a dead card each
         // hold one → present, top reason = that reason.
         let m = modelWith([card("run", phase: .live(.running)),
-                           card("perm", phase: .live(.permissionRequested)),
+                           card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission))),
                            card("dead", phase: .dead(.agentExited), dead: .agentExited)])
         let rows = m.needsYouRows(now: t0)
         XCTAssertEqual(Set(rows.map(\.task.title)), ["perm", "dead"])
-        XCTAssertEqual(rows.first(where: { $0.task.title == "perm" })?.topReason, .permission)
+        XCTAssertEqual(rows.first(where: { $0.task.title == "perm" })?.topReason, .humanRequired)
         XCTAssertEqual(rows.first(where: { $0.task.title == "dead" })?.topReason, .dead)
     }
 
-    func testDetectedInputRequestUsesQuestionReason() {
+    func testDetectedInputUsesHumanRequiredReason() {
         let input = AgentState(
             turnStatus: .running,
-            activeRequests: [.init(id: "input:p1", kind: .input)]
+            humanNeed: .input
         )
         let rows = modelWith([card("input", phase: .live(input))]).needsYouRows(now: t0)
-        XCTAssertEqual(rows.first?.topReason, .question)
+        XCTAssertEqual(rows.first?.topReason, .humanRequired)
         XCTAssertEqual(rows.first?.signals.map(\.label), ["input needed"])
     }
 
@@ -84,14 +84,14 @@ final class NeedsYouQueueTests: XCTestCase {
         // so it must not enter the stall queue even after the ordinary-wait threshold passes.
         let autoResume = AgentState(turnStatus: .waiting(.init(resume: .init())))
         let m = modelWith([card("bg-loop", phase: .live(autoResume)),
-                           card("blocked", phase: .live(.permissionRequested))])
+                           card("blocked", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))])
         XCTAssertEqual(m.needsYouRows(now: late).map(\.task.title), ["blocked"])
     }
 
     // MARK: signals — labels + the multi-reason row
 
     func testSignalsCarryTheirLabels() {
-        let m = modelWith([card("perm", phase: .live(.permissionRequested))])
+        let m = modelWith([card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))])
         let row = m.needsYouRows(now: t0).first
         XCTAssertEqual(row?.signals.map(\.label), ["permission"])
     }
@@ -99,10 +99,10 @@ final class NeedsYouQueueTests: XCTestCase {
     func testMultiSignalRowTopReasonDrivesIt() {
         // A card blocked on permission AND nearly out of context holds BOTH reasons; the row lists both,
         // and the top (most hard-blocked) is permission.
-        let m = modelWith([card("both", phase: .live(.permissionRequested), ctx: 92)])
+        let m = modelWith([card("both", phase: .live(.init(turnStatus: .running, humanNeed: .permission)), ctx: 92)])
         let row = m.needsYouRows(now: t0).first
-        XCTAssertEqual(row?.topReason, .permission)
-        XCTAssertEqual(row?.signals.map(\.reason), [.permission, .ctxCritical])
+        XCTAssertEqual(row?.topReason, .humanRequired)
+        XCTAssertEqual(row?.signals.map(\.reason), [.humanRequired, .ctxCritical])
     }
 
     // MARK: sort — most-urgent-first, then longest-waiting within a reason
@@ -110,11 +110,11 @@ final class NeedsYouQueueTests: XCTestCase {
     func testSortByTopReasonThenOldest() {
         let old = t0.addingTimeInterval(-600)
         let new = t0.addingTimeInterval(-60)
-        let perm = card("perm", phase: .live(.permissionRequested), at: new)
+        let perm = card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission)), at: new)
         let died = card("died", phase: .dead(.agentExited), dead: .agentExited, at: new)
         let ctx  = card("ctx", phase: .live(.running), ctx: 95, at: new)
         // Two same-reason (permission) rows to prove the oldest-first tiebreak within a bucket.
-        let permOld = card("perm-old", phase: .live(.permissionRequested), at: old)
+        let permOld = card("perm-old", phase: .live(.init(turnStatus: .running, humanNeed: .permission)), at: old)
 
         let order = modelWith([ctx, perm, died, permOld]).needsYouRows(now: t0).map(\.task.title)
         // dead(0) < permission(1) [oldest first] < ctxCritical(5)
@@ -143,7 +143,7 @@ final class NeedsYouQueueTests: XCTestCase {
     }
 
     func testUnknownAgentCannotBorrowClaudePermissionKeys() {
-        var unknown = card("permission", phase: .live(.permissionRequested))
+        var unknown = card("permission", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
         unknown.agentId = "future-agent"
         let m = modelWith([unknown])
         XCTAssertNil(m.permissionGateChord(unknown.id, \.approveChord))
@@ -151,7 +151,7 @@ final class NeedsYouQueueTests: XCTestCase {
     }
 
     func testGateFiresOnlyWhileWaitingOnPermission() {
-        let perm = card("perm", phase: .live(.permissionRequested))
+        let perm = card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
         let humanTurn = card("human", phase: .live(.waiting))
         let running = card("run", phase: .live(.running))
         let dead = card("dead", phase: .dead(.agentExited))
@@ -172,7 +172,7 @@ final class NeedsYouQueueTests: XCTestCase {
             authMode: .subscription, approveChord: [.named(.tab)], denyChord: [])
         let agent = AgentInfo(id: "tabber", name: "Tabber", icon: "sparkle",
                               models: [AgentModel(id: "m")], capabilities: tabCaps)
-        var t = card("perm", phase: .live(.permissionRequested))
+        var t = card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
         t.agentId = "tabber"
         let m = modelWith([t], agents: [agent])
         XCTAssertEqual(m.permissionGateChord(t.id, \.approveChord), [.named(.tab)])

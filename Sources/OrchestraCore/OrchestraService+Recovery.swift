@@ -32,12 +32,11 @@ public enum ReadinessOutcome: Sendable, Equatable {
 }
 
 /// How spawn / reopen bring the agent session up once the card is being walked to `.live`. `.blank`
-/// starts a fresh session (readiness is the successful `ensure` — the 2.5 sync-spawn readiness stub;
-/// dedicated signals arrive in 2.6) and lands on the known initial agent state. `.resume` relaunches the
-/// vendor transcript and confirms readiness via `awaitReadiness`; a supplied seed owns the opening turn,
-/// while a seedless resume reaches the provider prompt.
+/// starts a fresh session. `.resume` relaunches the vendor transcript and confirms readiness via
+/// `awaitReadiness`. Flavor carries argv semantics only; provider observation establishes the later
+/// live turn state.
 public enum LaunchFlavor: Sendable {
-    case blank(landing: AgentState, prompt: String?)
+    case blank(prompt: String?)
     case resume(seed: String?)
 }
 
@@ -165,7 +164,8 @@ extension OrchestraService {
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
-    /// re-handed; status → waiting, awaitingFirstPrompt → true. Never touches worktree contents.
+    /// re-handed; it lands live/unavailable until the provider observes it, and `awaitingFirstPrompt`
+    /// becomes true. Never touches worktree contents.
     ///
     /// INTENT-ONLY (PR4b Task 4): `transition(→ .relaunching, mutate:)` carries the real persist block
     /// (fresh id, rolled prior ids, provisional, cleared dead/desc) atomically with the phase write, then
