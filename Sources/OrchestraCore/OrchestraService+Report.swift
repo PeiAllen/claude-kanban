@@ -231,6 +231,12 @@ extension OrchestraService {
                 // replacing the subscription; the same hook's raw observation (or Codex's attach response)
                 // then supplies the first current-session state.
                 await invalidateAgentObservation(saved)
+                // `observationLost` may be a durable no-op when the old state is already unavailable.
+                // Session binding is still a subscription-identity change, so converge it directly instead
+                // of relying on a status transition's lifecycle callback to happen as a side effect.
+                if saved.phase.kind == .live {
+                    await reconcileAgentObservation(saved)
+                }
             }
             didChange = true
         }

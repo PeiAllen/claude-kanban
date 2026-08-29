@@ -105,6 +105,53 @@ struct AgentObservationLifecycleTests {
         try await pollUntil { await state(env.svc, card.id)?.turnStatus == .running }
     }
 
+    @Test("late session binding arms an observer without a status transition")
+    func lateSessionBinding() async throws {
+        let feed = ObservationTestFeed()
+        let adapter = ObservationTestAdapter(feed: feed, initialSessionId: nil)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "work", repo: TestEnv.repo(env.base),
+                       branch: "late-bind", agentId: adapter.id)
+        )
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
+        #expect(feed.requests.isEmpty)
+
+        try await env.svc.report(card.id, StatusReport(sessionId: "thread-late"))
+
+        try await pollUntil("late-bound observation source to start") {
+            feed.source(at: 0)?.isStarted == true
+        }
+        #expect(feed.requests == [.init(
+            endpoint: .unixSocket(path: "\(env.base)/state/observed-\(card.shortId).sock"),
+            sessionId: "thread-late"
+        )])
+    }
+
+    @Test("an unavailable session rollover replaces its observer without a status transition")
+    func unavailableSessionRollover() async throws {
+        let feed = ObservationTestFeed()
+        let adapter = ObservationTestAdapter(feed: feed)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "work", repo: TestEnv.repo(env.base),
+                       branch: "dark-rollover", agentId: adapter.id)
+        )
+        try await pollUntil { feed.source(at: 0)?.isStarted == true }
+        let old = try #require(feed.source(at: 0))
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
+
+        try await env.svc.report(card.id, StatusReport(sessionId: "thread-2"))
+
+        try await pollUntil("unavailable rollover to replace its observer") {
+            feed.source(at: 1)?.isStarted == true && old.wasShutdown
+        }
+        #expect(feed.requests.last?.sessionId == "thread-2")
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
+    }
+
     @Test("boot adoption reconstructs a live card's observer from durable card and session identity")
     func bootAdoption() async throws {
         let original = TestEnv.make()
@@ -211,19 +258,21 @@ private final class ObservationTestFeed: @unchecked Sendable {
 private struct ObservationTestAdapter: Adapter {
     let feed: ObservationTestFeed
     let id: String
+    let initialSessionId: String?
     let name = "Observed"
     let icon = "eye"
     let bin = "fake-observed"
     let enabled = true
     let capabilities = AgentCapabilities.stub
 
-    init(feed: ObservationTestFeed, id: String = "observed") {
+    init(feed: ObservationTestFeed, id: String = "observed", initialSessionId: String? = "thread-1") {
         self.feed = feed
         self.id = id
+        self.initialSessionId = initialSessionId
     }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1")] }
-    func newSessionId() -> String? { "thread-1" }
+    func newSessionId() -> String? { initialSessionId }
     func start(_ ctx: AdapterContext) -> [String] {
         [bin, ctx.observationEndpoint?.unixSocketPath ?? "missing-endpoint"]
     }
