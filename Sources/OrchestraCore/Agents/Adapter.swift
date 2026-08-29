@@ -1,5 +1,34 @@
 import Foundation
 
+/// Ephemeral provider connection details for sending a message into one live harness session.
+/// Core carries this value without interpreting it; the owning adapter builds the provider sender.
+/// Deliberately not `Codable`: credentials may cross the hook RPC, but must never enter durable state.
+public enum AgentMessageEndpoint: Sendable, Equatable {
+    case claudeHookRPC(socketPath: String, token: String)
+}
+
+/// One hook-reported endpoint plus the provider session identity it belongs to. Also deliberately
+/// non-Codable: `HookRPC` manually encodes the short-lived wire value and Core retains it only in
+/// `CardRuntime`.
+public struct AgentMessageEndpointReport: Sendable, Equatable {
+    public let providerId: String
+    public let harnessSessionId: String
+    public let endpoint: AgentMessageEndpoint
+
+    public init(providerId: String, harnessSessionId: String, endpoint: AgentMessageEndpoint) {
+        self.providerId = providerId
+        self.harnessSessionId = harnessSessionId
+        self.endpoint = endpoint
+    }
+}
+
+/// A provider-native path into one live harness session. Implementations own their connection and must
+/// make `shutdown` synchronously prevent any later send from using superseded session credentials.
+public protocol AgentMessageSender: AnyObject, Sendable {
+    func send(_ message: String) async throws
+    func shutdown()
+}
+
 /// Provider observation endpoint prepared for one card launch. The enum keeps the adapter/core seam
 /// provider-neutral even though the first source (Codex app-server) uses a Unix domain socket.
 public enum AgentObservationEndpoint: Sendable, Equatable {
@@ -126,6 +155,9 @@ public protocol Adapter: Sendable {
         endpoint: AgentObservationEndpoint,
         harnessSessionId: String
     ) -> (any AgentObservationSource)?
+    /// Build a sender for one ephemeral provider endpoint. Core owns the returned sender through the
+    /// exact card/provider/session identity in `CardRuntime` and shuts it down on replacement/teardown.
+    func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)?
     /// Encode core's agent-neutral `HookResponse` into THIS agent's hook stdout envelope (receive
     /// direction). AGENT-DEPENDENT format. DEFAULTED to `nil` (fail-safe, like `parse`) — so a divergent
     /// future agent that forgets can't silently emit another agent's shape (A1 "no silent inheritance").
@@ -161,6 +193,7 @@ public extension Adapter {
         endpoint: AgentObservationEndpoint,
         harnessSessionId: String
     ) -> (any AgentObservationSource)? { nil }
+    func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? { nil }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
     func launchEnvironment(_ context: AdapterContext) -> [String: String] { env }
     func sessionSource(_ payload: JSONValue) -> SessionSource? {

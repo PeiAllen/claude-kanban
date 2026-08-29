@@ -168,9 +168,11 @@ public final class ControlServer: @unchecked Sendable {
             // can't drift from the ReportHelper builder). Default false — a pre-upgrade / non-Stop hook.
             let stopHookActive = p.optBool(HookRPC.stopHookActiveKey) ?? false
             let observationPayload = p[HookRPC.observationPayloadKey]
+            let messageEndpoint = HookRPC.messageEndpoint(p[HookRPC.messageEndpointKey])
             let resp = await service.handleHook(ref, event: event, report: report, source: source,
                                                 observedEpoch: observedEpoch, stopHookActive: stopHookActive,
-                                                observationPayload: observationPayload)
+                                                observationPayload: observationPayload,
+                                                messageEndpoint: messageEndpoint)
             if let resp { return .object(["response": try JSONValue(encodable: resp)]) }
             return .object(["response": .null])
         case "diffText":

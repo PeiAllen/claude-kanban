@@ -82,8 +82,19 @@ struct DaemonLifecycleTests {
         #expect(s.contains("--event posttool --agent claude-code"))
         #expect(s.contains("--event posttoolfailure --agent claude-code"))
         #expect(s.contains("--event permission --agent claude-code"))
+        let root = try JSONValue.parse(Data(s.utf8))
+        #expect(root["crossSessionInbound"]?.stringValue == "accept")
         // valid JSON
         #expect(throws: Never.self) { _ = try JSONValue.parse(Data(s.utf8)) }
+    }
+
+    @Test("HooksRenderer fallback accepts managed cross-session inbound messages")
+    func hooksFallbackAcceptsCrossSessionInbound() throws {
+        let rendered = HooksRenderer.renderedFallbackTemplate(
+            orchestraBin: "/opt/orchestra", agentId: "claude-code"
+        )
+        let root = try JSONValue.parse(Data(rendered.utf8))
+        #expect(root["crossSessionInbound"]?.stringValue == "accept")
     }
 
     // MARK: - Task 3.5: teardown routed through the registry

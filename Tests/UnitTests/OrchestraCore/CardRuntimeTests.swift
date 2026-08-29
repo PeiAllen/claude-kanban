@@ -59,6 +59,41 @@ struct CardRuntimeTests {
         #expect(await env.svc.runtime[card.id] == nil)
     }
 
+    @Test("A2: detach cancels the native-inbox arm and closes its current session sender")
+    func detachClosesNativeMessageRuntime() async throws {
+        let env = TestEnv.make()
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-message-a2")
+        )
+        let sender = RuntimeRecordingSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        let identity = CardRuntime.AgentMessageIdentity(
+            providerId: stored.agentId,
+            sessionEpoch: stored.sessionEpoch,
+            harnessSessionId: try #require(stored.agentSessionId)
+        )
+        await env.svc.installAgentMessageHandleForTest(
+            card.id,
+            identity: identity,
+            endpoint: .claudeHookRPC(socketPath: "/tmp/runtime.sock", token: "runtime-secret"),
+            sender: sender
+        )
+        let gate = Gate()
+        _ = await env.svc.arm(card.id, .nativeInbox) { _ in
+            _Concurrency.Task { _ = await gate.park() }
+        }
+        await gate.reached()
+        let armed = try #require(await env.svc.runtime[card.id]?.tasks[.nativeInbox]?.task)
+
+        await env.svc.detachCardRuntime(card.id)
+        gate.release()
+
+        #expect(armed.isCancelled)
+        #expect(sender.shutdownCount == 1)
+        #expect(await env.svc.runtime[card.id] == nil)
+    }
+
     // A4 — durable duties redrive: a crash between archive intent and step 4 restarts the daemon
     // with an EMPTY runtime map; the redrive must still remove the archived watcher's persisted
     // watch-registry key. (The child nudge's at-most-once dedup is pinned by the teardown suite.)
@@ -179,4 +214,28 @@ struct CardRuntimeTests {
         }
         #expect(await env.svc.runtime[card.id] == nil)
     }
+}
+
+private extension OrchestraService {
+    func installAgentMessageHandleForTest(
+        _ cardId: UUID,
+        identity: CardRuntime.AgentMessageIdentity,
+        endpoint: AgentMessageEndpoint,
+        sender: any AgentMessageSender
+    ) {
+        runtime[cardId]?.agentMessageHandle = .init(
+            identity: identity,
+            endpoint: endpoint,
+            sender: sender
+        )
+    }
+}
+
+private final class RuntimeRecordingSender: AgentMessageSender, @unchecked Sendable {
+    private let lock = NSLock()
+    private var shutdowns = 0
+
+    var shutdownCount: Int { lock.withLock { shutdowns } }
+    func send(_ message: String) async throws {}
+    func shutdown() { lock.withLock { shutdowns += 1 } }
 }

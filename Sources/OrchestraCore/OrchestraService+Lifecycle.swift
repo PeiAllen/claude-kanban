@@ -141,6 +141,7 @@ extension OrchestraService {
         // exact endpoint + epoch + provider session; leaving live cancels the blocking source. The live
         // AgentState is part of `phase`, so leaving live discards the snapshot in the same transition.
         await reconcileAgentObservation(updated)
+        reconcileAgentMessageHandle(updated)
 
         // 7 · Wake-on-live — the single structural release point for a message parked while the card
         //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`

@@ -189,6 +189,36 @@ struct ControlRoundTripTests {
         }
     }
 
+    @Test("hook RPC forwards the ephemeral native-message endpoint without persisting it")
+    func hookNativeMessageEndpointRPC() async throws {
+        let env = TestEnv.make()
+        let task = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "c", repo: TestEnv.repo(env.base), branch: "native-message-rpc")
+        )
+        let current = try #require(await env.svc.store.get(task.id))
+        let endpoint = AgentMessageEndpointReport(
+            providerId: current.agentId,
+            harnessSessionId: try #require(current.agentSessionId),
+            endpoint: .claudeHookRPC(socketPath: "/tmp/rpc-message.sock", token: "rpc-secret")
+        )
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+        let client = TestEnv.controlClient(path, source: .agent)
+        try client.connect(); defer { client.close() }
+
+        let fields = HookRPC.hookFields(
+            ref: task.shortId, event: "statusline", report: nil, source: nil,
+            epoch: current.sessionEpoch, stopHookActive: nil, messageEndpoint: endpoint
+        )
+        _ = try await client.call("hook", .object(fields))
+
+        #expect(await env.svc.runtime[task.id]?.pendingAgentMessageEndpoint?.endpoint == endpoint.endpoint)
+        let persisted = try String(contentsOfFile: env.base + "/tasks.json", encoding: .utf8)
+        #expect(!persisted.contains("rpc-secret"))
+    }
+
     @Test("diffText / diffStat endpoints route over the socket for a worktree card")
     func diffEndpoints() async throws {
         let env = TestEnv.make()

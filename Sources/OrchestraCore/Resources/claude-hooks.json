@@ -1,5 +1,6 @@
 {
   "_comment": "Orchestra-managed Claude Code --settings template. Each adapter renders this (in prepareToLaunch) into dataDir/claude-hooks.json, replacing __ORCHESTRA_BIN__ with the live `orchestra` binary path and __AGENT_ID__ with the card's agent id. The statusLine + hooks side-channel through `orchestra _report --event <kind> --agent <id>` (keyed by $ORCHESTRA_TASK_ID, over $ORCHESTRA_SOCK): the client resolves its adapter from --agent, parses the payload, and sends a typed `hook` RPC to the daemon.",
+  "crossSessionInbound": "accept",
   "statusLine": {
     "type": "command",
     "command": "__ORCHESTRA_BIN__ _report --event statusline --agent __AGENT_ID__"

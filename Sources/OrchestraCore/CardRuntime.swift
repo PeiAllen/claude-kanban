@@ -31,6 +31,7 @@ struct CardRuntime {
         case treeStat             // branch-tree stat debounce
         case childFanout          // child tree-stat fan-out debounce
         case agentObservation     // structured provider event stream + reconnect loop
+        case nativeInbox          // provider-native advisory inbox sender loop
     }
 
     /// One arming of one slot: the running task plus the **arming token** that fences every delayed
@@ -71,6 +72,41 @@ struct CardRuntime {
         var signals: [AgentSignal]
     }
     var pendingAgentSignals: PendingAgentSignals?
+
+    // MARK: - Native message delivery
+
+    /// Exact ownership fence for a live provider-native sender. Provider id prevents an endpoint from a
+    /// mismatched hook adapter crossing the neutral Core seam; epoch and harness id fence superseded sessions.
+    struct AgentMessageIdentity: Equatable, Sendable {
+        let providerId: String
+        let sessionEpoch: Int
+        let harnessSessionId: String
+    }
+
+    /// A hook can report its endpoint just before the launch step publishes `.live`; retain that one
+    /// current-generation value and install it at the lifecycle landing.
+    struct PendingAgentMessageEndpoint: Sendable {
+        let identity: AgentMessageIdentity
+        let endpoint: AgentMessageEndpoint
+    }
+
+    /// The live sender and the endpoint it was built from. Replacement is centralized in
+    /// `reconcileAgentMessageHandle`; detach closes the retained sender before dropping the runtime entry.
+    final class AgentMessageHandle: Sendable {
+        let identity: AgentMessageIdentity
+        let endpoint: AgentMessageEndpoint
+        let sender: any AgentMessageSender
+
+        init(identity: AgentMessageIdentity, endpoint: AgentMessageEndpoint,
+             sender: any AgentMessageSender) {
+            self.identity = identity
+            self.endpoint = endpoint
+            self.sender = sender
+        }
+    }
+
+    var pendingAgentMessageEndpoint: PendingAgentMessageEndpoint?
+    var agentMessageHandle: AgentMessageHandle?
 
     // MARK: - Readiness
 
@@ -217,6 +253,9 @@ extension OrchestraService {
         }
         for armed in rt.tasks.values { armed.task.cancel() }
         rt.tasks = [:]
+        rt.agentMessageHandle?.sender.shutdown()
+        rt.agentMessageHandle = nil
+        rt.pendingAgentMessageEndpoint = nil
         if let waiter = rt.readinessWaiter {
             rt.readinessWaiter = nil
             waiter.cont.resume(returning: .superseded)

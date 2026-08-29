@@ -236,6 +236,7 @@ extension OrchestraService {
                 // of relying on a status transition's lifecycle callback to happen as a side effect.
                 if saved.phase.kind == .live {
                     await reconcileAgentObservation(saved)
+                    reconcileAgentMessageHandle(saved)
                 }
             }
             didChange = true

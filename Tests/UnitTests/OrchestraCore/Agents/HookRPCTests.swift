@@ -39,4 +39,39 @@ struct HookRPCTests {
         #expect(off["epoch"] == nil)
         #expect(off["source"] == .string("startup"))
     }
+
+    @Test("Claude messaging credentials require a complete environment and round-trip only through the ephemeral hook field")
+    func claudeMessageEndpointRoundTrip() {
+        let environment = [
+            "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/claude-message.sock",
+            "CLAUDE_CODE_MESSAGING_TOKEN": "runtime-secret",
+        ]
+        let endpoint = HookRPC.claudeMessageEndpoint(
+            providerId: "claude-code",
+            harnessSessionId: "session-1",
+            environment: environment
+        )
+        let captured = try! #require(endpoint)
+        #expect(captured.providerId == "claude-code")
+        #expect(captured.harnessSessionId == "session-1")
+        #expect(captured.endpoint == .claudeHookRPC(
+            socketPath: "/tmp/claude-message.sock",
+            token: "runtime-secret"
+        ))
+
+        let fields = HookRPC.hookFields(
+            ref: "c", event: "statusline", report: nil, source: nil,
+            epoch: 9, stopHookActive: nil, messageEndpoint: captured
+        )
+        #expect(HookRPC.messageEndpoint(fields[HookRPC.messageEndpointKey]) == captured)
+
+        #expect(HookRPC.claudeMessageEndpoint(
+            providerId: "claude-code", harnessSessionId: "session-1",
+            environment: ["CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/only-socket"]
+        ) == nil)
+        #expect(HookRPC.claudeMessageEndpoint(
+            providerId: "claude-code", harnessSessionId: "",
+            environment: environment
+        ) == nil)
+    }
 }

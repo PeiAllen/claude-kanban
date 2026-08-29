@@ -298,6 +298,140 @@ import TestSupport
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
     }
 
+    @Test("current live endpoint installs and refreshes while stale epoch, provider, and session reports cannot replace it")
+    func messageEndpointIdentityFences() async throws {
+        let senders = MessageSenderRecorder()
+        let adapter = HookSignalTestAdapter(messageSenders: senders)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "message-fences", agentId: adapter.id)
+        )
+        let current = try #require(await env.svc.store.get(card.id))
+        let epoch = current.sessionEpoch
+        let first = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: try #require(current.agentSessionId),
+            endpoint: .claudeHookRPC(socketPath: "/tmp/first.sock", token: "first-secret")
+        )
+
+        _ = await env.svc.handleHook(
+            card.shortId, event: .statusLine, report: nil, source: nil,
+            observedEpoch: epoch, messageEndpoint: first
+        )
+        #expect(senders.created.count == 1)
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle?.identity == .init(
+            providerId: adapter.id,
+            sessionEpoch: epoch,
+            harnessSessionId: first.harnessSessionId
+        ))
+
+        for rejected in [
+            (epoch - 1, AgentMessageEndpointReport(
+                providerId: adapter.id, harnessSessionId: first.harnessSessionId,
+                endpoint: .claudeHookRPC(socketPath: "/tmp/stale.sock", token: "stale-secret"))),
+            (epoch, AgentMessageEndpointReport(
+                providerId: "other-provider", harnessSessionId: first.harnessSessionId,
+                endpoint: .claudeHookRPC(socketPath: "/tmp/provider.sock", token: "provider-secret"))),
+            (epoch, AgentMessageEndpointReport(
+                providerId: adapter.id, harnessSessionId: "other-session",
+                endpoint: .claudeHookRPC(socketPath: "/tmp/session.sock", token: "session-secret"))),
+        ] {
+            _ = await env.svc.handleHook(
+                card.shortId, event: .statusLine, report: nil, source: nil,
+                observedEpoch: rejected.0, messageEndpoint: rejected.1
+            )
+        }
+        #expect(senders.created.count == 1)
+        #expect(senders.created[0].shutdownCount == 0)
+
+        let refreshed = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: first.harnessSessionId,
+            endpoint: .claudeHookRPC(socketPath: "/tmp/refreshed.sock", token: "refreshed-secret")
+        )
+        _ = await env.svc.handleHook(
+            card.shortId, event: .statusLine, report: nil, source: nil,
+            observedEpoch: epoch, messageEndpoint: refreshed
+        )
+        #expect(senders.created.count == 2)
+        #expect(senders.created[0].shutdownCount == 1)
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle?.endpoint == refreshed.endpoint)
+
+        let nextSession = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: "next-session",
+            endpoint: .claudeHookRPC(socketPath: "/tmp/next.sock", token: "next-secret")
+        )
+        _ = await env.svc.handleHook(
+            card.shortId, event: .sessionStart,
+            report: StatusReport(sessionId: nextSession.harnessSessionId, sessionSource: "clear"),
+            source: .clear, observedEpoch: epoch, messageEndpoint: nextSession
+        )
+        #expect(senders.created.count == 3)
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle?.identity.harnessSessionId == "next-session")
+
+        let staleFormerSession = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: first.harnessSessionId,
+            endpoint: .claudeHookRPC(socketPath: "/tmp/former.sock", token: "former-secret")
+        )
+        _ = await env.svc.handleHook(
+            card.shortId, event: .sessionStart,
+            report: StatusReport(sessionId: staleFormerSession.harnessSessionId, sessionSource: "startup"),
+            source: .startup, observedEpoch: epoch, messageEndpoint: staleFormerSession
+        )
+        #expect(senders.created.count == 3)
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle?.identity.harnessSessionId == "next-session")
+        #expect(await env.svc.store.get(card.id)?.agentSessionId == "next-session")
+
+        let persisted = try String(contentsOfFile: env.base + "/tasks.json", encoding: .utf8)
+        for secret in ["first-secret", "stale-secret", "provider-secret", "session-secret",
+                       "refreshed-secret", "next-secret", "former-secret"] {
+            #expect(!persisted.contains(secret))
+        }
+    }
+
+    @Test("a current SessionStart endpoint buffers before live and installs at the live landing")
+    func messageEndpointBuffersUntilLive() async throws {
+        let senders = MessageSenderRecorder()
+        let adapter = HookSignalTestAdapter(capabilities: .claudeCode, messageSenders: senders)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await env.svc.spawn(
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "message-buffer", agentId: adapter.id)
+        )
+        try await pollUntil("launch readiness waiter to register") {
+            await env.svc.reconcile()
+            return await env.svc.hasReadinessWaiter(card.id)
+        }
+        let launching = try #require(await env.svc.store.get(card.id))
+        let endpoint = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: try #require(launching.agentSessionId),
+            endpoint: .claudeHookRPC(socketPath: "/tmp/buffered.sock", token: "buffered-secret")
+        )
+
+        _ = await env.svc.handleHook(
+            card.shortId, event: .sessionStart, report: nil, source: .startup,
+            observedEpoch: launching.sessionEpoch, messageEndpoint: endpoint
+        )
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle == nil)
+        #expect(await env.svc.runtime[card.id]?.pendingAgentMessageEndpoint?.endpoint == endpoint.endpoint)
+
+        try await env.svc.report(
+            card.id, StatusReport(sessionSource: "startup"), observedEpoch: launching.sessionEpoch
+        )
+        try await pollUntil("live landing to install buffered native-message handle") {
+            await env.svc.reconcile()
+            return await env.svc.runtime[card.id]?.agentMessageHandle != nil
+        }
+
+        #expect(senders.created.count == 1)
+        #expect(await env.svc.runtime[card.id]?.pendingAgentMessageEndpoint == nil)
+    }
+
     @Test("unknown ref returns nil, never throws")
     func unknownRef() async {
         let (svc, _, _, _, _, _) = TestEnv.make()
@@ -313,9 +447,11 @@ private struct HookSignalTestAdapter: Adapter {
     let bin = "fake-hook-agent"
     let enabled = true
     let capabilities: AgentCapabilities
+    let messageSenders: MessageSenderRecorder?
 
-    init(capabilities: AgentCapabilities = .stub) {
+    init(capabilities: AgentCapabilities = .stub, messageSenders: MessageSenderRecorder? = nil) {
         self.capabilities = capabilities
+        self.messageSenders = messageSenders
     }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1")] }
@@ -335,4 +471,31 @@ private struct HookSignalTestAdapter: Adapter {
     func launchEnvironment(_ context: AdapterContext) -> [String: String] {
         ClaudeCodeAdapter().launchEnvironment(context)
     }
+    func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? {
+        messageSenders?.make(endpoint: endpoint)
+    }
+}
+
+private final class MessageSenderRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [RecordingMessageSender] = []
+
+    var created: [RecordingMessageSender] { lock.withLock { storage } }
+
+    func make(endpoint: AgentMessageEndpoint) -> RecordingMessageSender {
+        let sender = RecordingMessageSender(endpoint: endpoint)
+        lock.withLock { storage.append(sender) }
+        return sender
+    }
+}
+
+private final class RecordingMessageSender: AgentMessageSender, @unchecked Sendable {
+    let endpoint: AgentMessageEndpoint
+    private let lock = NSLock()
+    private var shutdowns = 0
+
+    init(endpoint: AgentMessageEndpoint) { self.endpoint = endpoint }
+    var shutdownCount: Int { lock.withLock { shutdowns } }
+    func send(_ message: String) async throws {}
+    func shutdown() { lock.withLock { shutdowns += 1 } }
 }
