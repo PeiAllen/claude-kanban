@@ -144,6 +144,26 @@ public struct ClaudeCodeAdapter: Adapter {
         return projectedHookPayload(payload, keys: keys)
     }
 
+    public func hookMessageEndpoint(
+        event: HookEvent,
+        payload: JSONValue,
+        environment: [String: String]
+    ) -> AgentMessageEndpointReport? {
+        guard event == .sessionStart || event == .statusLine,
+              let harnessSessionId = payload["session_id"]?.stringValue,
+              !harnessSessionId.isEmpty,
+              let socketPath = environment["CLAUDE_CODE_MESSAGING_SOCKET"],
+              !socketPath.isEmpty,
+              let token = environment["CLAUDE_CODE_MESSAGING_TOKEN"],
+              !token.isEmpty
+        else { return nil }
+        return AgentMessageEndpointReport(
+            providerId: id,
+            harnessSessionId: harnessSessionId,
+            endpoint: .claudeHookRPC(socketPath: socketPath, token: token)
+        )
+    }
+
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
         switch raw {
         case .hooksPush(let hook, let payload):

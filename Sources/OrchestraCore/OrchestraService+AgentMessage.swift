@@ -15,9 +15,18 @@ extension OrchestraService {
               let card = await store.get(cardId),
               card.sessionEpoch == observedEpoch,
               card.agentId == report.providerId,
-              card.agentSessionId == report.harnessSessionId,
-              ensureRuntime(for: card)
+              card.agentSessionId == report.harnessSessionId
         else { return }
+
+        // A credential-bearing callback may arrive after terminal teardown. Check lifecycle before the
+        // only runtime creation seam so a dead or archived card cannot regain an empty CardRuntime.
+        switch card.phase.kind {
+        case .launching, .live, .relaunching:
+            break
+        default:
+            return
+        }
+        guard ensureRuntime(for: card) else { return }
 
         let pending = CardRuntime.PendingAgentMessageEndpoint(
             identity: .init(

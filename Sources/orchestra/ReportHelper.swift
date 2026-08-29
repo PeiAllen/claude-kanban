@@ -50,16 +50,11 @@ enum ReportHelper {
         //    the payload (NOT via `parse`), so it rides even when `report` is nil (Codex report-less Stop /
         //    Claude bg-hold) and a background-yielding continuation still confirms its prior stop-drain lease.
         let observationPayload = adapter.hookObservationPayload(event: event, payload: payload)
-        let messageEndpoint: AgentMessageEndpointReport?
-        if agentId == "claude-code", event == .sessionStart || event == .statusLine {
-            messageEndpoint = HookRPC.claudeMessageEndpoint(
-                providerId: agentId,
-                harnessSessionId: payload["session_id"]?.stringValue,
-                environment: env
-            )
-        } else {
-            messageEndpoint = nil
-        }
+        let messageEndpoint = adapter.hookMessageEndpoint(
+            event: event,
+            payload: payload,
+            environment: env
+        )
         let params = JSONValue.object(HookRPC.hookFields(
             ref: taskId, event: kind, report: reportJSON, source: source?.rawValue,
             epoch: env["ORCH_EPOCH"].flatMap(Int.init), stopHookActive: HookRPC.stopHookActive(payload),

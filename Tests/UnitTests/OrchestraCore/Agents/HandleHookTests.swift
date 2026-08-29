@@ -432,6 +432,60 @@ import TestSupport
         #expect(await env.svc.runtime[card.id]?.pendingAgentMessageEndpoint == nil)
     }
 
+    @Test("a late native endpoint cannot recreate runtime for a dead card")
+    func deadCardEndpointDoesNotCreateRuntime() async throws {
+        let env = TestEnv.make()
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "message-dead")
+        )
+        let current = try #require(await env.svc.store.get(card.id))
+        let report = AgentMessageEndpointReport(
+            providerId: current.agentId,
+            harnessSessionId: try #require(current.agentSessionId),
+            endpoint: .claudeHookRPC(socketPath: "/tmp/dead.sock", token: "dead-secret")
+        )
+        await env.svc.markDead(card.id, reason: .agentExited, detail: nil, source: .daemon)
+        await env.svc.detachCardRuntime(card.id)
+
+        await env.svc.receiveAgentMessageEndpoint(
+            cardId: card.id,
+            report: report,
+            observedEpoch: current.sessionEpoch,
+            event: .statusLine
+        )
+
+        #expect(await env.svc.runtime[card.id] == nil)
+    }
+
+    @Test("a late native endpoint cannot recreate runtime for an archived card")
+    func archivedCardEndpointDoesNotCreateRuntime() async throws {
+        let env = TestEnv.make()
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "message-archived")
+        )
+        let current = try #require(await env.svc.store.get(card.id))
+        let report = AgentMessageEndpointReport(
+            providerId: current.agentId,
+            harnessSessionId: try #require(current.agentSessionId),
+            endpoint: .claudeHookRPC(socketPath: "/tmp/archived.sock", token: "archived-secret")
+        )
+        try await env.svc.archive(card.id)
+        await env.svc.detachCardRuntime(card.id)
+
+        await env.svc.receiveAgentMessageEndpoint(
+            cardId: card.id,
+            report: report,
+            observedEpoch: current.sessionEpoch,
+            event: .statusLine
+        )
+
+        #expect(await env.svc.runtime[card.id] == nil)
+    }
+
     @Test("unknown ref returns nil, never throws")
     func unknownRef() async {
         let (svc, _, _, _, _, _) = TestEnv.make()

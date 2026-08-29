@@ -17,34 +17,12 @@ public enum HookRPC {
     /// local RPC and decoded into non-Codable runtime values; it must never be logged or persisted.
     public static let messageEndpointKey = "messageEndpoint"
 
-    private static let claudeMessagingSocketKey = "CLAUDE_CODE_MESSAGING_SOCKET"
-    private static let claudeMessagingTokenKey = "CLAUDE_CODE_MESSAGING_TOKEN"
-
     /// Extract the Stop hook's `stop_hook_active` flag from the RAW agent stdin JSON, at the edge — never
     /// via `Adapter.parse` (structurally impossible for Codex's report-less Stop; dropped by Claude's
     /// background-work hold). Agent-agnostic: both agents set this top-level boolean on a `decision:block`
     /// continuation Stop (L1 loop guard). Absent / non-bool → nil (a plain Stop, or a non-Stop event).
     public static func stopHookActive(_ payload: JSONValue) -> Bool? {
         payload["stop_hook_active"]?.boolValue
-    }
-
-    /// Capture Claude's session-local hook RPC endpoint only when all identity and credential pieces are
-    /// present. The returned value is runtime-only; the environment dictionary is never retained.
-    public static func claudeMessageEndpoint(
-        providerId: String,
-        harnessSessionId: String?,
-        environment: [String: String]
-    ) -> AgentMessageEndpointReport? {
-        guard !providerId.isEmpty,
-              let harnessSessionId, !harnessSessionId.isEmpty,
-              let socketPath = environment[claudeMessagingSocketKey], !socketPath.isEmpty,
-              let token = environment[claudeMessagingTokenKey], !token.isEmpty
-        else { return nil }
-        return AgentMessageEndpointReport(
-            providerId: providerId,
-            harnessSessionId: harnessSessionId,
-            endpoint: .claudeHookRPC(socketPath: socketPath, token: token)
-        )
     }
 
     /// Decode the manually-shaped local hook field. Malformed/partial values fail closed to nil.

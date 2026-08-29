@@ -146,6 +146,13 @@ public protocol Adapter: Sendable {
     /// helper sends this alongside the metadata report so Core can apply the current Card/session fences
     /// before normalization. Returning nil means this hook carries no agent-state observation.
     func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue?
+    /// Extract a provider-native message endpoint from one hook invocation. The edge passes the raw hook
+    /// environment without interpreting provider keys; adapters that do not expose an endpoint return nil.
+    func hookMessageEndpoint(
+        event: HookEvent,
+        payload: JSONValue,
+        environment: [String: String]
+    ) -> AgentMessageEndpointReport?
     /// The launch-local endpoint this adapter needs for structured observation, if any. Core only
     /// allocates and carries the endpoint; provider-specific launch and connection details stay here.
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint?
@@ -188,6 +195,11 @@ public extension Adapter {
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }
     func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? { nil }
+    func hookMessageEndpoint(
+        event: HookEvent,
+        payload: JSONValue,
+        environment: [String: String]
+    ) -> AgentMessageEndpointReport? { nil }
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? { nil }
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,
