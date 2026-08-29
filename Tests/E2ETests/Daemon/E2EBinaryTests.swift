@@ -148,7 +148,9 @@ struct E2EBinaryTests {
         try await pollUntil("card \(shortId) reaches .live(.unavailable)", timeout: .seconds(60)) {
             let listed = try? cli(["list"], ctlSock: fx.ctlSock)
             let out = listed?.stdout ?? ""
-            return out.contains(shortId) && out.lowercased().contains("unavailable")   // list renders the phase title-cased ("Unavailable")
+            return out.split(whereSeparator: \.isNewline).contains { row in
+                row.contains(shortId) && row.lowercased().contains("unavailable")
+            }   // list renders one card per row, with the phase title-cased ("Unavailable")
         }
         let sessions = try cli(["sessions", shortId, "--json"], ctlSock: fx.ctlSock)
 
