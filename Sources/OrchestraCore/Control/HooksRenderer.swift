@@ -60,9 +60,6 @@ public enum HooksRenderer {
         "SessionStart": [
           { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" } ] }
         ],
-        "PermissionRequest": [
-          { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event permission --agent __AGENT_ID__" } ] }
-        ],
         "Stop": [
           { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" } ] }
         ]
@@ -96,6 +93,8 @@ public enum HooksRenderer {
         "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt --agent __AGENT_ID__" }] }],
         "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event pretool --agent __AGENT_ID__" }] }],
         "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttool --agent __AGENT_ID__" }] }],
+        "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttoolfailure --agent __AGENT_ID__" }] }],
+        "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event permission --agent __AGENT_ID__" }] }],
         "Notification": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notification --agent __AGENT_ID__" }] }],
         "TaskCompleted": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event taskcompleted --agent __AGENT_ID__" }] }],
         "Stop": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" }] }],

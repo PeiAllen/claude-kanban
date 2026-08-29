@@ -89,6 +89,26 @@ import Foundation
         #expect(r.first?.label == "question")
     }
 
+    @Test func questionRow_detectedInputRequest() {
+        let state = AgentState(
+            turnStatus: .running,
+            activeRequests: [.init(id: "input:p1", kind: .input)]
+        )
+        let r = reasons(card(phase: .live(state)))
+        #expect(r.first?.reason == .question)
+        #expect(r.first?.label == "input needed")
+        #expect(!r.contains { $0.reason == .permission })
+    }
+
+    @Test func activeRequestExplainsAnIdleCardSoItDoesNotAlsoStall() {
+        let state = AgentState(
+            turnStatus: .waiting(),
+            activeRequests: [.init(id: "input:p1", kind: .input)]
+        )
+        let r = reasons(card(phase: .live(state)), now: late)
+        #expect(r.map(\.reason) == [.question])
+    }
+
     @Test func ctxCriticalRow_rendersPercent() {
         let r = reasons(card(phase: .live(.running), ctxPct: 88))
         #expect(r.first?.reason == .ctxCritical)

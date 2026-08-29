@@ -106,7 +106,7 @@ public struct ClaudeCodeAdapter: Adapter {
                 sessionSource: p["source"]?.stringValue)
         case "prompt":
             return StatusReport(promptText: p["prompt"]?.stringValue)
-        case "pretool", "posttool":
+        case "pretool", "posttool", "posttoolfailure":
             let tool = p["tool_name"]?.stringValue ?? "tool"
             return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]))
         case "notification":
@@ -132,41 +132,58 @@ public struct ClaudeCodeAdapter: Adapter {
         switch event {
         case .sessionStart:
             keys = ["session_id", "source"]
-        case .userPrompt, .preToolUse, .postToolUse:
-            keys = ["session_id"]
-        case .notification:
-            keys = ["session_id", "notification_type", "tool_use_id", "message"]
+        case .userPrompt:
+            keys = ["session_id", "prompt_id"]
+        case .preToolUse, .postToolUse, .postToolUseFailure, .permission:
+            keys = ["session_id", "prompt_id", "tool_name"]
         case .stop:
-            keys = ["session_id", "background_tasks", "session_crons"]
-        case .statusLine, .permission, .taskCompleted, .sessionEnd:
+            keys = ["session_id", "prompt_id", "background_tasks", "session_crons"]
+        case .statusLine, .notification, .taskCompleted, .sessionEnd:
             return nil
         }
         return projectedHookPayload(payload, keys: keys)
     }
 
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
-        let kinds: [AgentSignal.Kind]
         switch raw {
         case .hooksPush(let hook, let payload):
             guard belongsToHarnessSession(payload, context: context) else { return [] }
+            let turnID = promptID(in: payload)
             switch hook {
             case "prompt":
-                kinds = [.turnStarted]
+                return [signal(.turnStarted, context: context, turnID: turnID)]
             case "stop":
-                kinds = [.turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil)]
+                return [
+                    signal(
+                        .turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil),
+                        context: context,
+                        turnID: turnID
+                    ),
+                    signal(.requests([]), context: context, turnID: turnID),
+                ]
             case "session" where ["clear", "resume"].contains(payload["source"]?.stringValue):
-                kinds = [.turnReconciled(.waiting()), .requests([])]
-            case "notification" where payload["notification_type"]?.stringValue == "permission_prompt":
-                kinds = [.requests([.init(
-                    id: payload["tool_use_id"]?.stringValue ?? "permission",
-                    kind: .permission,
-                    prompt: payload["message"]?.stringValue
-                )])]
-            case "pretool", "posttool":
-                // A permission request, if any, has resolved before the tool can run.
-                kinds = [.requests([])]
+                return [
+                    signal(.turnReconciled(.waiting()), context: context),
+                    signal(.requests([]), context: context),
+                ]
+            case "permission":
+                let kind = requestKind(for: payload["tool_name"]?.stringValue)
+                return [signal(
+                    .requests([request(kind: kind, payload: payload)]),
+                    context: context,
+                    turnID: turnID
+                )]
+            case "pretool":
+                guard requestKind(for: payload["tool_name"]?.stringValue) == .input else { return [] }
+                return [signal(
+                    .requests([request(kind: .input, payload: payload)]),
+                    context: context,
+                    turnID: turnID
+                )]
+            case "posttool", "posttoolfailure":
+                return [signal(.requests([]), context: context, turnID: turnID)]
             default:
-                kinds = []
+                return []
             }
 
         case .traceSpanEnded(let name, let attributes):
@@ -174,13 +191,38 @@ public struct ClaudeCodeAdapter: Adapter {
                   belongsToHarnessSession(attributes, context: context)
             else { return [] }
             // Claude emits this terminal root span on the Ctrl-C path where no Stop hook fires.
-            kinds = [.turnCompleted()]
+            let turnID = promptID(in: attributes)
+            return [
+                signal(.turnCompleted(), context: context, turnID: turnID),
+                signal(.requests([]), context: context, turnID: turnID),
+            ]
 
         case .fileTail, .rpcNotification, .rpcResponse:
-            kinds = []
+            return []
         }
+    }
 
-        return kinds.map { .init(sessionEpoch: context.sessionEpoch, kind: $0) }
+    private func signal(
+        _ kind: AgentSignal.Kind,
+        context: AgentSignalContext,
+        turnID: String? = nil
+    ) -> AgentSignal {
+        .init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: kind)
+    }
+
+    private func promptID(in payload: JSONValue) -> String? {
+        payload["prompt_id"]?.stringValue ?? payload["prompt.id"]?.stringValue
+    }
+
+    private func requestKind(for toolName: String?) -> AgentRequest.Kind {
+        ["AskUserQuestion", "ExitPlanMode"].contains(toolName) ? .input : .permission
+    }
+
+    private func request(kind: AgentRequest.Kind, payload: JSONValue) -> AgentRequest {
+        let identity = promptID(in: payload)
+            ?? payload["tool_name"]?.stringValue
+            ?? "request"
+        return .init(id: "\(kind.rawValue):\(identity)", kind: kind)
     }
 
     private func hasAutomaticResume(_ payload: JSONValue) -> Bool {

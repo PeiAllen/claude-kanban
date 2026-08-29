@@ -59,6 +59,7 @@ struct AgentTab: View {
 
     private var bannerKind: AgentBannerKind? {
         if task.agentState?.hasRequest(kind: .permission) == true { return .permission }
+        if task.agentState?.hasRequest(kind: .input) == true { return .input }
         if task.workInFlight == false { return .waiting }
         return nil
     }
@@ -90,19 +91,41 @@ struct AgentTab: View {
 
 /// A compact banner surfacing *why* the card is waiting. Gates live in the Needs-You queue (M3); this only
 /// points there — it never renders approve/deny.
-private enum AgentBannerKind { case permission, waiting }
+private enum AgentBannerKind { case permission, input, waiting }
 
 private struct WaitBanner: View {
     let kind: AgentBannerKind
     let theme: Theme
 
-    private var sem: SemColor { kind == .permission ? theme.amber : theme.blue }
-    private var icon: String { kind == .permission ? "lock.shield.fill" : "person.crop.circle.badge.questionmark" }
-    private var title: String { kind == .permission ? "Needs your approval" : "Waiting on you" }
+    private var sem: SemColor {
+        switch kind {
+        case .permission: return theme.amber
+        case .input, .waiting: return theme.blue
+        }
+    }
+    private var icon: String {
+        switch kind {
+        case .permission: return "lock.shield.fill"
+        case .input: return "text.bubble.fill"
+        case .waiting: return "person.crop.circle.badge.questionmark"
+        }
+    }
+    private var title: String {
+        switch kind {
+        case .permission: return "Needs your approval"
+        case .input: return "Needs your input"
+        case .waiting: return "Waiting on you"
+        }
+    }
     private var detail: String {
-        kind == .permission
-            ? "The agent is blocked on a permission — approve or deny it in Needs You."
-            : "The agent finished its turn and is waiting. Steer it below, or take over."
+        switch kind {
+        case .permission:
+            return "The agent is blocked on a permission — approve or deny it in Needs You."
+        case .input:
+            return "The agent opened an interactive question. Open its terminal to answer it."
+        case .waiting:
+            return "The agent finished its turn and is waiting. Steer it below, or take over."
+        }
     }
 
     var body: some View {

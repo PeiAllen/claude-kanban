@@ -298,9 +298,15 @@ private struct AttentionRow: View {
                     run { await model.denyPermission(task.id) }
                 }
             case .question:
-                ActionButton("Reply", systemImage: "text.bubble", tint: theme.blue) {
-                    withAnimation { replying.toggle() }
-                    if replying { replyFocused = true }
+                if task.agentState?.hasRequest(kind: .input) == true {
+                    // A provider input box is already open inside the live terminal; an inbox reply would
+                    // arrive at the next turn boundary, too late to answer it.
+                    ActionButton("Open", systemImage: "arrow.up.forward.square", tint: theme.blue) { onOpen() }
+                } else {
+                    ActionButton("Reply", systemImage: "text.bubble", tint: theme.blue) {
+                        withAnimation { replying.toggle() }
+                        if replying { replyFocused = true }
+                    }
                 }
             case .dead:
                 ActionButton("Recover", systemImage: "cross.case", tint: theme.red, filled: true) { onRecover() }

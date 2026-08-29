@@ -53,6 +53,16 @@ final class NeedsYouQueueTests: XCTestCase {
         XCTAssertEqual(rows.first(where: { $0.task.title == "dead" })?.topReason, .dead)
     }
 
+    func testDetectedInputRequestUsesQuestionReason() {
+        let input = AgentState(
+            turnStatus: .running,
+            activeRequests: [.init(id: "input:p1", kind: .input)]
+        )
+        let rows = modelWith([card("input", phase: .live(input))]).needsYouRows(now: t0)
+        XCTAssertEqual(rows.first?.topReason, .question)
+        XCTAssertEqual(rows.first?.signals.map(\.label), ["input needed"])
+    }
+
     /// The membership SHIFT this slice introduces: a bare idle `humanTurn` card no longer qualifies just
     /// for being done — it enters the queue ONLY once it goes quiescent past the stall threshold.
     func testBareIdleHumanTurnEntersOnlyOnStall() {

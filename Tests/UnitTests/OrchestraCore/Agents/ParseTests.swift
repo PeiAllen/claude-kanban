@@ -90,37 +90,17 @@ struct ParseTests {
         #expect(after.phaseDisplay == .running)
     }
 
-    // C1 — a Codex permission request is orthogonal to its still-open turn and reaches the same
-    // provider-neutral request list Needs You reads.
-    @Test("Codex PermissionRequest → AgentRequest.permission without closing the turn")
-    func test_codex_permission_reaches_board() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Task", repo: repo, branch: "b"))
-
-        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
-        let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
-        let signals = CodexAdapter().agentSignals(
-            from: raw,
-            context: .init(sessionEpoch: epoch, harnessSessionId: t.agentSessionId)
-        )
-        await env.svc.receiveAgentSignals(cardId: t.id, signals: signals)
-
-        let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.turnStatus == .running)
-        #expect(after.agentState?.hasRequest(kind: .permission) == true)
-    }
-
-    @Test("Claude Notification/permission_prompt maps to an independent permission request")
+    @Test("Claude PermissionRequest maps to an independent permission request")
     func test_claude_permission_path() throws {
-        let payload = try JSONValue.parse(Data(#"{"notification_type":"permission_prompt","message":"Allow Bash?"}"#.utf8))
+        let payload = try JSONValue.parse(Data(#"{"prompt_id":"p1","tool_name":"Bash"}"#.utf8))
         let signals = ClaudeCodeAdapter().agentSignals(
-            from: .hooksPush(kind: "notification", payload: payload),
+            from: .hooksPush(kind: "permission", payload: payload),
             context: .init(sessionEpoch: 1, harnessSessionId: nil)
         )
         #expect(signals == [.init(
             sessionEpoch: 1,
-            kind: .requests([.init(id: "permission", kind: .permission, prompt: "Allow Bash?")])
+            turnID: "p1",
+            kind: .requests([.init(id: "permission:p1", kind: .permission)])
         )])
     }
 }

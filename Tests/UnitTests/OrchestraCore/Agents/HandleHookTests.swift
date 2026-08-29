@@ -100,7 +100,10 @@ import Foundation
         #expect(launchEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] ==
                 "http://127.0.0.1:43181/test-token/v1/traces/\(card.id.uuidString.lowercased())/\(epoch)")
 
-        let prompt: JSONValue = .object(["session_id": .string("hook-session")])
+        let prompt: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-a"),
+        ])
         _ = await env.svc.handleHook(
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
@@ -109,11 +112,11 @@ import Foundation
 
         let permission: JSONValue = .object([
             "session_id": .string("hook-session"),
-            "notification_type": .string("permission_prompt"),
-            "message": .string("Allow Bash?"),
+            "prompt_id": .string("prompt-a"),
+            "tool_name": .string("Bash"),
         ])
         _ = await env.svc.handleHook(
-            card.shortId, event: .notification, report: nil, source: nil,
+            card.shortId, event: .permission, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: permission
         )
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
@@ -136,19 +139,27 @@ import Foundation
             observedEpoch: epoch,
             raw: .traceSpanEnded(
                 name: "claude_code.interaction",
-                attributes: .object(["session.id": .string("hook-session")])
+                attributes: .object([
+                    "session.id": .string("hook-session"),
+                    "prompt.id": .string("prompt-a"),
+                ])
             )
         )
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
 
+        let secondPrompt: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-b"),
+        ])
         _ = await env.svc.handleHook(
             card.shortId, event: .userPrompt, report: nil, source: nil,
-            observedEpoch: epoch, observationPayload: prompt
+            observedEpoch: epoch, observationPayload: secondPrompt
         )
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         let stop: JSONValue = .object([
             "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-b"),
             "background_tasks": .array([.object(["id": .string("job-1")])]),
         ])
         _ = await env.svc.handleHook(
@@ -184,6 +195,54 @@ import Foundation
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch + 1, observationPayload: prompt
         )
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+    }
+
+    @Test("a delayed Claude OTLP completion cannot close the next prompt")
+    func delayedClaudeCompletionCannotCloseNextPrompt() async throws {
+        let adapter = HookSignalTestAdapter()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "hook-turn-fence", agentId: adapter.id)
+        )
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+
+        func prompt(_ id: String) async {
+            _ = await env.svc.handleHook(
+                card.shortId, event: .userPrompt, report: nil, source: nil,
+                observedEpoch: epoch,
+                observationPayload: .object([
+                    "session_id": .string("hook-session"),
+                    "prompt_id": .string(id),
+                ])
+            )
+        }
+
+        await prompt("prompt-a")
+        _ = await env.svc.handleHook(
+            card.shortId, event: .stop, report: nil, source: nil,
+            observedEpoch: epoch,
+            observationPayload: .object([
+                "session_id": .string("hook-session"),
+                "prompt_id": .string("prompt-a"),
+            ])
+        )
+        await prompt("prompt-b")
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .traceSpanEnded(
+                name: "claude_code.interaction",
+                attributes: .object([
+                    "session.id": .string("hook-session"),
+                    "prompt.id": .string("prompt-a"),
+                ])
+            )
+        )
+
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
     }
 

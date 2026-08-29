@@ -185,7 +185,7 @@ struct CodexHookRenderingTests {
         let hooks = try #require(obj["hooks"] as? [String: Any])
         #expect(hooks["SessionStart"] != nil)
         #expect(hooks["Stop"] != nil)      // the turn-end inbox drain — its absence is the wake bug
-        #expect(hooks["PermissionRequest"] != nil)   // the whole hook set must survive the strip
+        #expect(hooks["PermissionRequest"] == nil)   // app-server is the sole request authority
     }
 
     // Pin the strip helper's contract directly (independent of Bundle template resolution): it drops a
@@ -209,6 +209,6 @@ struct CodexHookRenderingTests {
         let hooks = try #require(HooksRenderer.codexHooks(orchestraBin: "/abs/orchestra", agentId: "codex"))
         #expect(hooks["SessionStart"] != nil)
         #expect(hooks["Stop"] != nil)
-        #expect(hooks["PermissionRequest"] != nil)
+        #expect(hooks["PermissionRequest"] == nil)
     }
 }

@@ -93,15 +93,13 @@ public enum Attention {
         if c.treeStat?.state == .mergeRequested, !parentOwned {
             out.append(.init(.mergeRequested, "merge-requested"))
         }
-        // Row 4, DECLARED rung. The DETECTED sibling — an in-terminal choices box (AskUserQuestion),
-        // which blocks mid-turn exactly like a permission wait and self-clears by state — funnels to
-        // this SAME amber and belongs right here as one more `||`. Deferred because the DAEMON can't yet
-        // detect an open box (the tool exists on bridged sessions, but whether it fires a hook the
-        // control plane sees, and whether it renders in the tmux pane, are unverified — see docs/09),
-        // not because none exists. Codex's approval prompt is already row 2.
-        // TODO(orchestra://task/897d75 — agent-channels/status redesign): add the detected rung here
-        // once that work makes an open box detectable.
-        if c.pendingQuestion != nil { out.append(.init(.question, "question")) }
+        // Row 4 has two sources with the same human meaning: an explicit `needs-input` declaration, or
+        // a provider-observed in-terminal input box. The observed request wins the label when both exist.
+        if c.agentState?.hasRequest(kind: .input) == true {
+            out.append(.init(.question, "input needed"))
+        } else if c.pendingQuestion != nil {
+            out.append(.init(.question, "question"))
+        }
 
         if canStall, let stall = isStalled(c, attached: attached, descendants: descendants,
                                            descendantHoldsAttention: descendantHoldsAttention,
@@ -161,7 +159,10 @@ public enum Attention {
         //    into an owned parent wears a grey ⏱ and is the owning agent's business (rot there is
         //    step 2's job, not this row's). A pending question likewise — and if the agent forgets to
         //    re-declare, the question clears and the card falls through to the net next pass.
-        guard c.pendingQuestion == nil, c.treeStat?.state != .mergeRequested else { return nil }
+        guard c.pendingQuestion == nil,
+              c.agentState?.activeRequests.isEmpty != false,
+              c.treeStat?.state != .mergeRequested
+        else { return nil }
 
         // 4. The constellation (the card + its attached agents) must be quiet, and nothing in the
         //    subtree may still be moving. Descendants gate by ACTIVITY only — their timestamps never

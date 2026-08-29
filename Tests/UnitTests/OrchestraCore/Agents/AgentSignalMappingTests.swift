@@ -10,77 +10,106 @@ struct AgentSignalMappingTests {
         let claude = ClaudeCodeAdapter()
         let tool: JSONValue = .object([
             "session_id": .string("claude-session"),
+            "prompt_id": .string("prompt-1"),
             "tool_name": .string("Write"),
             "tool_input": .object(["content": .string(String(repeating: "x", count: 1_000))]),
         ])
         #expect(claude.hookObservationPayload(event: .preToolUse, payload: tool)
-            == .object(["session_id": .string("claude-session")]))
+            == .object([
+                "session_id": .string("claude-session"),
+                "prompt_id": .string("prompt-1"),
+                "tool_name": .string("Write"),
+            ]))
 
         let permission: JSONValue = .object([
             "session_id": .string("claude-session"),
+            "prompt_id": .string("prompt-1"),
+            "tool_name": .string("Bash"),
             "notification_type": .string("permission_prompt"),
             "tool_use_id": .string("tool-1"),
             "message": .string("Allow Write?"),
             "irrelevant": .string(String(repeating: "y", count: 1_000)),
         ])
-        #expect(claude.hookObservationPayload(event: .notification, payload: permission)
+        #expect(claude.hookObservationPayload(event: .permission, payload: permission)
             == .object([
                 "session_id": .string("claude-session"),
-                "notification_type": .string("permission_prompt"),
-                "tool_use_id": .string("tool-1"),
-                "message": .string("Allow Write?"),
+                "prompt_id": .string("prompt-1"),
+                "tool_name": .string("Bash"),
             ]))
+        #expect(claude.hookObservationPayload(event: .notification, payload: permission) == nil)
         #expect(claude.hookObservationPayload(event: .statusLine, payload: permission) == nil)
 
         let codex = CodexAdapter()
-        #expect(codex.hookObservationPayload(event: .permission, payload: permission)
-            == .object([
-                "session_id": .string("claude-session"),
-                "tool_use_id": .string("tool-1"),
-                "message": .string("Allow Write?"),
-            ]))
+        #expect(codex.hookObservationPayload(event: .permission, payload: permission) == nil)
         #expect(codex.hookObservationPayload(event: .stop, payload: permission) == nil)
     }
 
-    @Test("Claude prompt and Stop hooks map only top-level turn edges")
+    @Test("Claude prompt and Stop hooks map correlated turn edges and close requests")
     func claudeHookTurnEdges() {
         let adapter = ClaudeCodeAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
 
         let prompt: JSONValue = .object([
             "session_id": .string("claude-session"),
+            "prompt_id": .string("prompt-1"),
             "prompt": .string("continue"),
         ])
         #expect(adapter.agentSignals(from: .hooksPush(kind: "prompt", payload: prompt), context: context)
-            == [.init(sessionEpoch: epoch, kind: .turnStarted)])
+            == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnStarted)])
 
         let stop: JSONValue = .object([
             "session_id": .string("claude-session"),
+            "prompt_id": .string("prompt-1"),
             "background_tasks": .array([]),
             "session_crons": .array([]),
         ])
         #expect(adapter.agentSignals(from: .hooksPush(kind: "stop", payload: stop), context: context)
-            == [.init(sessionEpoch: epoch, kind: .turnCompleted())])
+            == [
+                .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted()),
+                .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([])),
+            ])
 
-        // A tool edge can clear a resolved request, but never changes the top-level turn.
-        for kind in ["pretool", "posttool"] {
+        #expect(adapter.agentSignals(from: .hooksPush(kind: "pretool", payload: stop), context: context).isEmpty)
+        // A completed or failed tool can clear a resolved request, but never changes the top-level turn.
+        for kind in ["posttool", "posttoolfailure"] {
             #expect(adapter.agentSignals(from: .hooksPush(kind: kind, payload: stop), context: context)
-                == [.init(sessionEpoch: epoch, kind: .requests([]))])
+                == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([]))])
         }
-        for kind in ["notification", "taskcompleted", "permission"] {
+        for kind in ["notification", "taskcompleted"] {
             #expect(adapter.agentSignals(from: .hooksPush(kind: kind, payload: stop), context: context).isEmpty)
         }
 
         let permission: JSONValue = .object([
             "session_id": .string("claude-session"),
-            "notification_type": .string("permission_prompt"),
-            "message": .string("Allow Bash?"),
+            "prompt_id": .string("prompt-1"),
+            "tool_name": .string("Bash"),
         ])
         #expect(adapter.agentSignals(
-            from: .hooksPush(kind: "notification", payload: permission), context: context
-        ) == [.init(sessionEpoch: epoch, kind: .requests([
-            .init(id: "permission", kind: .permission, prompt: "Allow Bash?")
+            from: .hooksPush(kind: "permission", payload: permission), context: context
+        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([
+            .init(id: "permission:prompt-1", kind: .permission)
         ]))])
+    }
+
+    @Test("Claude interaction tools map to input requests without becoming permissions")
+    func claudeInputRequests() {
+        let adapter = ClaudeCodeAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
+
+        for hook in ["permission", "pretool"] {
+            for tool in ["AskUserQuestion", "ExitPlanMode"] {
+                let payload: JSONValue = .object([
+                    "session_id": .string("claude-session"),
+                    "prompt_id": .string("prompt-2"),
+                    "tool_name": .string(tool),
+                ])
+                #expect(adapter.agentSignals(
+                    from: .hooksPush(kind: hook, payload: payload), context: context
+                ) == [.init(sessionEpoch: epoch, turnID: "prompt-2", kind: .requests([
+                    .init(id: "input:prompt-2", kind: .input)
+                ]))])
+            }
+        }
     }
 
     @Test("Claude Stop aggregates every currently-known automatic-resume source")
@@ -91,10 +120,14 @@ struct AgentSignalMappingTests {
         for resumeField in ["background_tasks", "session_crons"] {
             let stop: JSONValue = .object([
                 "session_id": .string("claude-session"),
+                "prompt_id": .string("prompt-1"),
                 resumeField: .array([.object(["id": .string("resume-1")])]),
             ])
             #expect(adapter.agentSignals(from: .hooksPush(kind: "stop", payload: stop), context: context)
-                == [.init(sessionEpoch: epoch, kind: .turnCompleted(resume: .init()))])
+                == [
+                    .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted(resume: .init())),
+                    .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([])),
+                ])
         }
     }
 
@@ -104,9 +137,14 @@ struct AgentSignalMappingTests {
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
 
         #expect(adapter.agentSignals(
-            from: .traceSpanEnded(name: "claude_code.interaction", attributes: .object([:])),
+            from: .traceSpanEnded(name: "claude_code.interaction", attributes: .object([
+                "prompt.id": .string("prompt-1"),
+            ])),
             context: context
-        ) == [.init(sessionEpoch: epoch, kind: .turnCompleted())])
+        ) == [
+            .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted()),
+            .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .requests([])),
+        ])
         #expect(adapter.agentSignals(
             from: .traceSpanEnded(name: "claude_code.tool", attributes: .object([:])),
             context: context
@@ -134,10 +172,21 @@ struct AgentSignalMappingTests {
 
         #expect(adapter.agentSignals(
             from: .rpcNotification(method: "turn/started", params: params), context: context
-        ) == [.init(sessionEpoch: epoch, kind: .turnStarted)])
+        ) == [.init(sessionEpoch: epoch, turnID: "turn-1", kind: .turnStarted)])
         #expect(adapter.agentSignals(
             from: .rpcNotification(method: "turn/completed", params: params), context: context
-        ) == [.init(sessionEpoch: epoch, kind: .turnCompleted())])
+        ) == [.init(sessionEpoch: epoch, turnID: "turn-1", kind: .turnCompleted())])
+    }
+
+    @Test("Codex hooks do not compete with app-server agent state")
+    func codexHooksAreStateSilent() {
+        let adapter = CodexAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
+        for kind in ["permission", "stop", "session"] {
+            #expect(adapter.agentSignals(
+                from: .hooksPush(kind: kind, payload: .object([:])), context: context
+            ).isEmpty)
+        }
     }
 
     @Test("Codex status notifications reconcile turn and request dimensions independently")

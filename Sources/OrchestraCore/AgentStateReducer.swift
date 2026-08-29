@@ -26,10 +26,14 @@ public struct AgentSignal: Equatable, Sendable {
     }
 
     public var sessionEpoch: Int
+    /// Provider-native identity for the turn/prompt this observation describes. This is an
+    /// in-memory correlation fence, not durable agent state.
+    public var turnID: String?
     public var kind: Kind
 
-    public init(sessionEpoch: Int, kind: Kind) {
+    public init(sessionEpoch: Int, turnID: String? = nil, kind: Kind) {
         self.sessionEpoch = sessionEpoch
+        self.turnID = turnID
         self.kind = kind
     }
 }

@@ -79,17 +79,14 @@ struct CodexAdapterArgvTests {
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
-    @Test("PermissionRequest bypasses metadata parsing and maps to an AgentRequest")
+    @Test("PermissionRequest bypasses metadata parsing and is state-silent")
     func permissionHookSignal() {
         let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
         #expect(adapter.parse(raw) == nil)
         #expect(adapter.agentSignals(
             from: raw,
             context: .init(sessionEpoch: 1, harnessSessionId: "thread")
-        ) == [.init(
-            sessionEpoch: 1,
-            kind: .requests([.init(id: "permission", kind: .permission)])
-        )])
+        ).isEmpty)
     }
 
     // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
@@ -112,12 +109,11 @@ struct CodexAdapterArgvTests {
         #expect(adapter.parse(.fileTail(line: line)) == nil)
     }
 
-    // The rendered Codex hooks file must wire the PermissionRequest event, or the gate never fires.
-    @Test("rendered Codex hooks wire PermissionRequest → `_report --event permission --agent codex`")
+    @Test("rendered Codex hooks leave permission state to app-server")
     func rendersPermissionHook() throws {
         let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")
-        #expect(json.contains("\"PermissionRequest\""))
-        #expect(json.contains("_report --event permission --agent codex"))
+        #expect(!json.contains("\"PermissionRequest\""))
+        #expect(!json.contains("_report --event permission --agent codex"))
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
@@ -199,7 +195,7 @@ struct CodexAdapterArgvTests {
         let lines = start.lines
         #expect(lines.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level = \"untrusted\""))
         #expect(lines.contains { $0.hasPrefix("hooks.SessionStart = ") && $0.contains("_report --event session --agent codex") })
-        #expect(lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") && $0.contains("_report --event permission --agent codex") })
+        #expect(!lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") })
         #expect(lines.contains { $0.hasPrefix("hooks.Stop = ") && $0.contains("_report --event stop --agent codex") })
         #expect(lines.contains("[mcp_servers.orchestra]"))
         #expect(lines.contains("command = \"/abs/orchestra-mcp\""))

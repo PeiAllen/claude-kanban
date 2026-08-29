@@ -91,7 +91,7 @@ public struct CodexAdapter: Adapter {
         // `ORCHESTRA_TASK_ID`. Codex provides its generated `session_id` on the hook's stdin, so this is a
         // direct card ↔ session correlation even when multiple primary rollouts share one cwd. Binding it
         // here avoids relying on rollout discovery for the normal launch path; discovery remains a safe
-        // fallback if the hook is unavailable. PermissionRequest is mapped only through `agentSignals`.
+        // fallback if the hook is unavailable. Agent state and requests come only from app-server.
         if case let .hooksPush(kind, payload) = raw {
             if kind == HookEvent.sessionStart.rawValue,
                let sid = payload["session_id"]?.stringValue, !sid.isEmpty {
@@ -151,29 +151,30 @@ public struct CodexAdapter: Adapter {
     // MARK: provider-neutral agent-state mapping
 
     public func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? {
-        guard event == .permission else { return nil }
-        return projectedHookPayload(
-            payload,
-            keys: ["session_id", "thread_id", "id", "tool_use_id", "message"]
-        )
+        nil
     }
 
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
         guard let expectedThreadId = context.harnessSessionId else { return [] }
 
         let kinds: [AgentSignal.Kind]
+        let turnID: String?
         switch raw {
         case .rpcNotification(let method, let params):
             guard params["threadId"]?.stringValue == expectedThreadId else { return [] }
             switch method {
             case "turn/started":
                 kinds = [.turnStarted]
+                turnID = params["turn"]?["id"]?.stringValue
             case "turn/completed":
                 kinds = [.turnCompleted()]
+                turnID = params["turn"]?["id"]?.stringValue
             case "thread/status/changed":
                 kinds = reconciliations(from: params["status"])
+                turnID = nil
             default:
                 kinds = []
+                turnID = nil
             }
 
         case .rpcResponse(let method, let result):
@@ -181,24 +182,14 @@ public struct CodexAdapter: Adapter {
                   thread["id"]?.stringValue == expectedThreadId
             else { return [] }
             kinds = reconciliations(from: thread["status"])
+            turnID = nil
 
-        case .hooksPush(let hook, let payload):
-            guard hook == HookEvent.permission.rawValue else { return [] }
-            let reportedSession = payload["session_id"]?.stringValue
-                ?? payload["thread_id"]?.stringValue
-            guard reportedSession == nil || reportedSession == expectedThreadId else { return [] }
-            kinds = [.requests([.init(
-                id: payload["id"]?.stringValue
-                    ?? payload["tool_use_id"]?.stringValue
-                    ?? "permission",
-                kind: .permission,
-                prompt: payload["message"]?.stringValue
-            )])]
-        case .fileTail, .traceSpanEnded:
+        case .hooksPush, .fileTail, .traceSpanEnded:
             kinds = []
+            turnID = nil
         }
 
-        return kinds.map { .init(sessionEpoch: context.sessionEpoch, kind: $0) }
+        return kinds.map { .init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: $0) }
     }
 
     private func reconciliations(from status: JSONValue?) -> [AgentSignal.Kind] {
@@ -556,10 +547,8 @@ public extension AgentCapabilities {
         // fallback resolves the still-pending waiter within the grace, keeping the relaunch on the readiness
         // gate (never an immediate ensure-is-confirmation that would bypass it).
         readinessConfirmation: .rolloutMeta,
-        // Codex's permission gate is a TUI prompt whose default option is accepted with Enter / cancelled
-        // with Esc — the same keystrokes Claude uses — so the interim send-keys gate carries Enter/Esc.
-        // This is the per-adapter seam C1 refines: when Codex's structured `PermissionRequest` reply is
-        // wired, replace these with an empty chord so the gate routes through that channel, not keystrokes.
+        // App-server detects Codex's permission gate, while the current UI answers its TUI prompt with
+        // Enter / Esc. A future structured response channel can replace these chords independently.
         approveChord: [.named(.enter)],
         denyChord: [.named(.esc)])
 }

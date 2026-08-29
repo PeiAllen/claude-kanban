@@ -9,8 +9,9 @@ public enum HookEvent: String, Sendable, Codable, CaseIterable {
     case userPrompt   = "prompt"
     case preToolUse   = "pretool"
     case postToolUse  = "posttool"
+    case postToolUseFailure = "posttoolfailure"
     case notification = "notification"
-    case permission   = "permission"   // Codex "PermissionRequest" gate → AgentRequest.permission
+    case permission   = "permission"
     case taskCompleted = "taskcompleted"
     case stop         = "stop"
     case sessionEnd   = "sessionend"

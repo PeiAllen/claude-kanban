@@ -99,10 +99,9 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     /// The key chord the Needs-You gate sends to APPROVE an open permission request, and the
     /// chord that DENIES it. These are agent-terminal-layout facts, not provider-neutral truths: Claude's
     /// TUI accepts the pre-highlighted "Yes" with `Enter` and cancels with `Esc`. They live on the
-    /// capability (not on the neutral Needs-You queue) so each adapter states its own gate keys — a
-    /// structured-approval agent (Codex's `PermissionRequest`) overrides these per-adapter instead of
-    /// inheriting Claude's keystrokes. An empty chord means "this agent has no send-keys gate" and the
-    /// gate is a no-op (its approval rides a different channel).
+    /// capability (not on the neutral Needs-You queue) so each adapter states its own gate keys. An empty
+    /// chord means "this agent has no send-keys gate" and the gate is a no-op because approval rides a
+    /// structured response channel instead.
     public let approveChord: [KeyToken]
     public let denyChord: [KeyToken]
 

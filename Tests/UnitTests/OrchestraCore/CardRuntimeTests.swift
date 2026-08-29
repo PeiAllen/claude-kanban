@@ -27,6 +27,10 @@ struct CardRuntimeTests {
         // A late statusline/rollout report for the archived card — seq high enough to pass the
         // monotonic gate if the entry existed.
         try? await env.svc.report(card.id, StatusReport(seq: 999, desc: "late"), observedEpoch: nil)
+        await env.svc.receiveAgentSignals(
+            cardId: card.id,
+            signals: [.init(sessionEpoch: card.sessionEpoch, kind: .observationLost)]
+        )
         await env.svc.reconcile()   // plus a full tick (visits archived cards forever)
 
         #expect(await env.svc.runtime[card.id] == nil)   // still detached — no resurrection

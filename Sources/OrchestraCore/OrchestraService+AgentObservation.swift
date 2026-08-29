@@ -13,15 +13,26 @@ extension OrchestraService {
     func agentObservationActive(_ id: UUID) -> Bool { runtime[id]?.tasks[.agentObservation] != nil }
 
     func invalidateAgentObservation(_ card: Task) async {
-        await applyAgentSignals(
+        await submitAgentSignals(
             [.init(sessionEpoch: card.sessionEpoch, kind: .observationLost)],
-            to: card
+            cardId: card.id,
+            context: .init(
+                sessionEpoch: card.sessionEpoch,
+                harnessSessionId: card.agentSessionId
+            )
         )
     }
 
     func receiveAgentSignals(cardId: UUID, signals: [AgentSignal]) async {
         guard let card = await store.get(cardId) else { return }
-        await applyAgentSignals(signals, to: card)
+        await submitAgentSignals(
+            signals,
+            cardId: cardId,
+            context: .init(
+                sessionEpoch: card.sessionEpoch,
+                harnessSessionId: card.agentSessionId
+            )
+        )
     }
 
     func preparedObservationEndpoint(for card: Task, adapter: any Adapter) -> AgentObservationEndpoint? {
@@ -53,9 +64,10 @@ extension OrchestraService {
             sessionEpoch: observedEpoch,
             harnessSessionId: card.agentSessionId
         )
-        await applyAgentSignals(
+        await submitAgentSignals(
             adapter.agentSignals(from: raw, context: context),
-            to: card
+            cardId: card.id,
+            context: context
         )
     }
 
@@ -181,9 +193,10 @@ extension OrchestraService {
             sessionEpoch: identity.sessionEpoch,
             harnessSessionId: identity.harnessSessionId
         )
-        await applyAgentSignals(
+        await submitAgentSignals(
             adapter.agentSignals(from: raw, context: context),
-            to: card
+            cardId: card.id,
+            context: context
         )
     }
 
@@ -196,9 +209,13 @@ extension OrchestraService {
               let card = await store.get(cardId),
               observationStillOwns(cardId, identity: identity, token: token)
         else { return }
-        await applyAgentSignals(
+        await submitAgentSignals(
             [.init(sessionEpoch: identity.sessionEpoch, kind: .observationLost)],
-            to: card
+            cardId: card.id,
+            context: .init(
+                sessionEpoch: identity.sessionEpoch,
+                harnessSessionId: identity.harnessSessionId
+            )
         )
     }
 
@@ -216,11 +233,43 @@ extension OrchestraService {
         runtime[id]?.agentObservationIdentity = nil
     }
 
+    /// Route every source through the card-owned queue before touching durable state. The apply closure
+    /// re-reads the card after it reaches the front, so two suspended callers can never reduce from the
+    /// same stale snapshot and overwrite each other.
+    private func submitAgentSignals(
+        _ signals: [AgentSignal],
+        cardId: UUID,
+        context: AgentSignalContext
+    ) async {
+        guard !signals.isEmpty,
+              let coordinator = runtime[cardId]?.agentObservationCoordinator
+        else { return }
+
+        await coordinator.submit(scope: context, signals: signals) { [weak self] accepted in
+            await self?.applyAgentSignals(
+                accepted,
+                cardId: cardId,
+                context: context,
+                coordinator: coordinator
+            )
+        }
+    }
+
     /// Apply a provider-neutral batch through the lifecycle transition funnel. The durable live value is
     /// the only state copy: reducer output, Card broadcast, wake-on-waiting, and persistence happen on the
     /// same `.live(old) → .live(new)` edge.
-    private func applyAgentSignals(_ signals: [AgentSignal], to card: Task) async {
+    private func applyAgentSignals(
+        _ signals: [AgentSignal],
+        cardId: UUID,
+        context: AgentSignalContext,
+        coordinator: AgentObservationCoordinator
+    ) async {
         guard !signals.isEmpty,
+              let currentCoordinator = runtime[cardId]?.agentObservationCoordinator,
+              currentCoordinator === coordinator,
+              let card = await store.get(cardId),
+              card.sessionEpoch == context.sessionEpoch,
+              card.agentSessionId == context.harnessSessionId,
               case .live(var state) = card.phase
         else { return }
 

@@ -58,6 +58,9 @@ struct CardRuntime {
         let harnessSessionId: String
     }
 
+    /// One ordered ingress for every provider observation affecting this card. The coordinator is
+    /// reference-typed so copies of `CardRuntime` retain the same queue and correlation fence.
+    let agentObservationCoordinator = AgentObservationCoordinator()
     var agentObservationIdentity: AgentObservationIdentity?
 
     // MARK: - Readiness
