@@ -51,6 +51,25 @@ struct ClaudeCodeAdapterMessageEndpointTests {
         ) == nil)
     }
 
+    @Test("Claude builds a sender only for complete native endpoint values")
+    func buildsSenderForCompleteEndpoint() throws {
+        let adapter = ClaudeCodeAdapter()
+        let sender = try #require(adapter.makeMessageSender(for: .claudeHookRPC(
+            socketPath: "/tmp/claude-message.sock",
+            token: "runtime-secret"
+        )))
+        sender.shutdown()
+
+        #expect(adapter.makeMessageSender(for: .claudeHookRPC(
+            socketPath: "",
+            token: "runtime-secret"
+        )) == nil)
+        #expect(adapter.makeMessageSender(for: .claudeHookRPC(
+            socketPath: "/tmp/claude-message.sock",
+            token: ""
+        )) == nil)
+    }
+
     @Test("other adapters do not interpret Claude messaging environment")
     func otherAdaptersIgnoreClaudeEnvironment() {
         #expect(CodexAdapter().hookMessageEndpoint(

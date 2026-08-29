@@ -164,6 +164,13 @@ public struct ClaudeCodeAdapter: Adapter {
         )
     }
 
+    public func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? {
+        guard case .claudeHookRPC(let socketPath, let token) = endpoint,
+              !socketPath.isEmpty, !token.isEmpty
+        else { return nil }
+        return ClaudeMessageSender(socketPath: socketPath, token: token)
+    }
+
     public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
         switch raw {
         case .hooksPush(let hook, let payload):

@@ -47,8 +47,9 @@ extension OrchestraService {
         }
     }
 
-    /// Make the runtime sender match the durable card's exact live identity. The endpoint buffer is
-    /// intentionally retained if this adapter has not supplied its sender yet (commit 2 adds providers).
+    /// Make the runtime sender match the durable card's exact live identity. A different endpoint is a
+    /// credential refresh: the old sender is invalidated before replacement, and a rejected replacement
+    /// fails closed instead of retaining either stale credentials or an endlessly retried pending value.
     func reconcileAgentMessageHandle(_ card: Task) {
         guard ensureRuntime(for: card) else { return }
 
@@ -85,18 +86,23 @@ extension OrchestraService {
             runtime[card.id]?.pendingAgentMessageEndpoint = nil
             return
         }
-        guard let adapter = try? registry.get(expected.providerId),
-              let sender = adapter.makeMessageSender(for: pending.endpoint)
-        else { return }
 
         let previous = runtime[card.id]?.agentMessageHandle
+        runtime[card.id]?.agentMessageHandle = nil
+        previous?.sender.shutdown()
+        guard let adapter = try? registry.get(expected.providerId),
+              let sender = adapter.makeMessageSender(for: pending.endpoint)
+        else {
+            runtime[card.id]?.pendingAgentMessageEndpoint = nil
+            return
+        }
+
         runtime[card.id]?.agentMessageHandle = CardRuntime.AgentMessageHandle(
             identity: expected,
             endpoint: pending.endpoint,
             sender: sender
         )
         runtime[card.id]?.pendingAgentMessageEndpoint = nil
-        previous?.sender.shutdown()
     }
 
     private func stopAgentMessageHandle(_ cardId: UUID) {

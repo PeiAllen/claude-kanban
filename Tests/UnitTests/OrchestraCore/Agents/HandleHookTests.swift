@@ -393,6 +393,45 @@ import TestSupport
         }
     }
 
+    @Test("a rejected endpoint refresh clears the old credential-bound sender")
+    func rejectedMessageEndpointRefreshClearsOldSender() async throws {
+        let senders = MessageSenderRecorder()
+        let adapter = HookSignalTestAdapter(messageSenders: senders)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "message-rejected-refresh", agentId: adapter.id)
+        )
+        let current = try #require(await env.svc.store.get(card.id))
+        let harnessSessionId = try #require(current.agentSessionId)
+        let first = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: harnessSessionId,
+            endpoint: .claudeHookRPC(socketPath: "/tmp/first.sock", token: "first-secret")
+        )
+        _ = await env.svc.handleHook(
+            card.shortId, event: .statusLine, report: nil, source: nil,
+            observedEpoch: current.sessionEpoch, messageEndpoint: first
+        )
+        let installed = try #require(senders.created.first)
+
+        let rejected = AgentMessageEndpointReport(
+            providerId: adapter.id,
+            harnessSessionId: harnessSessionId,
+            endpoint: .claudeHookRPC(socketPath: "/tmp/rejected.sock", token: "rejected-secret")
+        )
+        senders.reject(rejected.endpoint)
+        _ = await env.svc.handleHook(
+            card.shortId, event: .statusLine, report: nil, source: nil,
+            observedEpoch: current.sessionEpoch, messageEndpoint: rejected
+        )
+
+        #expect(installed.shutdownCount == 1)
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle == nil)
+        #expect(await env.svc.runtime[card.id]?.pendingAgentMessageEndpoint == nil)
+    }
+
     @Test("a current SessionStart endpoint buffers before live and installs at the live landing")
     func messageEndpointBuffersUntilLive() async throws {
         let senders = MessageSenderRecorder()
@@ -533,13 +572,21 @@ private struct HookSignalTestAdapter: Adapter {
 private final class MessageSenderRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [RecordingMessageSender] = []
+    private var rejectedEndpoint: AgentMessageEndpoint?
 
     var created: [RecordingMessageSender] { lock.withLock { storage } }
 
-    func make(endpoint: AgentMessageEndpoint) -> RecordingMessageSender {
-        let sender = RecordingMessageSender(endpoint: endpoint)
-        lock.withLock { storage.append(sender) }
-        return sender
+    func reject(_ endpoint: AgentMessageEndpoint) {
+        lock.withLock { rejectedEndpoint = endpoint }
+    }
+
+    func make(endpoint: AgentMessageEndpoint) -> RecordingMessageSender? {
+        lock.withLock {
+            guard endpoint != rejectedEndpoint else { return nil }
+            let sender = RecordingMessageSender(endpoint: endpoint)
+            storage.append(sender)
+            return sender
+        }
     }
 }
 
