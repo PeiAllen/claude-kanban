@@ -236,6 +236,6 @@ private final class RuntimeRecordingSender: AgentMessageSender, @unchecked Senda
     private var shutdowns = 0
 
     var shutdownCount: Int { lock.withLock { shutdowns } }
-    func send(_ message: String) async throws {}
+    func send(_ message: String, timeout: TimeInterval) async throws {}
     func shutdown() { lock.withLock { shutdowns += 1 } }
 }

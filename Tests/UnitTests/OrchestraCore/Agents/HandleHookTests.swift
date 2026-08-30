@@ -606,6 +606,6 @@ private final class RecordingMessageSender: AgentMessageSender, @unchecked Senda
 
     init(endpoint: AgentMessageEndpoint) { self.endpoint = endpoint }
     var shutdownCount: Int { lock.withLock { shutdowns } }
-    func send(_ message: String) async throws {}
+    func send(_ message: String, timeout: TimeInterval) async throws {}
     func shutdown() { lock.withLock { shutdowns += 1 } }
 }

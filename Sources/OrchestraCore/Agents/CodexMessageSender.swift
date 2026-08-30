@@ -31,10 +31,6 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
         self.peerFactory = { path, _ in peerFactory(path) }
     }
 
-    func send(_ message: String) async throws {
-        try await send(message, timeout: 15)
-    }
-
     func send(_ message: String, timeout: TimeInterval) async throws {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in

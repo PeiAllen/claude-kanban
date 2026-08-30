@@ -337,7 +337,7 @@ private final class RecordingNativeInboxSender: AgentMessageSender, @unchecked S
     var messages: [String] { lock.withLock { storage } }
     var shutdownCount: Int { lock.withLock { shutdowns } }
 
-    func send(_ message: String) async throws {
+    func send(_ message: String, timeout: TimeInterval) async throws {
         lock.withLock { storage.append(message) }
     }
 
@@ -356,7 +356,7 @@ private final class ScriptedNativeInboxSender: AgentMessageSender, @unchecked Se
     var messages: [String] { lock.withLock { storage } }
     func setFailuresRemaining(_ count: Int) { lock.withLock { failuresRemaining = count } }
 
-    func send(_ message: String) async throws {
+    func send(_ message: String, timeout: TimeInterval) async throws {
         let shouldFail = lock.withLock { () -> Bool in
             storage.append(message)
             guard failuresRemaining > 0 else { return false }
@@ -382,7 +382,7 @@ private final class GatedNativeInboxSender: AgentMessageSender, @unchecked Senda
     func waitUntilFirstSendIsParked() async { await firstSendGate.reached() }
     func releaseFirstSend() { firstSendGate.release() }
 
-    func send(_ message: String) async throws {
+    func send(_ message: String, timeout: TimeInterval) async throws {
         let shouldBlock = lock.withLock { () -> Bool in
             storage.append(message)
             defer { blocksFirstSend = false }

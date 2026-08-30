@@ -45,10 +45,6 @@ final class ClaudeMessageSender: AgentMessageSender, @unchecked Sendable {
         self.shutdownDescriptor = shutdownDescriptor
     }
 
-    func send(_ message: String) async throws {
-        try await send(message, timeout: 15)
-    }
-
     func send(_ message: String, timeout: TimeInterval) async throws {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in

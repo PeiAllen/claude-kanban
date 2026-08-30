@@ -26,16 +26,15 @@ public struct AgentMessageEndpointReport: Sendable, Equatable {
 /// A provider-native path into one live harness session. Implementations own their connection and must
 /// make `shutdown` synchronously prevent any later send from using superseded session credentials.
 public protocol AgentMessageSender: AnyObject, Sendable {
-    func send(_ message: String) async throws
-    /// Real senders must bind the provider socket/peer I/O to this deadline. The compatibility default
-    /// keeps deterministic test senders small while Core still gives every production attempt a bound.
+    /// Bind the provider socket/peer I/O to this deadline. Requiring this method keeps a new sender from
+    /// silently defeating Core's bounded native-delivery attempt.
     func send(_ message: String, timeout: TimeInterval) async throws
     func shutdown()
 }
 
 public extension AgentMessageSender {
-    func send(_ message: String, timeout: TimeInterval) async throws {
-        try await send(message)
+    func send(_ message: String) async throws {
+        try await send(message, timeout: 15)
     }
 }
 
