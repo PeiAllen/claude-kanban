@@ -17,6 +17,10 @@ public actor Inbox {
     private var confirmedIds: [UUID] = []
     static let confirmedRingCap = 256
 
+    /// Advisory delivery history is bounded independently for each card. Queued and failed rows are
+    /// never evicted because they still need a human decision or a native sender attempt.
+    static let handedOffHistoryCap = 100
+
     /// The on-disk envelope we WRITE, encoding real `[InboxMessage]`.
     private struct InboxEnvelope: Encodable { let messages: [InboxMessage]; let confirmedIds: [UUID] }
 
@@ -101,25 +105,50 @@ public actor Inbox {
 
     private func ensureLoaded() { if !loaded { _ = load() } }
 
-    /// Pending messages for a card, in append (FIFO) order. Non-destructive.
+    /// Unresolved messages for a card, in append (FIFO) order. Handed-off rows live in `history` so
+    /// they remain advisory evidence without being candidates for delivery or editing.
     public func peek(_ cardId: UUID) -> [InboxMessage] {
         ensureLoaded()
-        return messages.filter { $0.cardId == cardId }
+        return messages.filter { $0.cardId == cardId && $0.state != .handedOff }
+    }
+
+    /// Read-only local history of provider-accepted messages for a card, preserving their durable order.
+    public func history(_ cardId: UUID) -> [InboxMessage] {
+        ensureLoaded()
+        return messages.filter { $0.cardId == cardId && $0.state == .handedOff }
+    }
+
+    /// The only row a native sender may attempt. Handed-off history is skipped; a failed unresolved head
+    /// deliberately blocks later queued rows until a human retries, edits, or removes it.
+    public func nextDeliverable(_ cardId: UUID) -> InboxMessage? {
+        ensureLoaded()
+        for message in messages where message.cardId == cardId {
+            switch message.state {
+            case .handedOff:
+                continue
+            case .failed:
+                return nil
+            case .queued:
+                return message
+            }
+        }
+        return nil
     }
 
     /// Append an exact message, retaining its durable identity and delivery provenance. With a `dedupKey`,
-    /// a no-op-safe idempotency guard suppresses an already-pending message for the same card and key.
+    /// a no-op-safe idempotency guard suppresses an already-unresolved message for the same card and key.
     public func enqueue(_ message: InboxMessage) throws {
         ensureLoaded()
         if let dedupKey = message.dedupKey,
-           messages.contains(where: { $0.cardId == message.cardId && $0.dedupKey == dedupKey }) {
-            return   // already queued for this card under the same key — dedup
+           messages.contains(where: {
+               $0.cardId == message.cardId && $0.dedupKey == dedupKey && $0.state != .handedOff
+           }) {
+            return   // unresolved duplicate for this card and key
         }
-        // Transactional: publish the in-memory row only after the disk commit succeeds. A persist throw
-        // must not leave a dedup key resident in memory, or a redrive could be suppressed even though the
-        // original message never reached durable storage.
-        messages.append(message)
-        do { try persist() } catch { messages.removeAll { $0.id == message.id }; throw error }
+        try mutatePersistently {
+            messages.append(message)
+            if message.state == .handedOff { trimHandedOffHistory(for: message.cardId) }
+        }
     }
 
     /// Append a message carrying an explicit client-minted `id`, but ONLY if that id is unknown — not
@@ -136,15 +165,9 @@ public actor Inbox {
                                  source: InboxMessageSource? = .orchestra) throws -> Bool {
         ensureLoaded()
         if messages.contains(where: { $0.id == id }) || confirmedIds.contains(id) { return false }
-        // TRANSACTIONAL: the candidate is published in memory ONLY after the disk commit succeeds. If
-        // `persist()` throws (disk full / permission / replace error), roll the append back before
-        // rethrowing — otherwise the contracted retry (`send` re-issues the same id) would find the row
-        // still in memory, return `false`, and `send:722` would report SUCCESS without the message ever
-        // reaching disk. A daemon death before the next inbox mutation flushes would then LOSE an
-        // acknowledged send — the at-least-once violation B exists to prevent. No `await` sits between
-        // the append and the persist, so `removeAll { id }` restores the exact prior state.
-        messages.append(InboxMessage(id: id, cardId: cardId, text: text, source: source, createdAt: now()))
-        do { try persist() } catch { messages.removeAll { $0.id == id }; throw error }
+        try mutatePersistently {
+            messages.append(InboxMessage(id: id, cardId: cardId, text: text, source: source, createdAt: now()))
+        }
         return true
     }
 
@@ -157,71 +180,149 @@ public actor Inbox {
                                  dedupKey: dedupKey, createdAt: now()))
     }
 
-    // `drain`/`drainFirst` DELETED (B4): after B3's de-drain they had zero production callers, and a
-    // public remove-without-receipt primitive is the exact trap this at-least-once design exists to
-    // eliminate — the confirm funnel guards `confirm`, not a raw drain, so a later delivery-path
-    // author (B5a/D1/E1) could silently reintroduce remove-before-receipt with nothing to catch it.
-    // Delivery removes ONLY through `confirm(token:)` on a proven receipt; the editor removes through
-    // `remove(_:)`; readers use the non-destructive `peek`.
+    /// Mark a queued send as accepted by the native provider. The text-and-state compare prevents a
+    /// future sender completion from changing a row that a user edited while that send was in flight.
+    @discardableResult
+    public func markHandedOff(_ id: UUID, expectedText: String,
+                              expectedState: InboxMessageState) throws -> Bool {
+        try transition(id, expectedText: expectedText, expectedState: expectedState, to: .handedOff)
+    }
 
-    /// Remove one message by id (no-op if absent). Used by the inbox editor. Returns the removed
-    /// message's OWNER `cardId`, or `nil` when no message matched — B5a's editor stuck-reset re-arms
-    /// exactly that owner, never the caller's ref (this lookup is GLOBAL by message id, so the ref a
-    /// verb was given and the message's true owner can differ, or the id may not exist at all).
-    ///
-    /// FORCE-RELEASES the message's in-flight batch (the human always wins): the rendered payload no
-    /// longer matches the queue, so the batch returns to pending and re-delivers as a fresh claim. The
-    /// already-rendered payload may still arrive once — benign and disclosed.
+    /// Mark a queued native send as locally failed. A failed head remains durable and blocks later work
+    /// until a user explicitly resolves it.
+    @discardableResult
+    public func markFailed(_ id: UUID, expectedText: String,
+                           expectedState: InboxMessageState) throws -> Bool {
+        try transition(id, expectedText: expectedText, expectedState: expectedState, to: .failed)
+    }
+
+    /// Move only a failed row back to queued. Retrying an absent, queued, or handed-off row is a no-op.
+    @discardableResult
+    public func retry(_ id: UUID) throws -> Bool {
+        ensureLoaded()
+        guard let index = messages.firstIndex(where: { $0.id == id }), messages[index].state == .failed else {
+            return false
+        }
+        try mutatePersistently {
+            messages[index] = rebuilding(messages[index], state: .queued, lease: nil)
+        }
+        return true
+    }
+
+    /// Remove one retained row by id, including handed-off history. Returns its owner or `nil` when absent.
+    /// The temporary lease release keeps current callers safe until the old delivery path is deleted.
     @discardableResult
     public func remove(_ id: UUID) throws -> UUID? {
         ensureLoaded()
         guard let msg = messages.first(where: { $0.id == id }) else { return nil }
-        if let token = msg.lease?.token { unlease { $0.lease?.token == token } }
-        messages.removeAll { $0.id == id }
-        try persist()
+        try mutatePersistently {
+            if let token = msg.lease?.token { unlease { $0.lease?.token == token } }
+            messages.removeAll { $0.id == id }
+        }
         return msg.cardId
     }
 
-    /// Replace a message's text in place; id / cardId / source / deduplication / createdAt are preserved.
-    /// Force-releases the batch for the same reason `remove` does — an in-flight token must never confirm
-    /// text the human has since rewritten. Returns the edited message's OWNER `cardId` (throws if absent)
-    /// so B5a's editor stuck-reset re-arms that owner, not the caller's ref (the lookup is global by id).
+    /// Replace an unresolved row's text while preserving identity and provenance. Editing a failed row
+    /// requeues it; handed-off history is immutable. The temporary lease release keeps old callers safe.
     @discardableResult
-    public func update(_ id: UUID, text: String) throws -> UUID {
+    public func edit(_ id: UUID, text: String) throws -> UUID {
         ensureLoaded()
         guard let idx = messages.firstIndex(where: { $0.id == id }) else {
             throw OrchestraError.invalidParams("no inbox message with id \(id)")
         }
-        if let token = messages[idx].lease?.token { unlease { $0.lease?.token == token } }
         let old = messages[idx]
-        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text, source: old.source,
-                                     dedupKey: old.dedupKey, createdAt: old.createdAt, lease: nil)
-        try persist()
+        guard old.state != .handedOff else {
+            throw OrchestraError.invalidParams("handed-off inbox history is immutable")
+        }
+        try mutatePersistently {
+            if let token = old.lease?.token { unlease { $0.lease?.token == token } }
+            messages[idx] = rebuilding(old, text: text, state: .queued, lease: nil)
+        }
         return old.cardId
     }
 
-    /// Reorder a single card's pending messages. `orderedIds` must be a permutation of that card's
-    /// current message ids. Because all cards share one append-ordered array, this refills exactly the
-    /// array slots the card already occupies (in the new order), leaving other cards' interleaving intact.
+    /// Compatibility spelling used by current service callers; native inbox code should use `edit`.
+    @discardableResult
+    public func update(_ id: UUID, text: String) throws -> UUID { try edit(id, text: text) }
+
+    /// Reorder only a card's unresolved rows. Re-filling just those slots leaves handed-off history at
+    /// its durable positions and leaves other cards' interleaving intact.
     public func reorder(_ cardId: UUID, orderedIds: [UUID]) throws {
         ensureLoaded()
-        let slots = messages.enumerated().filter { $0.element.cardId == cardId }
+        let slots = messages.enumerated().filter {
+            $0.element.cardId == cardId && $0.element.state != .handedOff
+        }
         let current = slots.map(\.element)
-        guard Set(orderedIds) == Set(current.map(\.id)) else {
-            throw OrchestraError.invalidParams("orderedIds must be a permutation of the card's pending message ids")
+        guard orderedIds.count == current.count, Set(orderedIds) == Set(current.map(\.id)) else {
+            throw OrchestraError.invalidParams("orderedIds must be a permutation of the card's unresolved message ids")
         }
         let byId = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
         let reordered = orderedIds.map { byId[$0]! }
-        for (slot, msg) in zip(slots.map(\.offset), reordered) { messages[slot] = msg }
-        try persist()
+        try mutatePersistently {
+            for (slot, msg) in zip(slots.map(\.offset), reordered) { messages[slot] = msg }
+        }
     }
 
-    /// Clear the lease on every message matching `where` (in place, preserving all other fields).
-    /// Introduced HERE (not with release/releaseAll in Task 6) because `claim` is its first reference.
+    /// Apply one advisory post-send transition only while the row is still the exact queued snapshot the
+    /// sender attempted. `expectedState` is explicit so a stale completion cannot rewrite an edited row.
+    private func transition(_ id: UUID, expectedText: String, expectedState: InboxMessageState,
+                            to state: InboxMessageState) throws -> Bool {
+        ensureLoaded()
+        guard expectedState == .queued,
+              let index = messages.firstIndex(where: { $0.id == id }),
+              messages[index].text == expectedText,
+              messages[index].state == expectedState
+        else { return false }
+        try mutatePersistently {
+            messages[index] = rebuilding(messages[index], state: state, lease: nil)
+            if state == .handedOff { trimHandedOffHistory(for: messages[index].cardId) }
+        }
+        return true
+    }
+
+    /// Make all in-memory mutations all-or-nothing with their atomic file replacement. This is used by
+    /// both advisory transitions and the temporary lease shims below, so a save error never leaves a
+    /// different in-memory queue than the last durable one.
+    private func mutatePersistently(_ mutation: () throws -> Void) throws {
+        let priorMessages = messages
+        let priorConfirmedIds = confirmedIds
+        do {
+            try mutation()
+            try persist()
+        } catch {
+            messages = priorMessages
+            confirmedIds = priorConfirmedIds
+            throw error
+        }
+    }
+
+    private func rebuilding(_ message: InboxMessage, text: String? = nil,
+                            state: InboxMessageState? = nil, lease: DeliveryLease?) -> InboxMessage {
+        InboxMessage(id: message.id, cardId: message.cardId, text: text ?? message.text,
+                     source: message.source, dedupKey: message.dedupKey, createdAt: message.createdAt,
+                     state: state ?? message.state, lease: lease)
+    }
+
+    private func trimHandedOffHistory(for cardId: UUID) {
+        let history = messages.indices.filter {
+            messages[$0].cardId == cardId && messages[$0].state == .handedOff
+        }
+        let excess = history.count - Self.handedOffHistoryCap
+        guard excess > 0 else { return }
+        for index in history.prefix(excess).reversed() { messages.remove(at: index) }
+    }
+
+    // MARK: Transitional lease/claim compatibility — delete in native sender cutover
+
+    /// The current service still calls these lease methods until commit 4 switches it to the advisory
+    /// sender loop. They intentionally operate only on queued rows, so retained history is never
+    /// delivered by the outgoing protocol.
+
+    /// Clear the lease on every matching row while preserving its advisory state and metadata.
     private func unlease(where match: (InboxMessage) -> Bool) {
-        for (idx, msg) in messages.enumerated() where match(msg) && msg.lease != nil {
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
-                                         dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: nil)
+        for (idx, msg) in messages.enumerated()
+        where msg.state == .queued && match(msg) && msg.lease != nil {
+            messages[idx] = rebuilding(msg, lease: nil)
         }
     }
 
@@ -231,6 +332,7 @@ public actor Inbox {
     /// claim — the card's own prior `relaunchSeed` lease at ANY epoch, so a retried relaunch re-owns its
     /// in-flight batch instead of coming up seedless.
     private func isClaimable(_ msg: InboxMessage, route: DeliveryRoute, epoch: Int, now: Date) -> Bool {
+        guard msg.state == .queued else { return false }
         guard let lease = msg.lease else { return true }
         if now.timeIntervalSince(lease.leasedAt) >= leaseTimeout { return true }
         if lease.epoch < epoch { return true }
@@ -263,10 +365,6 @@ public actor Inbox {
         let taken = Array(pool.prefix(max(0, consumed)))
         let takenIds = Set(taken.map(\.id))
         let lease = DeliveryLease(token: token, route: route, epoch: epoch, leasedAt: now)
-        for (idx, msg) in messages.enumerated() where takenIds.contains(msg.id) {
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
-                                         dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: lease)
-        }
         // Kill the DEAD leases on the claimable-but-unconsumed tail. A message that entered the pool did
         // so because its lease was expired/stale-epoch/re-ownable — i.e. already invalid. Leaving that old
         // token on an untaken message keeps it live, and `confirm` matches on token alone: a late ack from
@@ -274,12 +372,18 @@ public actor Inbox {
         // "Re-leasing mints a fresh token and invalidates the old one" has to cover the whole pool, not
         // just the prefix we took.
         let staleTail = pool.filter { !takenIds.contains($0.id) && $0.lease != nil }
-        if !staleTail.isEmpty {
-            let staleIds = Set(staleTail.map(\.id))
-            unlease { staleIds.contains($0.id) }
-        }
         // A handoff-only batch (consumed == 0) leases nothing; persist only if something actually changed.
-        if !taken.isEmpty || !staleTail.isEmpty { try persist() }
+        if !taken.isEmpty || !staleTail.isEmpty {
+            try mutatePersistently {
+                for (idx, msg) in messages.enumerated() where takenIds.contains(msg.id) {
+                    messages[idx] = rebuilding(msg, lease: lease)
+                }
+                if !staleTail.isEmpty {
+                    let staleIds = Set(staleTail.map(\.id))
+                    unlease { staleIds.contains($0.id) }
+                }
+            }
+        }
         return ClaimedBatch(token: token, ids: taken.map(\.id), payload: payload)
     }
 
@@ -297,32 +401,31 @@ public actor Inbox {
     @discardableResult
     public func confirm(token: UUID) throws -> Bool {
         ensureLoaded()
-        let hit = messages.filter { $0.lease?.token == token }
+        let hit = messages.filter { $0.state == .queued && $0.lease?.token == token }
         guard !hit.isEmpty else { return false }
-        messages.removeAll { $0.lease?.token == token }
-        confirmedIds.append(contentsOf: hit.map(\.id))
-        if confirmedIds.count > Self.confirmedRingCap {
-            confirmedIds.removeFirst(confirmedIds.count - Self.confirmedRingCap)   // FIFO evict
+        try mutatePersistently {
+            messages.removeAll { $0.state == .queued && $0.lease?.token == token }
+            confirmedIds.append(contentsOf: hit.map(\.id))
+            if confirmedIds.count > Self.confirmedRingCap {
+                confirmedIds.removeFirst(confirmedIds.count - Self.confirmedRingCap)   // FIFO evict
+            }
         }
-        try persist()
         return true
     }
 
     /// Return a batch to pending (its route abandoned). Stale/unknown token → no-op.
     public func release(token: UUID) throws {
         ensureLoaded()
-        guard messages.contains(where: { $0.lease?.token == token }) else { return }
-        unlease { $0.lease?.token == token }
-        try persist()
+        guard messages.contains(where: { $0.state == .queued && $0.lease?.token == token }) else { return }
+        try mutatePersistently { unlease { $0.lease?.token == token } }
     }
 
     /// Lifecycle teardown: drop every lease for a card. The messages stay durable — a reopen's relaunch
     /// delivers them.
     public func releaseAll(_ cardId: UUID) throws {
         ensureLoaded()
-        guard messages.contains(where: { $0.cardId == cardId && $0.lease != nil }) else { return }
-        unlease { $0.cardId == cardId }
-        try persist()
+        guard messages.contains(where: { $0.cardId == cardId && $0.state == .queued && $0.lease != nil }) else { return }
+        try mutatePersistently { unlease { $0.cardId == cardId } }
     }
 
     /// Is anything deliverable for this card right now? Route-agnostic on purpose: a message riding a
@@ -355,7 +458,7 @@ public actor Inbox {
     public func isLeaseLive(token: UUID, now: Date) -> Bool {
         ensureLoaded()
         return messages.contains {
-            $0.lease?.token == token
+            $0.state == .queued && $0.lease?.token == token
             && $0.lease.map { now.timeIntervalSince($0.leasedAt) < leaseTimeout } == true
         }
     }
@@ -364,7 +467,7 @@ public actor Inbox {
     /// re-`ensureLoaded`. An EXPIRED lease is not live — it is re-claimable, so it does not count.
     private func liveLeaseExists(_ cardId: UUID, epoch: Int, now: Date) -> Bool {
         messages.contains {
-            $0.cardId == cardId && $0.lease?.epoch == epoch
+            $0.cardId == cardId && $0.state == .queued && $0.lease?.epoch == epoch
             && $0.lease.map { now.timeIntervalSince($0.leasedAt) < leaseTimeout } == true
         }
     }
@@ -380,17 +483,20 @@ public actor Inbox {
     /// can't be bypassed — an atomic self-confirming Inbox helper would skip them.
     public func setTailWatermark(cardId: UUID, epoch: Int, watermark: Int64, path: String) throws {
         ensureLoaded()
-        var changed = false
-        for (idx, msg) in messages.enumerated()
-        where msg.cardId == cardId && msg.lease?.route == .relaunchSeed && msg.lease?.epoch == epoch {
-            guard let lease = msg.lease else { continue }
-            let stamped = DeliveryLease(token: lease.token, route: lease.route, epoch: lease.epoch,
-                                        leasedAt: lease.leasedAt, tailWatermark: watermark, tailPath: path)
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
-                                         dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: stamped)
-            changed = true
+        let matching = messages.indices.filter {
+            messages[$0].cardId == cardId && messages[$0].state == .queued
+                && messages[$0].lease?.route == .relaunchSeed
+                && messages[$0].lease?.epoch == epoch
         }
-        if changed { try persist() }
+        guard !matching.isEmpty else { return }
+        try mutatePersistently {
+            for index in matching {
+                guard let lease = messages[index].lease else { continue }
+                let stamped = DeliveryLease(token: lease.token, route: lease.route, epoch: lease.epoch,
+                                            leasedAt: lease.leasedAt, tailWatermark: watermark, tailPath: path)
+                messages[index] = rebuilding(messages[index], lease: stamped)
+            }
+        }
     }
 
     private func persist() throws {
