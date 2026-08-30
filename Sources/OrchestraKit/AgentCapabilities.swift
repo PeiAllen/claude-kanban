@@ -3,12 +3,11 @@ import Foundation
 /// The capability descriptor every adapter advertises. Core degrades on these flags — never on adapter
 /// identity (no `if agentId == "claude"`). This is the seam-contract root (A1): the COMPLETE set of
 /// fields and every variant spelling is declared here, so later PRs implement behavior behind variants
-/// declared now but not yet exercised (e.g. `wakeTransport.controlChannel`,
-/// `readOnlyEnforcement.orchestraSandboxed`, `telemetry.ptyScrape`, `contextUsage.none`). Additions are
+/// declared now but not yet exercised (e.g. `readOnlyEnforcement.orchestraSandboxed`,
+/// `telemetry.ptyScrape`, `contextUsage.none`). Additions are
 /// defaulted; spellings are stable BUT not immortal — a variant that was exercised and then retired is
 /// removed, not kept as dead vocabulary (capabilities are computed from the adapter, never persisted, so a
-/// removal breaks nothing). `wakeTransport.sendKeys` + `inboxDrain.sessionSeed` were retired when Codex
-/// moved to resume-seed wake + the Stop-hook drain.
+/// removal breaks nothing).
 public struct AgentCapabilities: Sendable, Equatable, Codable {
 
     /// How the agent's session id is obtained. `seeded` = Orchestra mints it pre-launch (Claude
@@ -30,13 +29,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         case percent, tokens, none
     }
 
-    /// How an idle agent is woken to start a turn (F2). `nativeReinvoke` = the harness re-invokes it in
-    /// session (Claude); `relaunch` = kill + resume-seed (Codex, and the universal fallback);
-    /// `controlChannel` = an app-server / RPC `turn/start` (future — wakes without tearing the session down).
-    public enum WakeTransport: String, Sendable, Equatable, Codable, CaseIterable {
-        case nativeReinvoke, relaunch, controlChannel
-    }
-
     /// How a card being BORN — `launching` (blank spawn/reopen) OR `relaunching` (resume/restart) — is
     /// confirmed alive (D1: one axis covers both being-born phases). `sessionStartHook` = wait for the
     /// agent's own SessionStart telemetry to reach `report()` (Claude `hooksPush`: `startup` confirms a
@@ -50,13 +42,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     /// continuous liveness reconcile (folded into the 2s `reconcile()` tick) is the safety net for every variant.
     public enum ReadinessConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
         case sessionStartHook, rolloutMeta, relaunchLiveness
-    }
-
-    /// How the durable inbox is drained into the agent (F3). `stopHook` = a Stop hook injects at
-    /// turn-end (both shipped agents); `none` = no live drain. (Delivery to an *idle* card is F2 wake —
-    /// a resume-seed folds the inbox into the opening turn — not an `inboxDrain` mode.)
-    public enum InboxDrain: String, Sendable, Equatable, Codable, CaseIterable {
-        case stopHook, none
     }
 
     /// The strength of the read-only guarantee. `sandboxed` = an OS sandbox is the boundary (true RO);
@@ -89,8 +74,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let sessionId: SessionId
     public let telemetry: Telemetry
     public let contextUsage: ContextUsage
-    public let wakeTransport: WakeTransport
-    public let inboxDrain: InboxDrain
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
     public let terminalImagePaste: TerminalImagePaste
@@ -106,7 +89,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let denyChord: [KeyToken]
 
     public init(sessionId: SessionId, telemetry: Telemetry, contextUsage: ContextUsage,
-                wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
                 readinessConfirmation: ReadinessConfirmation = .sessionStartHook,
@@ -115,8 +97,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.sessionId = sessionId
         self.telemetry = telemetry
         self.contextUsage = contextUsage
-        self.wakeTransport = wakeTransport
-        self.inboxDrain = inboxDrain
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
@@ -126,7 +106,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, telemetry, contextUsage, wakeTransport, inboxDrain, readOnlyEnforcement, authMode
+        case sessionId, telemetry, contextUsage, readOnlyEnforcement, authMode
         case terminalImagePaste, readinessConfirmation, approveChord, denyChord
     }
 
@@ -137,8 +117,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         sessionId = try c.decode(SessionId.self, forKey: .sessionId)
         telemetry = try c.decode(Telemetry.self, forKey: .telemetry)
         contextUsage = try c.decode(ContextUsage.self, forKey: .contextUsage)
-        wakeTransport = try c.decode(WakeTransport.self, forKey: .wakeTransport)
-        inboxDrain = try c.decode(InboxDrain.self, forKey: .inboxDrain)
         readOnlyEnforcement = try c.decode(ReadOnlyEnforcement.self, forKey: .readOnlyEnforcement)
         authMode = try c.decode(AuthMode.self, forKey: .authMode)
         terminalImagePaste = try c.decodeIfPresent(TerminalImagePaste.self, forKey: .terminalImagePaste)

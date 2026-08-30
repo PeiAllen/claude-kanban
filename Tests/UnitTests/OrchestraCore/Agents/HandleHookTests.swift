@@ -16,69 +16,9 @@ import TestSupport
 
         let r = await svc.handleHook(ref, event: .sessionStart, report: nil, source: .startup)
         #expect(r?.additionalContext?.contains(card.shortId) == true)
-        #expect(r?.continuation == nil)
 
         let compact = await svc.handleHook(ref, event: .sessionStart, report: nil, source: .compact)
         #expect(compact == nil)   // don't re-orient mid-turn
-    }
-
-    @Test("stop drains the inbox into the continuation")
-    func stop() async throws {
-        let (svc, _, _, _, _, base) = TestEnv.make()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
-        let epoch = try #require(await svc.store.get(card.id)).sessionEpoch   // the fence reads sessionEpoch
-        try await svc.send(card.id, "queued message")
-
-        let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil, observedEpoch: epoch)
-        #expect(r?.continuation?.contains("queued message") == true)
-        #expect(r?.additionalContext == nil)
-    }
-
-    @Test("a Stop claims its drain before applying the turn-completed observation")
-    func stopClaimsBeforeTurnCompletion() async throws {
-        let adapter = HookSignalTestAdapter()
-        let env = TestEnv.make(grace: 2, registry: AgentRegistry(adapters: [adapter]))
-        let card = try await TestEnv.spawnAndAwaitLive(
-            env.svc,
-            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b", agentId: adapter.id)
-        )
-        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        try await env.svc.send(card.id, "DRAIN-ME")
-
-        let payload: JSONValue = .object([
-            "session_id": .string("hook-session"),
-            "prompt_id": .string("prompt-a"),
-        ])
-        _ = await env.svc.handleHook(
-            card.id.uuidString,
-            event: .userPrompt,
-            report: nil,
-            source: nil,
-            observedEpoch: epoch,
-            observationPayload: payload
-        )
-        let r = await env.svc.handleHook(
-            card.id.uuidString,
-            event: .stop,
-            report: nil,
-            source: nil,
-            observedEpoch: epoch,
-            stopHookActive: false,
-            observationPayload: payload
-        )
-
-        #expect(r?.continuation?.contains("DRAIN-ME") == true)
-        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
-        #expect(try await env.svc.inboxPeek(card.id).first?.lease?.route == .stopDrain)
-    }
-
-    @Test("stop with an empty inbox yields no continuation")
-    func stopEmpty() async throws {
-        let (svc, _, _, _, _, base) = TestEnv.make()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
-        let epoch = try #require(await svc.store.get(card.id)).sessionEpoch
-        let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil, observedEpoch: epoch)
-        #expect(r == nil)   // nil from an empty inbox (matching epoch), not from the fence
     }
 
     @Test("a telemetry event applies its report to the store and returns no response")

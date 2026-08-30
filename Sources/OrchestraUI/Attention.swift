@@ -58,11 +58,9 @@ public enum Attention {
     /// unavailable, and auto-resuming waits cannot satisfy the quiet predicate.
     public static func isIdle(_ t: Task) -> Bool { t.workInFlight == false }
 
-    /// "Nothing more is going to happen here on its own": concluded or dead, AND with no queued work.
-    /// A card with a pending delivery is imminently active even while it reads idle, which is why the
-    /// delivery bit belongs in this predicate rather than beside it.
+    /// "Nothing more is going to happen here on its own": concluded or dead.
     public static func isSettled(_ t: Task) -> Bool {
-        (isIdle(t) || t.phase.kind == .dead) && !t.hasPendingDelivery
+        isIdle(t) || t.phase.kind == .dead
     }
 
     // MARK: - the fold
@@ -166,7 +164,6 @@ public enum Attention {
         // 4. The constellation (the card + its attached agents) must be quiet, and nothing in the
         //    subtree may still be moving. Descendants gate by ACTIVITY only — their timestamps never
         //    move this card's clock (step 6).
-        guard !c.hasPendingDelivery else { return nil }
         guard attached.allSatisfy(isSettled) else { return nil }
         guard descendants.allSatisfy(isSettled) else { return nil }
 

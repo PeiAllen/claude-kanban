@@ -146,34 +146,6 @@ struct SpawnPhaseTests {
         #expect(byVerb == .rejected(from: .dead(.agentExited), to: .live(.running)))
     }
 
-    @Test("two concurrent wakes on an idle card resume exactly once (deliveriesInFlight defers the second)")
-    func test_concurrentWakeDoesNotDoubleResume() async throws {
-        // .claudeCode (sessionStartHook): the resume genuinely awaits its signal, so the in-flight window
-        // the `deliveriesInFlight` deferral depends on is observable (a `.relaunchLiveness` stub confirms too
-        // fast to exercise it). spawnAwaited drives the setup spawn's launch-ready signal.
-        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        env.adapter.writeTranscript(for: t.agentSessionId!)                       // resumable
-        await env.svc.testSetTurnStatus(t.id, .waiting())   // idle
-        let name = env.sessions.sessionName(t.id)
-        let before = env.sessions.ensureCount
-
-        async let w1: Void = env.svc.wake(t.id)
-        async let w2: Void = env.svc.wake(t.id)
-        _ = await (w1, w2)
-
-        // `deliveriesInFlight` lets ONE wake proceed → ONE `.relaunching` intent; the reconciler then
-        // drives that single relaunch (the other wake deferred at the in-flight guard).
-        try await pollUntil {
-            await env.svc.reconcile()
-            return env.sessions.ensureArgv[name]?.contains("--resume") == true
-        }
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))     // confirm the ONE resume
-        await yieldBriefly()   // negative: a wrongful second resume-seed gets its chance to run
-        #expect(env.sessions.ensureCount == before + 1)                           // one relaunch, not two
-    }
-
     @Test("reopen drives .archived → .creatingWorktree → .launching → .live and re-materializes the cwd")
     func test_reopenDrivesCreatingWorktreePath() async throws {
         // .claudeCode: reopen's resume path awaits the delivered SessionStart(resume), so the

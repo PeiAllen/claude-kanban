@@ -120,42 +120,6 @@ struct ControlRoundTripTests {
         }
     }
 
-    @Test("hook RPC: a matching-epoch stop claims the inbox into the continuation; a nil epoch is fenced out")
-    func hookStopDrainRPC() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        let path = Self.sock()
-        let server = ControlServer(service: env.svc, socketPath: path)
-        try server.start(); defer { server.stop() }
-        let client = TestEnv.controlClient(path, source: .agent)
-        try client.connect(); defer { client.close() }
-
-        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString),
-            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
-        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch   // the fence reads sessionEpoch
-        let inbox = await env.svc.inbox
-
-        // empty inbox (matching epoch) → no continuation. The epoch is passed so the nil is honest — it comes
-        // from an empty queue, NOT from the epoch fence.
-        let empty = try await client.call("hook", .object([
-            "ref": .string(task.shortId), "event": .string("stop"), "epoch": .int(epoch)]))
-        #expect(empty["response"]?["continuation"]?.stringValue == nil)
-
-        try await env.svc.send(task.id, "queued work")
-
-        // FENCE: a stop with NO epoch (a pre-upgrade / superseded session) neither confirms nor claims —
-        // the message stays pending and UNLEASED for the arm's idle routes.
-        let fenced = try await client.call("hook", .object([
-            "ref": .string(task.shortId), "event": .string("stop")]))
-        #expect(fenced["response"]?["continuation"]?.stringValue == nil)
-        #expect(await inbox.peek(task.id).first?.lease == nil)   // untouched by the fenced stop
-
-        // A matching-epoch stop claims it into the continuation.
-        let got = try await client.call("hook", .object([
-            "ref": .string(task.shortId), "event": .string("stop"), "epoch": .int(epoch)]))
-        #expect(got["response"]?["continuation"]?.stringValue?.contains("queued work") == true)
-    }
-
     @Test("hook RPC: sessionStart returns live orientation; the retired RPCs are gone")
     func hookSessionStartRPC() async throws {
         let env = TestEnv.make()
@@ -191,7 +155,10 @@ struct ControlRoundTripTests {
 
     @Test("hook RPC forwards the ephemeral native-message endpoint without persisting it")
     func hookNativeMessageEndpointRPC() async throws {
-        let env = TestEnv.make()
+        // Use the real Claude adapter here: the generic test adapter deliberately has no native sender,
+        // whereas this contract needs to observe the accepted endpoint installed in a live handle.
+        let adapter = ClaudeCodeAdapter(binOverride: "fake-claude")
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
         let task = try await TestEnv.spawnAndAwaitLive(
             env.svc,
             SpawnInput(id: UUID(), prompt: "c", repo: TestEnv.repo(env.base), branch: "native-message-rpc")
@@ -210,11 +177,14 @@ struct ControlRoundTripTests {
 
         let fields = HookRPC.hookFields(
             ref: task.shortId, event: "statusline", report: nil, source: nil,
-            epoch: current.sessionEpoch, stopHookActive: nil, messageEndpoint: endpoint
+            epoch: current.sessionEpoch, messageEndpoint: endpoint
         )
         _ = try await client.call("hook", .object(fields))
 
-        #expect(await env.svc.runtime[task.id]?.pendingAgentMessageEndpoint?.endpoint == endpoint.endpoint)
+        // The card is already live, so the endpoint is installed into its ephemeral sender handle
+        // immediately rather than waiting for another lifecycle landing. It must not reach the store.
+        #expect(await env.svc.runtime[task.id]?.agentMessageHandle?.endpoint == endpoint.endpoint)
+        #expect(await env.svc.runtime[task.id]?.pendingAgentMessageEndpoint?.endpoint == nil)
         let persisted = try String(contentsOfFile: env.base + "/tasks.json", encoding: .utf8)
         #expect(!persisted.contains("rpc-secret"))
     }

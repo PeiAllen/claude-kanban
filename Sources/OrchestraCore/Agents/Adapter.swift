@@ -27,7 +27,16 @@ public struct AgentMessageEndpointReport: Sendable, Equatable {
 /// make `shutdown` synchronously prevent any later send from using superseded session credentials.
 public protocol AgentMessageSender: AnyObject, Sendable {
     func send(_ message: String) async throws
+    /// Real senders must bind the provider socket/peer I/O to this deadline. The compatibility default
+    /// keeps deterministic test senders small while Core still gives every production attempt a bound.
+    func send(_ message: String, timeout: TimeInterval) async throws
     func shutdown()
+}
+
+public extension AgentMessageSender {
+    func send(_ message: String, timeout: TimeInterval) async throws {
+        try await send(message)
+    }
 }
 
 /// Provider observation endpoint prepared for one card launch. The enum keeps the adapter/core seam

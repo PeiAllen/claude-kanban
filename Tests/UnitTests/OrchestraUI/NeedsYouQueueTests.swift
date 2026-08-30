@@ -20,14 +20,13 @@ final class NeedsYouQueueTests: XCTestCase {
                       ctx: Double = 0,
                       pendingQuestion: PendingQuestion? = nil,
                       treeStat: TreeStat? = nil,
-                      hasPendingDelivery: Bool = false,
                       archived: Bool = false,
                       at: Date? = nil) -> Task {
         Task(title: title, pendingQuestion: pendingQuestion, repo: "/repo", branch: "feat/\(title)",
              cwd: "/repo/.wt/\(title)", origin: .worktree, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, deadReason: dead, phase: phase,
              phaseChangedAt: at ?? t0, ctxPct: ctx, initialPrompt: title, parentBranch: parentBranch,
-             treeStat: treeStat, hasPendingDelivery: hasPendingDelivery, archived: archived,
+             treeStat: treeStat, archived: archived,
              updatedAt: at ?? t0)
     }
 
@@ -125,7 +124,7 @@ final class NeedsYouQueueTests: XCTestCase {
 
     private let standardGateCapabilities = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
+        readOnlyEnforcement: .sandboxed,
         authMode: .subscription, approveChord: [.named(.enter)], denyChord: [.named(.esc)])
 
     private var standardGateAgent: AgentInfo {
@@ -168,7 +167,7 @@ final class NeedsYouQueueTests: XCTestCase {
     func testGateChordComesFromTheCardsAgentCapability() {
         let tabCaps = AgentCapabilities(
             sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-            wakeTransport: .nativeReinvoke, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
+            readOnlyEnforcement: .sandboxed,
             authMode: .subscription, approveChord: [.named(.tab)], denyChord: [])
         let agent = AgentInfo(id: "tabber", name: "Tabber", icon: "sparkle",
                               models: [AgentModel(id: "m")], capabilities: tabCaps)

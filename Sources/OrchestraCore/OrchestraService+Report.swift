@@ -97,15 +97,8 @@ extension OrchestraService {
 
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
-                resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
-                // Human-pacing: a prompt typed into a session that was idle-WAITING on the human is a DIRECT
-                // human turn — it paces the card, so the stall row must exempt it forever after (docs/09).
-                // But a MACHINE opening positional (a spawn/handoff seed, or a wake-delivered inbox batch)
-                // reaches here as a `promptText` too, so the seed would satisfy the gate and wrongly exempt
-                // AGENT work from the stall row. `finishLaunch` marks the generation that owes such a turn;
-                // the FIRST prompt of that generation consumes the marker and is NOT treated as human — only
-                // a prompt with no machine turn owed, on an idle human-wait, is. Fenced (`attributable`) so a
-                // stale generation's delayed prompt can't mark a card human-paced.
+                // A system-supplied launch seed also arrives as prompt text. `seedTurnEpoch` keeps that
+                // one opening prompt from being classified as a direct human turn.
                 let machineSeedTurn: Bool
                 if let se = runtime[id]?.seedTurnEpoch, se == observedEpoch { machineSeedTurn = true }
                 else { machineSeedTurn = false }
@@ -277,37 +270,6 @@ extension OrchestraService {
             scheduleChildFanout(id)                                 // a moved parent stales children (debounced)
         }
 
-        // B3 held-relaunch confirm — UNCONDITIONAL (a delivery-proving line may change no field, so it
-        // must run outside the `didChange` guard). A `.ticks`-readiness relaunch left its relaunchSeed lease
-        // HELD; the first signal proven to come from the CURRENT generation confirms it (removes the messages
-        // + rings). Read `before.phase` — the card is already `.live` from the tick landing, and report()
-        // reverts the local `task.phase` to `before.phase` above. Provenance-fenced so a stale pre-kill line
-        // or a daemon-restart replay never confirms: a fileTail line qualifies only on the SAME rollout path
-        // AND at/after the persisted post-kill watermark; a hook qualifies only when its `observedEpoch`
-        // matches the lease's epoch. Routed through `confirmDelivery` so the archive guard is never bypassed.
-        //
-        // The lease must ALSO belong to the card's CURRENT generation. The watermark alone fences only
-        // within one launch: it proves the predecessor can't append past it, but NOT that a LATER
-        // generation's line is unrelated. A held lease survives an epoch bump whenever the bump skips
-        // `claimSeed`'s relaunchSeed re-own — the `LaunchStepper` path (reopen / creatingWorktree) never
-        // claims — and a resume keeps `agentSessionId`, so the next session APPENDS to the same transcript
-        // past the old watermark. Without this fence that line would confirm a stale lease, deleting
-        // messages the new session never received (loss, not duplication). Stale ⇒ no confirm ⇒ the lease
-        // expires and the arm re-delivers.
-        if case .live = before.phase,
-           let lease = (await inbox.peek(id)).first(where: {
-               $0.lease?.route == .relaunchSeed && $0.lease?.epoch == before.sessionEpoch })?.lease {
-            let proven: Bool
-            if let tail {
-                proven = tail.path == lease.tailPath
-                    && lease.tailWatermark.map { tail.startOffset >= $0 } == true
-            } else if let observedEpoch {
-                proven = observedEpoch == lease.epoch
-            } else {
-                proven = false
-            }
-            if proven { await confirmDelivery(token: lease.token, cardId: id) }
-        }
     }
 
 }

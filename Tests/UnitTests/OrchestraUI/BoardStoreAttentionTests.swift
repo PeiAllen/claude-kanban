@@ -21,7 +21,6 @@ import Foundation
                       ctxPct: Double = 0,
                       pendingQuestion: PendingQuestion? = nil,
                       treeStat: TreeStat? = nil,
-                      hasPendingDelivery: Bool = false,
                       humanPaced: Bool = false,
                       awaitingFirstPrompt: Bool = false,
                       at: Date? = nil) -> Task {
@@ -32,7 +31,7 @@ import Foundation
              startIn: .impl, column: .impl, order: 0, phase: phase,
              phaseChangedAt: at ?? t0, ctxPct: ctxPct, initialPrompt: id,
              parentBranch: parentBranch, treeStat: treeStat,
-             hasPendingDelivery: hasPendingDelivery, humanPaced: humanPaced,
+             humanPaced: humanPaced,
              createdAt: t0, updatedAt: at ?? t0)
     }
 

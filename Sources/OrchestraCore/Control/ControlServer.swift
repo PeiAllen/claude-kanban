@@ -164,13 +164,10 @@ public final class ControlServer: @unchecked Sendable {
             let report = p["report"].flatMap { try? $0.decode(StatusReport.self) }
             let source = p.optString("source").flatMap(SessionSource.init(rawValue:))
             let observedEpoch = p.optInt("epoch")   // the session's launch generation, echoed by the hook
-            // The Stop hook's loop-guard flag rides as a sibling field (decoded via the SHARED key so it
-            // can't drift from the ReportHelper builder). Default false — a pre-upgrade / non-Stop hook.
-            let stopHookActive = p.optBool(HookRPC.stopHookActiveKey) ?? false
             let observationPayload = p[HookRPC.observationPayloadKey]
             let messageEndpoint = HookRPC.messageEndpoint(p[HookRPC.messageEndpointKey])
             let resp = await service.handleHook(ref, event: event, report: report, source: source,
-                                                observedEpoch: observedEpoch, stopHookActive: stopHookActive,
+                                                observedEpoch: observedEpoch,
                                                 observationPayload: observationPayload,
                                                 messageEndpoint: messageEndpoint)
             if let resp { return .object(["response": try JSONValue(encodable: resp)]) }

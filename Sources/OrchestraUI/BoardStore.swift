@@ -1126,8 +1126,8 @@ public class BoardStore: ObservableObject {
     }
 
     /// Send a constrained key chord to a card's agent window (the Agent tab's steer-bar key affordances,
-    /// D2). Live keystrokes with no implicit Enter — distinct from `send`, which *queues* a message to the
-    /// inbox drained at turn-end. Best-effort (swallows RPC errors): a dropped keystroke on a flaky link
+    /// D2). Live keystrokes with no implicit Enter — distinct from `send`, which queues a durable message
+    /// for the live provider sender. Best-effort (swallows RPC errors): a dropped keystroke on a flaky link
     /// is recoverable by tapping again, and the steer bar shouldn't error-toast on every miss.
     public func sendKeysToAgent(_ id: UUID, _ chord: [KeyToken], window: String = "agent") async {
         try? await client.sendKeys(ref: id.uuidString, chord, window: window)

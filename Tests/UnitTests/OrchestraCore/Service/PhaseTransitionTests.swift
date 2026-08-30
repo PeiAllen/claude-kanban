@@ -157,60 +157,6 @@ struct PhaseTransitionTests {
         #expect(after.phaseChangedAt > originalDate)
     }
 
-    // Wake-on-live: a message parked while the card was provisioning (creatingWorktree / launching) —
-    // where wake no-ops — is picked up by the funnel's single release point when the card goes live.
-    @Test("a message parked during provisioning is delivered when the card transitions to live")
-    func test_sendDuringProvisioningDeliveredOnLive() async throws {
-        // Case A — parked at .creatingWorktree.
-        try await runProvisioningDelivery(seed: .creatingWorktree, branch: "cw")
-        // Case B — parked at .launching.
-        try await runProvisioningDelivery(seed: .launching, branch: "lw")
-    }
-
-    private func runProvisioningDelivery(seed: Phase, branch: String) async throws {
-        let env = TestEnv.make(grace: 2)
-        let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
-        env.adapter.writeTranscript(for: card.agentSessionId!)          // resumable
-        let name = env.sessions.sessionName(card.id)
-        // Seed the provisioning phase directly (live→creatingWorktree is not a legal verb edge).
-        _ = try await env.svc.store.update(card.id) { $0.phase = seed }
-
-        // Park a message while provisioning — nothing delivers it yet.
-        let inbox = await env.svc.inbox
-        try await inbox.enqueue(card.id, "PARKED-\(branch)")
-        let ensureBefore = env.sessions.ensureCount
-
-        // If seeded at creatingWorktree, first advance to launching (no wake on a non-live target).
-        if seed.kind == .creatingWorktree {
-            #expect(await env.svc.transition(card.id, to: .launching) == .applied)
-            await yieldBriefly()   // negative: a wrongful wake-on-transition gets its chance to run
-            #expect(env.sessions.ensureCount == ensureBefore)          // still parked
-        }
-
-        // A `.live` card ALWAYS has a session in production — `finishLaunch` ensures one BEFORE landing the
-        // card `.live`. This test seeds the phase directly (spawn is non-blocking, so nothing ever ensured a
-        // session), so seed the session too. Without it the card is `.live` with no session, and the
-        // reconciler correctly concludes the agent vanished and kills it before the parked-message delivery
-        // can run. That kill used to be masked by reconcile()'s stale snapshot order (the session sample
-        // suspended the actor long enough for the wake's `.relaunching` intent to land first) — the very race
-        // fixed in `freshlyLiveCardNotKilledByStaleSnapshot`. Model the real precondition instead of relying
-        // on a race to dodge it.
-        env.sessions.setAlive(card.id, true)
-
-        // Going live (idle) fires wakeIfPending → resume-seed enqueues a `.relaunching` intent (PARKED folded
-        // into pendingSeed); the reconciler's RelaunchStepper then delivers it (PR4b Task 4 — intent-only wake).
-        #expect(await env.svc.transition(card.id, to: .live(.waiting)) == .applied)
-        try await pollUntil {
-            await env.svc.reconcile()
-            return env.sessions.ensureArgv[name]?.contains("--resume") == true
-        }
-        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
-        let argv = try #require(env.sessions.ensureArgv[name])
-        #expect(argv.contains("--resume"))
-        #expect(try #require(argv.last).contains("PARKED-\(branch)"))
-    }
-
     @Test("dead → archived does NOT re-conclude a watched child (only the entry into terminal concludes)")
     func test_deadToArchivedDoesNotReconclude() async throws {
         let env = TestEnv.make()

@@ -244,88 +244,12 @@ struct RecoveryTests {
     // `inFlightSteps` + capped backoff — one step in flight per card — rather than a global revival window,
     // so `maxConcurrentRevivals` no longer governs boot recovery. Backoff is covered by `stepFailureBacksOff`.)
 
-    /// A `send` to an idle card that lands WHILE a prior wake-driven resume is in flight (the card
-    /// mid-`.relaunching`): `wake` defers on the being-born phase, so B remains durable. Once the seeded
-    /// relaunch lands, its opening turn is work in flight; B belongs to that turn's natural Stop drain,
-    /// not a second cold relaunch.
-    @Test("a send that lands mid-relaunch remains durable and drains at the resumed turn's Stop")
-    func sendDuringRelaunchDrainsAtStop() async throws {
-        // .claudeCode: the wake-driven resume stays IN FLIGHT until its SessionStart(resume) hook lands, so
-        // a second send genuinely arrives mid-relaunch (a `.relaunchLiveness` stub confirms too fast to race).
-        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
-        let repo = TestEnv.repo(env.base)
-        let card = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
-        env.adapter.writeTranscript(for: card.agentSessionId!)
-        await env.svc.testSetTurnStatus(card.id, .waiting())             // idle
-        let name = env.sessions.sessionName(card.id)
-
-        // send A wakes → resume-seed transitions `.relaunching` (A drained + folded into pendingSeed). Drive
-        // the RelaunchStepper DIRECTLY (deterministic — no N=3 fallback racing the mid-relaunch window): it
-        // ensures the `--resume` session then AWAITS the SessionStart(resume) hook.
-        let ctx = await env.svc.convergeContext()
-        try await env.svc.send(card.id, "A")
-        try await pollUntil { await env.svc.store.get(card.id)?.phase.kind == .relaunching }
-        let relaunchingA = try #require(await env.svc.store.get(card.id))
-        async let steppingA: Void = RelaunchStepper().step(relaunchingA, ctx)
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
-
-        // send B lands mid-relaunch (card `.relaunching`, readiness pending) → wake defers, B stranded.
-        // B3: A is not drained — it rides a HELD relaunchSeed lease (delivered in the seed, awaiting its
-        // confirm), so both messages are still durable; A is leased, B is the stranded (claimable) one.
-        try await env.svc.send(card.id, "B")
-        await yieldBriefly()   // negative: a wrongful second resume's detached task gets its chance to run
-        #expect(Set(try await env.svc.inboxPeek(card.id).map(\.text)) == ["A", "B"])   // A held on the seed, B stranded
-
-        // Confirm resume #1 with the CURRENT generation stamped (a real SessionStart(resume) carries
-        // ORCH_EPOCH) → `.signal` readiness → the stepper lands `.live` and THEN confirms A (removes it).
-        // The seeded launch lands with a top-level turn in flight, so B stays queued for that turn's Stop
-        // instead of causing a second relaunch.
-        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"), observedEpoch: relaunchingA.sessionEpoch)
-        try await steppingA
-        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])   // A confirmed+removed; B stranded
-
-        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        let handed = await env.svc.handleHook(
-            card.shortId,
-            event: .stop,
-            report: nil,
-            source: nil,
-            observedEpoch: epoch,
-            stopHookActive: false
-        )
-        #expect(handed?.continuation?.contains("B") == true)
-        _ = await env.svc.handleHook(
-            card.shortId,
-            event: .stop,
-            report: nil,
-            source: nil,
-            observedEpoch: epoch,
-            stopHookActive: true
-        )
-        #expect(try await env.svc.inboxPeek(card.id).isEmpty)
-    }
-
-    @Test("wakeIfPending leaves a RUNNING card alone (its Stop-drain owns delivery)")
-    func wakeIfPendingSkipsRunningCard() async throws {
-        let env = TestEnv.make(grace: 2)
-        let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
-        env.adapter.writeTranscript(for: card.agentSessionId!)
-        try await env.svc.send(card.id, "later")                         // queues (gate B), not delivered now
-        let ensureBefore = env.sessions.ensureCount
-
-        await env.svc.wakeIfPending(card.id)
-        await yieldBriefly()   // negative: a wrongful wake's detached resume gets its chance to run
-        #expect(env.sessions.ensureCount == ensureBefore)                // no relaunch — running turn untouched
-        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])   // stays for its Stop-drain
-    }
-
     /// Regression: two overlapping `resume(id)` for the SAME card must never leak a continuation and must
     /// converge to a single live session (single-winner). Intent-only (PR4b Task 4): each `resume` is now a
     /// non-blocking `transition(→ .relaunching)` (the supersede self-edge bumps the epoch), so neither call
     /// holds a continuation to leak; the reconciler admits ONE step (`inFlightSteps`) and any earlier
-    /// bring-up's `.live` finalize is epoch-fenced. The card stays wakeable afterward.
-    @Test("overlapping resume(id): both return immediately; the reconciler converges one live session; card stays wakeable")
+    /// bring-up's `.live` finalize is epoch-fenced.
+    @Test("overlapping resume(id): both return immediately; the reconciler converges one live session")
     func concurrentResumeNeverLeaks() async throws {
         // .claudeCode: the relaunch genuinely awaits its SessionStart(resume) hook (a `.relaunchLiveness` stub
         // would confirm too fast to exercise the overlap).
@@ -342,13 +266,8 @@ struct RecoveryTests {
         _ = try await r2
         // The reconciler drives the surviving relaunch to a single live session.
         let live = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
-        #expect(live.phaseDisplay != .dead)
-
-        // And the card must remain wakeable: idle+resumable, no stuck claim, so a fresh send resume-seeds it.
-        await env.svc.testSetTurnStatus(t.id, .waiting())
-        let ensureBefore = env.sessions.ensureCount
-        try await env.svc.send(t.id, "PING-AFTER-LEAK")
-        try await pollUntil { await env.svc.reconcile(); return env.sessions.ensureCount > ensureBefore }
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // confirm the post-wake relaunch
+        #expect(live.phase.kind == .live)
+        let names = try env.sessions.list().map(\.name)
+        #expect(names.filter { $0 == env.sessions.sessionName(t.id) }.count == 1)
     }
 }

@@ -167,6 +167,12 @@ public enum CommandCatalog {
                                      required: ["ref", "id"]),
                       kind: .mutation, phaseGate: gNonArchived),
 
+        CommandSchema(name: "inbox-retry", summary: "Requeue a failed inbox message by id.",
+                      params: schema(["ref": refProp(),
+                                      "id": strProp("Inbox message id (a UUID from `inbox`)")],
+                                     required: ["ref", "id"]),
+                      kind: .mutation, phaseGate: gNonArchived),
+
         CommandSchema(name: "inbox-reorder",
                       summary: "Reorder a card's pending inbox messages (`ids` = the full new order).",
                       params: schema(["ref": refProp(),

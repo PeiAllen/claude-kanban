@@ -240,6 +240,7 @@ protocol CodexAppServerPeer: AnyObject, Sendable {
 /// text in, ping/pong, close, and fragmented text assembly. It intentionally exposes no provider RPC methods.
 final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable {
     private let socketPath: String
+    private let ioTimeout: TimeInterval?
     private let stateLock: NSLock
     private let shutdownDescriptor: @Sendable (Int32) -> Void
     private let writeLock = NSLock()
@@ -251,17 +252,19 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
 
     init(
         socketPath: String,
+        ioTimeout: TimeInterval? = nil,
         stateLock: NSLock = NSLock(),
         shutdownDescriptor: @escaping @Sendable (Int32) -> Void = shutdownFD
     ) {
         self.socketPath = socketPath
+        self.ioTimeout = ioTimeout
         self.stateLock = stateLock
         self.shutdownDescriptor = shutdownDescriptor
     }
 
     func open() throws {
         let connected: Int32
-        do { connected = try UDS.connect(path: socketPath) }
+        do { connected = try UDS.connect(path: socketPath, ioTimeout: ioTimeout) }
         catch { throw CodexAppServerError.connectionFailed(String(describing: error)) }
         let accepted = stateLock.withLock {
             guard !isShutDown else { return false }

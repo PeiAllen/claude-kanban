@@ -295,7 +295,7 @@ struct StartupAbortTests {
         // The card must still be startup-pending when the send lands (see `spawnStartupPending`).
         let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
         try await env.svc.send(t.id, "hello during grace")
-        // A running card queues the send for its Stop-drain — the point is it is NOT lost at the wake gate.
+        // The durable row remains available until a live provider sender accepts it.
         #expect(try await env.svc.inboxPeek(t.id).map(\.text) == ["hello during grace"])
     }
 

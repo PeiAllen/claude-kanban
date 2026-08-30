@@ -38,19 +38,15 @@ public enum AttentionTransition {
         return nil
     }
 
-    /// The stuck trigger a card currently warrants, or `nil` if it is not stuck. Two independent causes,
-    /// delivery before merge: the delivery arm's `deliveryStuckSince` flag, then the merge-request loop's
-    /// sticky `TreeStat.mergeStalled` give-up flag.
-    /// Pure — the sole authority on "which stuck", shared by the daemon tracker and the mac `BoardStore`.
+    /// The stuck trigger a card currently warrants, or `nil` if it is not stuck.
     public static func currentStuckTrigger(_ task: Task) -> NotifyTrigger? {
-        if task.deliveryStuckSince != nil { return .deliveryStuck }
         if task.treeStat?.mergeStalled == true { return .mergeStalled }
         return nil
     }
 
     /// The one-shot "card stuck" edge: the trigger to fire iff the card just ROSE from not-stuck to stuck.
     /// The one-shot is on the stuck *boolean*, not the cause — a card that stays stuck while its cause
-    /// changes (`deliveryStuck → mergeStalled`) does NOT re-fire. `seen == false` (a card observed for the
+    /// stays stuck does not re-fire. `seen == false` (a card observed for the
     /// first time) never fires, mirroring the phase path's fresh-card suppression.
     public static func stuckRise(wasStuck: Bool, seen: Bool, cur task: Task) -> NotifyTrigger? {
         guard seen, !wasStuck else { return nil }
@@ -137,16 +133,12 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
     }
     public var humanRequired: Entry
     public var died: Entry
-    public var deliveryStuck: Entry
     public var mergeStalled: Entry
 
-    /// The two stuck triggers default to their designed prefs so the existing 3-arg call sites
-    /// (`snapshot()`, test helpers) keep compiling without change.
     public init(humanRequired: Entry, died: Entry,
-                deliveryStuck: Entry = Self.defaultEntry(.deliveryStuck),
                 mergeStalled: Entry = Self.defaultEntry(.mergeStalled)) {
         self.humanRequired = humanRequired; self.died = died
-        self.deliveryStuck = deliveryStuck; self.mergeStalled = mergeStalled
+        self.mergeStalled = mergeStalled
     }
 
     /// A trigger's designed default `{scope, sound}` — the fallback for a missing snapshot key.
@@ -155,7 +147,7 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case humanRequired, permission, needsYou, died, deliveryStuck, mergeStalled
+        case humanRequired, permission, needsYou, died, mergeStalled
     }
 
     /// Hand-rolled so the two triggers added after the wire format shipped decode tolerantly: an
@@ -173,7 +165,6 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
             ?? legacyNeedsYou
             ?? Self.defaultEntry(.humanRequired)
         self.died = try c.decode(Entry.self, forKey: .died)
-        self.deliveryStuck = try c.decodeIfPresent(Entry.self, forKey: .deliveryStuck) ?? Self.defaultEntry(.deliveryStuck)
         self.mergeStalled = try c.decodeIfPresent(Entry.self, forKey: .mergeStalled) ?? Self.defaultEntry(.mergeStalled)
     }
 
@@ -181,7 +172,6 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(humanRequired, forKey: .humanRequired)
         try c.encode(died, forKey: .died)
-        try c.encode(deliveryStuck, forKey: .deliveryStuck)
         try c.encode(mergeStalled, forKey: .mergeStalled)
     }
 
@@ -189,7 +179,6 @@ public struct NotifyPrefsSnapshot: Codable, Sendable, Equatable {
         switch t {
         case .humanRequired: return humanRequired
         case .died:          return died
-        case .deliveryStuck: return deliveryStuck
         case .mergeStalled:  return mergeStalled
         }
     }
@@ -201,7 +190,6 @@ public extension NotificationPrefs {
         NotifyPrefsSnapshot(
             humanRequired: .init(scope: scope(.humanRequired), sound: sound(.humanRequired)),
             died:          .init(scope: scope(.died),          sound: sound(.died)),
-            deliveryStuck: .init(scope: scope(.deliveryStuck), sound: sound(.deliveryStuck)),
             mergeStalled:  .init(scope: scope(.mergeStalled),  sound: sound(.mergeStalled)))
     }
 }
@@ -228,7 +216,6 @@ public enum APNsPayload {
         switch trigger {
         case .humanRequired: return "Agent needs you — open harness"
         case .died:          return "Agent session ended — needs recovery"
-        case .deliveryStuck: return "Agent can't reach you — delivery stuck"
         case .mergeStalled:  return "Merge request needs you — agent gave up asking"
         }
     }

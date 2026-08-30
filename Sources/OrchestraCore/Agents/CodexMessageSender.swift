@@ -9,7 +9,7 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
 
     private let socketPath: String
     private let threadId: String
-    private let peerFactory: @Sendable (String) -> any CodexAppServerPeer
+    private let peerFactory: @Sendable (String, TimeInterval) -> any CodexAppServerPeer
     private let queue = DispatchQueue(label: "com.orchestra.codex-message-sender", qos: .utility)
     private let stateLock = NSLock()
     private var isShutDown = false
@@ -18,7 +18,7 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
     init(socketPath: String, threadId: String) {
         self.socketPath = socketPath
         self.threadId = threadId
-        self.peerFactory = { WebSocketCodexAppServerPeer(socketPath: $0) }
+        self.peerFactory = { WebSocketCodexAppServerPeer(socketPath: $0, ioTimeout: $1) }
     }
 
     init(
@@ -28,14 +28,18 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
     ) {
         self.socketPath = socketPath
         self.threadId = threadId
-        self.peerFactory = peerFactory
+        self.peerFactory = { path, _ in peerFactory(path) }
     }
 
     func send(_ message: String) async throws {
+        try await send(message, timeout: 15)
+    }
+
+    func send(_ message: String, timeout: TimeInterval) async throws {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 do {
-                    try sendBlocking(message)
+                    try sendBlocking(message, timeout: timeout)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -51,9 +55,9 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
         }
     }
 
-    private func sendBlocking(_ message: String) throws {
+    private func sendBlocking(_ message: String, timeout: TimeInterval) throws {
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
-        let peer = peerFactory(socketPath)
+        let peer = peerFactory(socketPath, timeout)
         let accepted = stateLock.withLock {
             guard !isShutDown else { return false }
             activePeer = peer

@@ -23,7 +23,6 @@ import Foundation
                       treeStat: TreeStat? = nil,
                       pendingQuestion: PendingQuestion? = nil,
                       ctxPct: Double = 0,
-                      hasPendingDelivery: Bool = false,
                       awaitingFirstPrompt: Bool = false,
                       access: CardAccess = .readWrite,
                       at: Date? = nil) -> Task {
@@ -33,7 +32,7 @@ import Foundation
              origin: .worktree, access: access, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, phase: phase,
              phaseChangedAt: at ?? t0, ctxPct: ctxPct, initialPrompt: id,
-             treeStat: treeStat, hasPendingDelivery: hasPendingDelivery,
+             treeStat: treeStat,
              createdAt: t0, updatedAt: at ?? t0)
     }
 
@@ -189,11 +188,9 @@ import Foundation
     }
 
     /// The exemption is carried by `humanPaced` ALONE — `awaitingFirstPrompt` is NOT consulted by the
-    /// predicate. A "New agent" card the human made but hasn't prompted is exempt because the DAEMON sets
-    /// `humanPaced` at that promptless launch (and migrates legacy provisional cards on decode), not
-    /// because the client reads `awaitingFirstPrompt`. Keeping the predicate single-bit is what lets an
-    /// agent-delivered card that never cleared `awaitingFirstPrompt` (a Codex provisional card given work)
-    /// still stall: the delivery flips `humanPaced` false, and the sticky flag no longer masks it.
+    /// predicate. A promptless card can be exempt because a future stalled-state policy sets
+    /// `humanPaced`, not because the client reads `awaitingFirstPrompt`. Delivery does not mutate this
+    /// flag, so the predicate stays independent of inbox state.
     @Test func stall_awaitingFirstPromptAloneDoesNotExempt() {
         #expect(reasons(card(awaitingFirstPrompt: true), now: late).contains { $0.reason == .stalled })
         #expect(!reasons(card(awaitingFirstPrompt: true), now: late, humanPaced: true).contains { $0.reason == .stalled })
@@ -204,10 +201,6 @@ import Foundation
         let r = reasons(c, now: late)
         #expect(r.contains { $0.reason == .humanRequired })
         #expect(!r.contains { $0.reason == .stalled })
-    }
-
-    @Test func stall_ownPendingDeliveryDefeatsIt() {
-        #expect(!reasons(card(hasPendingDelivery: true), now: late).contains { $0.reason == .stalled })
     }
 
     @Test func stall_activeDescendantDefeatsIt() {
@@ -224,22 +217,9 @@ import Foundation
         }
     }
 
-    /// A quiet child with queued work is imminently active — an ancestor must not announce "wave done".
-    @Test func stall_descendantPendingDeliveryDefeatsIt() {
-        let child = card("03", hasPendingDelivery: true)
-        #expect(!reasons(card(), descendants: [child], now: late).contains { $0.reason == .stalled })
-    }
-
     @Test func stall_nonIdleAttachedAgentDefeatsIt() {
         let workingReviewer = card("02", phase: .live(.running), access: .readOnly)
         #expect(!reasons(card(), attached: [workingReviewer], now: late).contains { $0.reason == .stalled })
-    }
-
-    /// A reviewer that READS idle but has a message queued is about to speak — the delivery bit is part
-    /// of "settled", not a separate check, and dropping it from the attached branch must fail here.
-    @Test func stall_attachedAgentWithPendingDeliveryDefeatsIt() {
-        let armedReviewer = card("02", hasPendingDelivery: true, access: .readOnly)
-        #expect(!reasons(card(), attached: [armedReviewer], now: late).contains { $0.reason == .stalled })
     }
 
     /// Concluded and dead reviewers are both SETTLED, so neither defeats the quiet check — a parked

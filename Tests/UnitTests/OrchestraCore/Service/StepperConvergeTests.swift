@@ -351,7 +351,7 @@ struct TeardownStepperTests {
         #expect(after.archived)                                              // companion Bool mirror
         #expect(env.sessions.killed.contains(env.sessions.sessionName(parent.id)))   // session killed
         #expect(env.worktrees.removedForce.contains { $0.path == parent.cwd && $0.force == true })  // reclaim (release cleared ⇒ forced)
-        let nudges = await ctx.inbox.peek(child.id)                          // deterministic child nudged
+        let nudges = try await env.svc.inboxPeek(child.id)                   // deterministic child nudged
         #expect(nudges.count == 1)
         #expect(nudges.first?.text.contains("parent") == true)
     }
@@ -404,7 +404,7 @@ struct TeardownStepperTests {
         let fresh2 = try #require(await env.svc.store.get(parent.id))
         try await TeardownStepper().step(fresh2, ctx)
 
-        #expect(await ctx.inbox.peek(child.id).count == 1)   // dedupKey ⇒ nudged only once
+        #expect(try await env.svc.inboxPeek(child.id).count == 1)   // dedupKey ⇒ nudged only once
         #expect(try #require(await env.svc.store.get(parent.id)).phase.kind == .archivedComplete)
     }
 }

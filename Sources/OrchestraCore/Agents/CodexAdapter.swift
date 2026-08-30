@@ -11,9 +11,8 @@ public struct CodexAdapter: Adapter {
     public let bin = "codex"
     public let enabled = true
 
-    /// Codex's capability tuple (B1 as-built). Differs from Claude on the launch-relevant axes: discovered
-    /// session id, rollout file-tail telemetry, token-based ctx. Shares Claude's live-delivery shape —
-    /// resume-seed wake (`.relaunch`) + Stop-hook drain (`.stopHook`).
+    /// Codex's capability tuple: discovered session id, rollout file-tail telemetry, and token-based
+    /// context usage.
     public var capabilities: AgentCapabilities { .codex }
 
     /// Test injection for a fake binary and an isolated rollout directory. The home override is never
@@ -292,17 +291,15 @@ public struct CodexAdapter: Adapter {
         access == .readOnly ? ["-s", "read-only", "-a", "never"] : []
     }
 
-    // Defect 2 · Codex hook-trust. This installed Codex build gates launch-scoped hooks behind a modal
-    // Orchestra cannot answer, so the injected Stop handler would otherwise never drain the inbox. The
-    // build-probed flag applies only to hook trust; it does not change approval or sandbox policy.
+    // Some Codex builds gate launch-scoped hooks behind a modal Orchestra cannot answer. The build-probed
+    // flag applies only to hook trust; it does not change approval or sandbox policy.
     private var hookTrustFlags: [String] {
         bypassHookTrustSupported ? ["--dangerously-bypass-hook-trust"] : []
     }
 
     /// Does the installed Codex build accept `--dangerously-bypass-hook-trust`? An unknown flag would
     /// abort launch (`exit 2, unexpected argument`), so this is build-gated. The flag's presence exactly
-    /// tracks the trust gate's presence: this customized build has BOTH; a stock codex-rs build has
-    /// NEITHER — so probing the flag is the correct capability gate. Probed per binary via `--help`.
+    /// tracks the trust gate's presence. Probe it per binary via `--help`.
     /// A launch that doesn't inject `hookTrustBypass:` and runs a bin whose `--help` can't complete
     /// cleanly (absent bin, timeout) degrades to no-flag; only a definitive `exit 0` result is cached.
     private var bypassHookTrustSupported: Bool {
@@ -317,8 +314,8 @@ public struct CodexAdapter: Adapter {
     /// and confirmed for codex-cli 0.142.5). A timeout (`Proc.run` returns a SIGTERM, non-zero exit — it
     /// does NOT throw) or a spawn failure is TRANSIENT (cold first-exec under load, AV scan): return
     /// `false` for this launch but DON'T cache it, so the next launch retries. Caching a transient `false`
-    /// would silently disable the flag for the whole daemon session → the exact non-delivery bug this
-    /// fixes. (A build whose `--help` exits non-zero would re-probe every launch and never cache — safe,
+    /// would silently disable the flag for the whole daemon session. A build whose `--help` exits non-zero
+    /// re-probes every launch and never caches — safe,
     /// just not the target build.) The subprocess runs OUTSIDE the lock so a concurrent launch isn't
     /// stalled up to 5s; two concurrent first-probes may both spawn and store the same idempotent value.
     /// Stale on an in-place codex upgrade until daemon restart — acceptable; daemons restart on upgrade.
@@ -402,9 +399,7 @@ public struct CodexAdapter: Adapter {
         arguments += hookTrustFlags
         arguments += accessFlags(ctx.access)
         arguments += modelFlag(ctx.model)
-        // F1: the folded seed (handoff ctx + pending inbox) rides the resume as its opening positional
-        // turn. This is the resume-seed delivery for handoff AND the idle-wake path (`.relaunch`); live
-        // turn-end delivery is the Stop hook (`inboxDrain == .stopHook`).
+        // The folded handoff seed rides the resume as its opening positional turn.
         let positional = ctx.seed.flatMap { $0.isEmpty ? nil : $0 }.map { [$0] } ?? []
         if let launch = CodexLaunchConfiguration.appServerLaunch(
             binary: binary, context: ctx, agentId: id,
@@ -420,7 +415,6 @@ public struct CodexAdapter: Adapter {
     /// shape is a deliberate Codex choice, not a silent inheritance of Claude's.
     public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
         if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
-        if let cont = r.continuation   { return HookEnvelope.block(cont) }
         return nil
     }
 
@@ -554,16 +548,12 @@ public struct CodexAdapter: Adapter {
 }
 
 public extension AgentCapabilities {
-    /// Codex's shipped capabilities (B1 as-built). Discovered session id (rollout), file-tail telemetry
-    /// (rollout JSONL), token-based context usage, resume-seed wake (`.relaunch` — idle cards resume; no
-    /// TUI scrape), Stop-hook inbox drain (parity with Claude), an OS-sandboxed read-only guarantee, and
-    /// subscription auth.
+    /// Codex's shipped capabilities: discovered rollout session ids, file-tail telemetry, token-based
+    /// context usage, an OS-sandboxed read-only guarantee, and subscription auth.
     static let codex = AgentCapabilities(
         sessionId: .discovered,
         telemetry: .fileTail,
         contextUsage: .tokens,
-        wakeTransport: .relaunch,
-        inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,

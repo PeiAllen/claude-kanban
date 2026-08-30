@@ -30,12 +30,11 @@ import Foundation
         #expect(back == r)
     }
 
-    @Test("HookEnvelope encodes the shared stdout shapes")
+    @Test("HookEnvelope encodes session-start stdout")
     func envelope() {
         let ac = HookEnvelope.additionalContext("X")
         #expect(ac.contains("\"additionalContext\":\"X\""))
         #expect(ac.contains("\"hookEventName\":\"SessionStart\""))
-        #expect(HookEnvelope.block("go").contains("\"decision\":\"block\""))
     }
 
     @Test("HookEnvelope.additionalContext escapes newlines/quotes")

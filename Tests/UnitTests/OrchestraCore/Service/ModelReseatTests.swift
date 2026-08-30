@@ -402,11 +402,7 @@ struct ModelReseatTests {
 
     @Test("a handoff REFUSED mid-flight (card archived) leaves the inbox durable")
     func refusedHandoffLeavesInboxDurable() async throws {
-        // B3 DE-DRAINED `resumeInCard`: it no longer eats the inbox into the seed, so a refused
-        // `→ .relaunching` intent (the card archived first) can't discard folded messages — there is
-        // nothing folded. The message rides the durable inbox and is delivered by a later wake/arm.
-        // (Historically this pinned an `inbox.drain`-then-restore window; that drain is gone — the
-        // primitive was deleted in B4 — so the invariant is now "the inbox is never drained here".)
+        // `resumeInCard` never consumes inbox rows, so a refused relaunch cannot discard this message.
         let env = TestEnv.make(grace: 2)
         let t = try await liveCard(env)
         let message = InboxMessage(

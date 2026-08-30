@@ -328,7 +328,6 @@ extension AgentCapabilities {
     /// `.codex` (`.rolloutMeta`) explicitly.
     static let stub = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
 }

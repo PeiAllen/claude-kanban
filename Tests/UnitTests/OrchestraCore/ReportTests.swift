@@ -340,10 +340,8 @@ struct ReportTests {
         #expect(await humanPaced(env.svc, t.id) == true)
     }
 
-    /// The launch's own MACHINE opening turn — a spawn/handoff seed, or a wake-delivered inbox batch —
-    /// reaches the report path as a `promptText`, and a resume lands `.waiting`, so without the
-    /// seed marker it would wrongly mark agent work human-paced (breaking the safety-net stall). The FIRST
-    /// stamped prompt of the launch generation is consumed as that machine turn; only the NEXT is human.
+    /// A system-supplied launch seed reaches the report path as a `promptText`. The first stamped prompt
+    /// for that generation consumes the marker; only a later prompt is classified as human.
     @Test("the launch's machine seed prompt is not human-paced; a later human prompt is")
     func humanPacedSkipsTheMachineSeedTurn() async throws {
         let (env, t) = try await spawned()      // spawns WITH a prompt → finishLaunch owes a machine turn at this epoch
@@ -378,31 +376,6 @@ struct ReportTests {
         #expect(handed.humanPaced == false)
     }
 
-    /// A promptless "New agent" spawn is human-paced by construction (the human's first move is pending).
-    /// The BLOCKER-2 case: an agent (`.card`) send delivering work flips it agent-paced, so it is NOT
-    /// permanently exempt — even though `awaitingFirstPrompt` stays set (which on Codex never clears).
-    @Test("a promptless spawn is human-paced; a card send to it makes it agent-paced")
-    func humanPacedPromptlessSpawnFlipsOnAgentDelivery() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
-        #expect(t.awaitingFirstPrompt == true)   // promptless ⇒ awaiting the human's first move
-        #expect(t.humanPaced == true)            // …and human-paced by construction
-        await turn(.turnStarted, on: t, in: env.svc)   // keep the opportunistic wake a no-op
-        _ = try await env.svc.send(t.id, "do the work", sender: .card(id: UUID(), title: "orchestrator"))
-        #expect(await humanPaced(env.svc, t.id) == false)             // agent delivery ⇒ stall-eligible again
-    }
-
-    /// The `send` path classifies by delivery provenance: a human-sourced send makes the card human-paced;
-    /// another card (an agent/orchestrator) delivering work flips it back to agent-paced.
-    @Test("a human send marks the card human-paced; a card send clears it")
-    func humanPacedBySendProvenance() async throws {
-        let (env, t) = try await spawned()
-        _ = try await env.svc.send(t.id, "hey", sender: .human)
-        #expect(await humanPaced(env.svc, t.id) == true)
-        _ = try await env.svc.send(t.id, "delivering work", sender: .card(id: UUID(), title: "orchestrator"))
-        #expect(await humanPaced(env.svc, t.id) == false)
-    }
 }
 
 @Suite("report field-delta") struct ReportDeltaTests {

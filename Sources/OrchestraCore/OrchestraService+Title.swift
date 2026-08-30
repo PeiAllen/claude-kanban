@@ -78,8 +78,7 @@ extension OrchestraService {
     /// `needs-input` — the agent DECLARES that it is blocked on a decision only the card's owner can make.
     /// Set/replace only: there is deliberately no clear form, because a declaration an agent could retract
     /// is one it would forget to retract. The daemon retires it instead, at the only events that prove the
-    /// question is moot — the agent's next turn demonstrably starting, or a completed session replacement
-    /// (see `transition` and `confirmDelivery`).
+    /// question is moot — the agent's next turn demonstrably starting, or a completed session replacement.
     ///
     /// Empty is REJECTED, unlike `set-note`: an empty note means "no note", but an empty question would be
     /// an amber with nothing to answer.

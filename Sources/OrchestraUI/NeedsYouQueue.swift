@@ -8,11 +8,9 @@ import OrchestraKit
 // `BoardStore`'s module-internal `client`. The SwiftUI view (`App-iOS/Views/NeedsYouTab.swift`) only
 // renders these decisions.
 //
-// The OLD hand-rolled `NeedsYouQueue.reason` (permission/died/deliveryStuck/mergeStalled/humanTurn/
+// The old hand-rolled `NeedsYouQueue.reason` (permission/died/mergeStalled/humanTurn/
 // context) is RETIRED: membership is now `ownAttention` verbatim, so a card appears IFF a human action is
-// required. Consequences of the single contract: a bare idle `humanTurn` no longer qualifies unless it
-// stalls past T, and the old 📪 delivery-stuck immediacy is gone (a stuck card surfaces only if it
-// independently stalls, never while still `.running`).
+// required. A bare idle `humanTurn` no longer qualifies unless it stalls past T.
 
 /// One row of the Needs You queue: a card that needs the human, plus EVERY own-attention reason it holds
 /// (most-urgent first — `ownAttention`'s order). The top signal drives the row's urgency, section, and

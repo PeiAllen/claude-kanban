@@ -41,14 +41,6 @@ enum ReportHelper {
         let report = adapter.parse(.hooksPush(kind: kind, payload: payload))   // raw → typed; raw dies here
         let source = event == .sessionStart ? adapter.sessionSource(payload) : nil
         let reportJSON: JSONValue? = report.map { (try? JSONValue(encodable: $0)) ?? .null }
-        // Sibling fields ride the RPC alongside `ref`/`event`, built by the SHARED `HookRPC.hookFields` so
-        // the daemon decode reads the same keys (no drift):
-        //  - `epoch` = the session's launch generation (`$ORCH_EPOCH`, stamped into the tmux env at launch),
-        //    so the daemon can fence a stale/late liveness signal against the card's current epoch (absent
-        //    on a pre-upgrade session → real-liveness fallback for kill-class signals);
-        //  - `stopHookActive` = the raw Stop hook's `stop_hook_active` loop-guard flag, read straight off
-        //    the payload (NOT via `parse`), so it rides even when `report` is nil (Codex report-less Stop /
-        //    Claude bg-hold) and a background-yielding continuation still confirms its prior stop-drain lease.
         let observationPayload = adapter.hookObservationPayload(event: event, payload: payload)
         let messageEndpoint = adapter.hookMessageEndpoint(
             event: event,
@@ -57,7 +49,7 @@ enum ReportHelper {
         )
         let params = JSONValue.object(HookRPC.hookFields(
             ref: taskId, event: kind, report: reportJSON, source: source?.rawValue,
-            epoch: env["ORCH_EPOCH"].flatMap(Int.init), stopHookActive: HookRPC.stopHookActive(payload),
+            epoch: env["ORCH_EPOCH"].flatMap(Int.init),
             observationPayload: observationPayload, messageEndpoint: messageEndpoint))
 
         // statusLine never yields a response → pure fire-and-forget send (~50ms; snapshot self-heals).
@@ -69,7 +61,7 @@ enum ReportHelper {
         guard let resp = await boundedCall(sock: sock, method: "hook", params: params, budgetMs: 2000),
               let response = resp["response"].flatMap({ try? $0.decode(HookResponse.self) }),
               let out = adapter.encode(response, for: event) else { return }
-        writeStdout(Data(out.utf8))   // native envelope (orientation / drain continuation) → the agent
+        writeStdout(Data(out.utf8))
     }
 
     // MARK: crash-safe stdio

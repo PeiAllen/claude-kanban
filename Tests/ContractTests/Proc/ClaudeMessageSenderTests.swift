@@ -109,6 +109,57 @@ struct ClaudeMessageSenderTests {
         ]))
     }
 
+    @Test("a peer that stops reading fails the socket-bound send deadline before shutdown")
+    func socketWriteDeadlineDoesNotRelyOnTaskCancellation() async throws {
+        let path = Self.socketPath()
+        let listener = try UDS.listen(path: path)
+        defer {
+            closeFD(listener)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        let accepted = DispatchSemaphore(value: 0)
+        let releasePeer = DispatchSemaphore(value: 0)
+        let serverFinished = DispatchSemaphore(value: 0)
+        let server = Thread {
+            defer { serverFinished.signal() }
+            let client = UDS.accept(listener)
+            guard client >= 0 else { return }
+            defer { closeFD(client) }
+            accepted.signal()
+            _ = releasePeer.wait(timeout: .now() + 10)
+        }
+        server.stackSize = 1 << 20
+        server.start()
+
+        let sender = try #require(ClaudeCodeAdapter().makeMessageSender(for: .claudeHookRPC(
+            socketPath: path,
+            token: "runtime-secret"
+        )))
+        let result = SendResult()
+        let completed = DispatchSemaphore(value: 0)
+        _Concurrency.Task {
+            do {
+                try await sender.send(String(repeating: "x", count: 32 * 1024 * 1024), timeout: 0.1)
+                result.succeed()
+            } catch {
+                result.fail()
+            }
+            completed.signal()
+        }
+
+        let peerAccepted = await Self.wait(accepted) == .success
+        let deadlineFinished = await Self.wait(completed) == .success
+        sender.shutdown()
+        releasePeer.signal()
+        let peerClosed = await Self.wait(serverFinished) == .success
+
+        #expect(peerAccepted)
+        #expect(deadlineFinished)
+        #expect(peerClosed)
+        #expect(result.failed)
+    }
+
     @Test("shutdown holds descriptor ownership while interrupting an in-flight write, then rejects later sends")
     func shutdownInterruptsWriteAndRejectsLaterSends() async throws {
         let path = Self.socketPath()

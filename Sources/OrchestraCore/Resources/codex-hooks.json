@@ -1,11 +1,8 @@
 {
-  "_comment": "Orchestra renders this hook object in memory for each Codex launch, replacing __ORCHESTRA_BIN__ with the live orchestra binary path and __AGENT_ID__ with the adapter id, then writes it into the launch-scoped profile. It never changes the user's global Codex configuration. SessionStart supplies card orientation and Stop temporarily drains the durable inbox. The app-server observer is the sole source of agent state and human-needed facts; the rollout tail supplies metadata.",
+  "_comment": "Orchestra renders this hook object in memory for each Codex launch, replacing __ORCHESTRA_BIN__ with the live orchestra binary path and __AGENT_ID__ with the adapter id, then writes it into the launch-scoped profile. It never changes the user's global Codex configuration. SessionStart supplies card orientation. The app-server observer is the sole source of agent state and human-needed facts; the rollout tail supplies metadata.",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" } ] }
     ]
   }
 }

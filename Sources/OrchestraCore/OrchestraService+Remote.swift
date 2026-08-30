@@ -165,11 +165,10 @@ extension OrchestraService {
 
         // S3-7: the rebase target must be the fetched private ref — the canonical `origin/<gp>` is not a
         // rev, and only resolved before by the opportunistic tracking-ref update accident (S1-1).
-        try? await inbox.enqueue(cardId,
+        try? await enqueueAndArm(cardId,
             "remote parent merged into \(grandparent) — commit WIP, then "
             + "`git rebase --onto \(newRef.privateRef) \(anchor)`, then `git push --force-with-lease`, "
             + "then `orchestra synced \(t.shortId)`")
-        await wake(cardId)
 
         // Repair the child's own published PR base (GitHub auto-retarget is unreliable). Best-effort.
         if gh.available, let childPr = await gh.prNumber(repo: t.repo, head: childHead) {

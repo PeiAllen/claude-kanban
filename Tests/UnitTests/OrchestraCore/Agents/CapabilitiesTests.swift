@@ -7,17 +7,12 @@ struct CapabilitiesTests {
 
     // The COMPLETE variant spelling, locked against SSOT §4 + 02-contract classDiagram.
     // If any spelling drifts (add/rename/remove a case), this fails — that is the point. `sendKeys` /
-    // `sessionSeed` were retired when Codex moved to resume-seed wake + the Stop-hook drain (see
-    // docs/04-cards-worktrees-sessions.md § "Agent adapters" — the capability descriptor / wake
-    // transport); capabilities are computed from the adapter, never persisted.
+    // Capabilities are computed from the adapter, never persisted.
     @Test("every enum variant spelling is frozen exactly")
     func variantSpellingsFrozen() {
         #expect(AgentCapabilities.SessionId.allCases.map(\.rawValue) == ["seeded", "discovered"])
         #expect(AgentCapabilities.Telemetry.allCases.map(\.rawValue) == ["hooksPush", "fileTail", "ptyScrape"])
         #expect(AgentCapabilities.ContextUsage.allCases.map(\.rawValue) == ["percent", "tokens", "none"])
-        #expect(AgentCapabilities.WakeTransport.allCases.map(\.rawValue)
-                == ["nativeReinvoke", "relaunch", "controlChannel"])
-        #expect(AgentCapabilities.InboxDrain.allCases.map(\.rawValue) == ["stopHook", "none"])
         #expect(AgentCapabilities.ReadOnlyEnforcement.allCases.map(\.rawValue)
                 == ["sandboxed", "toolGatedOnly", "orchestraSandboxed"])
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
@@ -32,8 +27,6 @@ struct CapabilitiesTests {
         #expect(c.sessionId == .seeded)
         #expect(c.telemetry == .hooksPush)
         #expect(c.contextUsage == .percent)
-        #expect(c.wakeTransport == .nativeReinvoke)
-        #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
@@ -60,7 +53,6 @@ struct CapabilitiesTests {
     func stubAdvertisesTuple() {
         let custom = AgentCapabilities(
             sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-            wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .toolGatedOnly, authMode: .apiKey)
         #expect(custom.terminalImagePaste == .direct)
         #expect(custom.terminalImagePaste.canPasteImages)
@@ -156,7 +148,6 @@ struct CapabilitiesTests {
     /// seeding, not the awaited launch-readiness path).
     static let discoveredTuple = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         readinessConfirmation: .relaunchLiveness)
 }

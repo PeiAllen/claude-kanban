@@ -10,7 +10,7 @@ import Foundation
 /// persist prefs without APNs delivery, which is a backend follow-on (N1). The macOS notifier keeps its
 /// own `UNNotificationSound` mapping; this type owns only the scope/sound *storage* contract.
 public enum NotifyTrigger: String, CaseIterable, Codable, Sendable {
-    case humanRequired, died, deliveryStuck, mergeStalled
+    case humanRequired, died, mergeStalled
 }
 
 public enum NotifyScope: String, CaseIterable, Codable, Sendable {
@@ -53,9 +53,6 @@ public struct NotificationPrefs {
         switch t {
         case .humanRequired: return .always
         case .died:          return .always
-        // A stuck card needs the human but isn't as urgent as a crash — background,
-        // so it stays quiet while the Mac app is frontmost yet still pushes to a backgrounded phone.
-        case .deliveryStuck: return .background
         case .mergeStalled:  return .background
         }
     }
@@ -63,7 +60,6 @@ public struct NotificationPrefs {
         switch t {
         case .humanRequired: return .hero
         case .died:          return .basso
-        case .deliveryStuck: return .submarine
         case .mergeStalled:  return .submarine
         }
     }

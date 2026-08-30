@@ -3,7 +3,7 @@ import Foundation
 extension OrchestraService {
     /// The agent-agnostic SessionStart orientation for a card — which column it's in, whether it's
     /// read-only, and its own id — so an agent knows where it was opened and starts on that footing
-    /// without being told (the open-time counterpart to `payloadForStop`). Read **live** so a reopened or
+    /// without being told. Read **live** so a reopened or
     /// dragged card reflects its CURRENT lane, not the launch-time `startIn`. `nil` if the card is gone.
     public func sessionBrief(_ cardId: UUID) async -> String? {
         guard let task = await store.get(cardId) else { return nil }
@@ -14,11 +14,11 @@ extension OrchestraService {
     /// The core-owned hook-channel dispatch — the single place both directions of the hook channel meet,
     /// and it is ADAPTER-FREE (dispatch keys on `HookEvent`, never on agent identity). The `_report` edge
     /// has already split the raw payload into metadata and a compact adapter-owned status observation.
-    /// This applies both, then composes the existing `sessionBrief`/`payloadForStop` content into a neutral
+    /// This applies both, then composes `sessionBrief` into a neutral
     /// `HookResponse` for the adapter to encode. `nil` on unknown ref or when there is nothing to send back.
     public func handleHook(_ ref: String, event: HookEvent,
                            report: StatusReport?, source: SessionSource?,
-                           observedEpoch: Int? = nil, stopHookActive: Bool = false,
+                           observedEpoch: Int? = nil,
                            observationPayload: JSONValue? = nil,
                            messageEndpoint: AgentMessageEndpointReport? = nil) async -> HookResponse? {
         guard let task = try? await resolveRef(ref) else { return nil }
@@ -51,37 +51,6 @@ extension OrchestraService {
         // Endpoint-absent (older provider/helper) hooks retain their existing compatibility behavior.
         let hookIdentityAccepted = messageEndpoint == nil || acceptedMessageEndpoint != nil
         let acceptedReport = hookIdentityAccepted ? report : nil
-
-        // STOP: claim/confirm the stopDrain BEFORE applying the Stop observation. A real Claude Stop
-        // observation lands `.live(.waiting)`, whose wake-on-live (+Lifecycle step 7) would else
-        // cold-relaunch a `nativeReinvoke` card with no active CLI wait — bumping the epoch out from under
-        // this same-epoch claim, so `payloadForStop`'s entry fence then fails and a HEALTHY session is
-        // needlessly restarted on every send. The Stop hook IS the reinvoke, so its same-epoch stopDrain
-        // claim must win over a cold relaunch: claiming first mints a live same-epoch lease, and the
-        // subsequent waiting-landing wake then DEFERS on `hasLiveLease` (deliver rung 3) instead of
-        // relaunching. Applying the observation afterward still lands the phase; the epoch fence's real purpose
-        // is untouched — a genuinely stale Stop (observedEpoch ≠ sessionEpoch) still no-ops in payloadForStop.
-        if event == .stop {
-            let continuation = await payloadForStop(task.id, observedEpoch: observedEpoch,
-                                                    stopHookActive: stopHookActive)
-            if let acceptedReport {
-                try? await self.report(task.id, acceptedReport, observedEpoch: observedEpoch)
-            }
-            if let observationPayload {
-                await receivePushedAgentObservation(
-                    cardId: task.id,
-                    observedEpoch: observedEpoch,
-                    raw: .hooksPush(kind: event.rawValue, payload: observationPayload)
-                )
-            }
-            if let acceptedMessageEndpoint {
-                await receiveAgentMessageEndpoint(
-                    cardId: task.id, report: acceptedMessageEndpoint,
-                    observedEpoch: observedEpoch, event: event
-                )
-            }
-            return continuation.map { HookResponse(continuation: $0) }
-        }
 
         if let acceptedReport {
             try? await self.report(task.id, acceptedReport, observedEpoch: observedEpoch)

@@ -76,11 +76,10 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
-        // Share ONE `now` provider across the Inbox and the service so lease/stuck stamping and the
-        // arm's expiry math read a single timeline — a TestClock advance then moves both.
+        // Share one time source across the Inbox and the service so persistence assertions use a
+        // deterministic timeline.
         let nowProvider: @Sendable () -> Date = now ?? { Date() }
-        let inbox = Inbox(path: base + "/inbox.json",
-                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
+        let inbox = Inbox(path: base + "/inbox.json", now: nowProvider)
         let extras = extraAgents.map {
             StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities,
                         id: $0.id, name: $0.id, modelIds: $0.models)
@@ -120,8 +119,7 @@ enum TestEnv {
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let nowProvider: @Sendable () -> Date = now ?? { Date() }
-        let inbox = Inbox(path: base + "/inbox.json",
-                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
+        let inbox = Inbox(path: base + "/inbox.json", now: nowProvider)
         let svc = OrchestraService(config: config, store: store,
                                    registry: registry ?? AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,

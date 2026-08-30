@@ -31,7 +31,7 @@ struct NotificationPrefsTests {
         #expect(p2.sound(.humanRequired) == .none)
         #expect(p2.scope(.died) == .always)
         // Untouched trigger still reports its default.
-        #expect(p2.sound(.deliveryStuck) == .submarine)
+        #expect(p2.sound(.mergeStalled) == .submarine)
     }
 
     @Test("storage keys match the macOS AgentNotifier scheme (one shared model, no drift)")

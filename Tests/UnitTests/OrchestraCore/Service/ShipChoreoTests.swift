@@ -26,7 +26,7 @@ struct ShipChoreoTests {
         return (env, fake, graph, repo, graph.tip("parent")!)
     }
 
-    // (a) live parent card gets an inbox message + wake
+    // (a) live parent card gets an inbox message and sender arming
     @Test("live parent card is notified when its child ships")
     func liveParentNotified() async throws {
         let (env, fake, graph, repo, parentTip) = setup()

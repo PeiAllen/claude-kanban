@@ -199,26 +199,6 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertTrue(sends.isEmpty, "an already-dead-at-boot card must not re-notify")
     }
 
-    /// The stuck counterpart the reviewer named: a live-WAITING card at boot whose FIRST post-boot event
-    /// accrues `deliveryStuckSince` must fire `deliveryStuck` — the seed sets `seen == true` so the
-    /// false→true stuck rise is observed instead of suppressed.
-    func testBootBaselineSeedsWaitingSoAFirstStuckFires() async throws {
-        let service = makeService()
-        try await service.registerDevice(DeviceRegistration(token: validToken(1), clientId: "c", prefs: prefs(.always)))
-        let mock = MockPushSender()
-        let notifier = PushNotifier(service: service, sender: mock)
-
-        let id = UUID()
-        await notifier.seedBaseline([card(id: id, phase: .live(.waiting))])   // waiting at boot, not stuck
-        var stuck = card(id: id, phase: .live(.waiting))
-        stuck.deliveryStuckSince = Date()                                                 // first post-boot event: stuck
-        await notifier.handle(.taskUpserted(stuck))
-
-        let sends = await mock.recorded()
-        XCTAssertEqual(sends.map { $0.payload["trigger"]?.stringValue }, ["deliveryStuck"],
-                       "the first stuck rise after boot must fire, not be suppressed as a first sighting")
-    }
-
     /// The window `run()` actually opens: an event landing between `subscribe()` and the baseline snapshot
     /// is buffered but is causally OLDER than the seed, so replaying it against the newer seed would misfire.
     /// This drives `run()` with both seams: the card flaps no-human-need→human-need→no-human-need INSIDE

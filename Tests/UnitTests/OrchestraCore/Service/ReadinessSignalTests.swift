@@ -15,7 +15,6 @@ struct ReadinessSignalTests {
     /// so `pollTelemetry` leaves it alone). Exercises the rolloutMeta RELAUNCH fallback generically.
     static let codexStubCaps = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .tokens,
-        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         readinessConfirmation: .rolloutMeta)
 

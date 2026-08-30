@@ -3,14 +3,12 @@ import Foundation
 @testable import OrchestraCore
 
 @Suite struct AdapterEncodeTests {
-    @Test("Claude encode wraps additionalContext + continuation; empty → nil")
+    @Test("Claude encode wraps session-start additionalContext; empty → nil")
     func claudeEncode() {
         let a = ClaudeCodeAdapter()
         #expect(a.encode(HookResponse(additionalContext: "hi"), for: .sessionStart)?
                     .contains("\"additionalContext\":\"hi\"") == true)
-        #expect(a.encode(HookResponse(continuation: "go"), for: .stop)?
-                    .contains("\"decision\":\"block\"") == true)
-        #expect(a.encode(HookResponse(), for: .stop) == nil)
+        #expect(a.encode(HookResponse(), for: .sessionStart) == nil)
     }
 
     @Test("Codex encode matches the shared envelope")

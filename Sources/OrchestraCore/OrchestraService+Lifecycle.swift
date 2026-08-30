@@ -129,12 +129,7 @@ extension OrchestraService {
             await concludeCard(id, c.kind, deadReason: c.deadReason)
         }
 
-        // 6 · Broadcast the new state FIRST — before any wake. `wake` may record a `.relaunching`
-        //     intent INLINE (B4: it holds the delivery-in-flight claim across the ladder, so it no longer
-        //     detaches), and that nested transition emits its own upsert. Broadcasting this `.live`
-        //     one first keeps the pair in causal order (`.live` then `.relaunching`) instead of
-        //     inverted. Recursion is bounded by the delivery-in-flight claim: a nested wake sees the outer
-        //     claim and returns at once.
+        // 6 · Broadcast the durable lifecycle change before reconciling its ephemeral providers.
         emit(.taskUpserted(updated), rev: rev)
 
         // Structured observation follows the durable lifecycle edge. Entering/live churn converges to the
@@ -143,10 +138,6 @@ extension OrchestraService {
         await reconcileAgentObservation(updated)
         reconcileAgentMessageHandle(updated)
 
-        // 7 · Wake-on-live — the single structural release point for a message parked while the card
-        //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
-        //     relaunchSeed lease is left alone (B3 D5) and a live/unavailable entry falls through.
-        if to.kind == .live { await wakeIfPending(id) }
         // A card ENTERING `.live` may be the OWNER a pending merge-request has been waiting for: `spawn`
         // creates the card and `reopen` un-archives it, and `derivedCard` counts either the instant it
         // exists — but neither path re-derives the routing of requests already aimed at that branch. The

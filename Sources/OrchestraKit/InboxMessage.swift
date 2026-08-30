@@ -46,21 +46,16 @@ public struct InboxMessage: Codable, Sendable, Equatable {
     public let createdAt: Date
     /// Additive state: rows persisted before native advisory delivery decode as `.queued`.
     public var state: InboxMessageState
-    /// In-flight delivery lease, or nil when the message is pending. Additive-optional Codable: legacy
-    /// rows decode leaseless. Set only by `Inbox.claim`, cleared by `release`; the message is REMOVED
-    /// (never merely unleased) by `confirm`.
-    public let lease: DeliveryLease?
     public init(id: UUID = UUID(), cardId: UUID, text: String,
                 source: InboxMessageSource? = .orchestra, dedupKey: String? = nil,
-                createdAt: Date = Date(), state: InboxMessageState = .queued,
-                lease: DeliveryLease? = nil) {
+                createdAt: Date = Date(), state: InboxMessageState = .queued) {
         self.id = id; self.cardId = cardId; self.text = text
         self.source = source
-        self.dedupKey = dedupKey; self.createdAt = createdAt; self.state = state; self.lease = lease
+        self.dedupKey = dedupKey; self.createdAt = createdAt; self.state = state
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, cardId, text, source, dedupKey, createdAt, state, lease
+        case id, cardId, text, source, dedupKey, createdAt, state
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,7 +67,6 @@ public struct InboxMessage: Codable, Sendable, Equatable {
         dedupKey = try container.decodeIfPresent(String.self, forKey: .dedupKey)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         state = try container.decodeIfPresent(InboxMessageState.self, forKey: .state) ?? .queued
-        lease = try container.decodeIfPresent(DeliveryLease.self, forKey: .lease)
     }
 
     public var sourceLabel: String {

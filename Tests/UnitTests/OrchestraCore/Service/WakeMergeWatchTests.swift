@@ -3,7 +3,7 @@ import Testing
 @testable import OrchestraCore
 import TestSupport
 
-@Suite("C2 · wake + merge-watch (real card state; subscriber; settled-terminal)")
+@Suite("C2 · conclusion watch (real card state; subscriber; settled-terminal)")
 struct WakeMergeWatchTests {
 
     /// Provider terminals are accepted only for their exact current turn. This fixture emits a complete
@@ -156,8 +156,8 @@ struct WakeMergeWatchTests {
         #expect(await waiting.value?.kind == .exited)
     }
 
-    // 6 · multi fan-out conclusions coalesce in the inbox (one drain, none lost).
-    @Test("N children conclude → N inbox messages that drain together in one payload")
+    // 6 · multi fan-out conclusions enqueue one notice per child.
+    @Test("N children conclude → N durable inbox notices")
     func fanoutCoalesces() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
@@ -174,18 +174,10 @@ struct WakeMergeWatchTests {
 
         let inbox = await env.svc.inbox
         #expect(await inbox.peek(parent.id).count == 3)          // none lost
-        let epoch = try #require(await env.svc.store.get(parent.id)).sessionEpoch
-        let payload = try #require(await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: false))
-        #expect(payload.contains(a.shortId))                     // all three drain together
-        #expect(payload.contains(b.shortId))
-        #expect(payload.contains(c.shortId))
-        // Claim-then-confirm: all three ride ONE claim (delivered together) and are now LEASED — not
-        // removed — until the continuation's own Stop confirms them.
-        let leased = await inbox.peek(parent.id)
-        #expect(leased.count == 3)
-        #expect(leased.allSatisfy { $0.lease?.route == .stopDrain })
-        _ = await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: true)
-        #expect(await inbox.peek(parent.id).isEmpty)             // the continuation's Stop confirms the batch
+        let notices = await inbox.peek(parent.id).map(\.text).joined(separator: "\n")
+        #expect(notices.contains(a.shortId))
+        #expect(notices.contains(b.shortId))
+        #expect(notices.contains(c.shortId))
     }
 
     // extra · the `wait` command is registered (MCP parity) and round-trips a conclusion.
@@ -251,36 +243,6 @@ struct WakeMergeWatchTests {
         #expect(await env.svc.activeWaitSubscriptionCount() == 0)
         try await env.svc.archive(child.id)
         #expect(try await env.svc.inboxPeek(parent.id).contains { $0.text.contains(child.shortId) })
-    }
-
-    @Test("MCP watch wakes an idle Claude watcher because no wait process will re-invoke it")
-    func mcpWatchWakesIdleClaudeWatcher() async throws {
-        let env = TestEnv.make(grace: 2)
-        let repo = TestEnv.repo(env.base)
-        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "p"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
-        env.adapter.writeTranscript(for: parent.agentSessionId!)
-        await env.svc.testSetTurnStatus(parent.id, .waiting())
-        let name = env.sessions.sessionName(parent.id)
-
-        let cmd = try #require(CommandRegistry().command("wait"))
-        let result = try await cmd.run(env.svc, .object([
-            "refs": .array([.string(child.id.uuidString)]),
-            "watcher": .string(parent.id.uuidString),
-        ]), .mcp)
-        #expect(result["watching"]?.boolValue == true)
-
-        // Archiving the child concludes it (at intent) → fan-out wakes the idle parent (resume-seed →
-        // `.relaunching`); the reconciler then drives that relaunch to deliver the seed.
-        try await env.svc.archive(child.id)
-        try await pollUntil {
-            await env.svc.reconcile()
-            return env.sessions.ensureArgv[name]?.contains("--resume") == true
-        }
-        let seed = try #require(env.sessions.ensureArgv[name]?.last)
-        #expect(seed.contains(child.shortId))
-        let epoch = try #require(await env.svc.store.get(parent.id)).sessionEpoch   // current post-relaunch epoch
-        #expect(await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: false) == nil)
     }
 
     @Test("legacy Codex task_complete neither closes the turn nor concludes a delegated child")

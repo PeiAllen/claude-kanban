@@ -138,39 +138,14 @@ struct CardRuntime {
     /// S3-1 once-latch for the persistent remote-parent warnings (gone / PR-closed-unmerged).
     var remoteWarned: Bool = false
 
-    // MARK: - Delivery (B4/B5)
-
-    /// Retry accounting for the delivery arm: attempts charged + next-eligible backoff stamp.
-    var deliveryAttempt: OrchestraService.DeliveryAttempt?
-    /// Delivery tokens dispatched but not yet confirmed (in-memory shadow of the durable inbox
-    /// leases; teardown drops this in the same step sequence that `releaseAll`s the leases).
-    var outstandingTokens: Set<UUID> = []
-    /// Wake-vs-wake single-winner claim (held synchronously across the wake ladder). A TOKEN, not a
-    /// Bool: the claiming wake clears it compare-and-swap on its own token, so a stale wake whose
-    /// entry was detached-and-recreated (archive→reopen while `deliver` was suspended) cannot release
-    /// a successor wake's claim and admit a concurrent delivery.
-    var deliveryClaim: UInt64?
-    /// Epoch-scoped, reference-counted mutual-exclusion fence for the editor-driven stuck re-arm.
-    /// The epoch pins the count to one card generation: a stale re-arm's deferred decrement (its
-    /// entry detached and recreated across archive→reopen mid-op) mismatches and no-ops instead of
-    /// releasing a successor's held fence.
-    var reArming: (epoch: Int, count: Int)?
-
     // MARK: - Watch / wait
 
     /// Live CLI `orchestra wait` processes for this watcher card.
     var activeWaitProcesses: Int = 0
 
     // MARK: - Funnel bookkeeping
-
-    /// F3 runaway-inject guard: consecutive auto-injects since the last genuine user prompt.
-    var injectCount: Int = 0
-    /// The generation that owes a MACHINE opening turn: a launch whose flavor carries a positional the
-    /// daemon supplied (a spawn/handoff seed, or a wake-delivered inbox batch). That positional reaches
-    /// the report path as a `promptText` exactly like a typed prompt — and a resume lands
-    /// `.waiting` — so the human-paced setter consumes this marker on the FIRST prompt of the
-    /// generation instead of mistaking the seed for a direct human turn (which would wrongly exempt agent
-    /// work from the stall row). Set in `finishLaunch`, consumed once by `report()`. nil ⇒ no seed owed.
+    /// The generation that owes a system-supplied opening prompt. Set in `finishLaunch` and consumed
+    /// once by `report()` so a launch seed is not mistaken for a direct human turn.
     var seedTurnEpoch: Int? = nil
     /// Per-card monotonic seq guard for snapshot reports.
     var lastSeq: UInt64 = 0

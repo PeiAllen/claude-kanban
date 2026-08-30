@@ -54,10 +54,15 @@ public enum UDS {
         return fd
     }
 
-    /// Connect to a server socket at `path`. Returns the connected fd.
-    public static func connect(path: String) throws -> Int32 {
+    /// Connect to a server socket at `path`. When supplied, `ioTimeout` is installed on the descriptor
+    /// before it is handed to a protocol peer, so blocking reads and writes fail at the real socket layer.
+    public static func connect(path: String, ioTimeout: TimeInterval? = nil) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw OrchestraError.io("socket() failed: \(errnoString())") }
+        if let ioTimeout {
+            do { try setIOTimeout(fd, seconds: ioTimeout) }
+            catch { posixClose(fd); throw error }
+        }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         try setPath(&addr, path)
@@ -68,6 +73,21 @@ public enum UDS {
         guard res == 0 else { posixClose(fd); throw OrchestraError.io("connect() failed: \(errnoString())") }
         suppressSIGPIPE(fd)
         return fd
+    }
+
+    /// Bound both directions of one connected descriptor. This is deliberately descriptor-level instead
+    /// of a task-race: cancellation alone cannot unblock a synchronous `read(2)` or `write(2)`.
+    public static func setIOTimeout(_ fd: Int32, seconds: TimeInterval) throws {
+        guard seconds > 0 else { return }
+        let whole = floor(seconds)
+        var timeout = timeval()
+        timeout.tv_sec = numericCast(Int(whole))
+        timeout.tv_usec = numericCast(max(1, Int((seconds - whole) * 1_000_000)))
+        let length = socklen_t(MemoryLayout<timeval>.size)
+        let receive = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, length)
+        guard receive == 0 else { throw OrchestraError.io("setsockopt(SO_RCVTIMEO) failed: \(errnoString())") }
+        let send = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, length)
+        guard send == 0 else { throw OrchestraError.io("setsockopt(SO_SNDTIMEO) failed: \(errnoString())") }
     }
 
     public static func accept(_ serverFd: Int32) -> Int32 {

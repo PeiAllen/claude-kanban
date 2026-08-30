@@ -13,14 +13,9 @@ public struct ClaudeCodeAdapter: Adapter {
     /// Claude Code's shipped seam behavior, frozen as the descriptor (A1).
     public var capabilities: AgentCapabilities { .claudeCode }
 
-    /// B3 — cold-path resume-modal suppression. A machine-driven `claude --resume` on an old
-    /// (> ~70min) AND large (> ~100k tokens) session opens a "Resume from summary/full" modal INSTEAD of
-    /// running the seed argv; with no human to answer it, the resume deadlocks and swallows the seed (two
-    /// live cards were observed parked at it). Set both thresholds impossibly high so the modal never
-    /// triggers. FAIL-SOFT by construction: these are undocumented internals a differing build ignores
-    /// harmlessly, and if the modal still appears the readiness await times out → the lease survives →
-    /// the arm retries / stuck-flags (never a silent swallow). Agent-agnostic: this is the `Adapter.env`
-    /// seam (Codex uses it for `CODEX_HOME`); other adapters return nothing.
+    /// Suppress Claude's resume-choice modal for old, large transcripts. A machine-driven resume cannot
+    /// answer that modal, so the thresholds keep the explicit resume path non-interactive. Builds that do
+    /// not recognize these variables ignore them harmlessly.
     public var env: [String: String] {
         ["CLAUDE_CODE_RESUME_THRESHOLD_MINUTES": "1000000",
          "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD": "1000000"]
@@ -265,7 +260,6 @@ public struct ClaudeCodeAdapter: Adapter {
     /// Explicit (not the protocol default) so Claude's shape is never silently inherited by another agent.
     public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
         if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
-        if let cont = r.continuation   { return HookEnvelope.block(cont) }
         return nil
     }
 
@@ -484,8 +478,6 @@ public extension AgentCapabilities {
         sessionId: .seeded,
         telemetry: .hooksPush,
         contextUsage: .percent,
-        wakeTransport: .nativeReinvoke,
-        inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,

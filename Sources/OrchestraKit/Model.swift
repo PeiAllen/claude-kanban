@@ -494,9 +494,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// `awaitingFirstPrompt`.
     public var titleSource: TitleSource
     /// true => this session has never received a genuine user prompt, so it blank-launches with no
-    /// positional. Provider observation supplies the later live turn state. Set at a promptless spawn, `restart`, a blank `reopen`, and
-    /// `SessionStart(clear)`; cleared by the first prompt. Load-bearing LIFECYCLE state
-    /// (`deriveLaunchFlavor`, the wake ladder, the delivery-stuck gates) — NOT a naming concept.
+    /// positional. Provider observation supplies the later live turn state. It is lifecycle state,
+    /// not a naming concept.
     public var awaitingFirstPrompt: Bool
     /// The last session name we have seen for this card — either the `--name` a launch just pushed or the
     /// last value the agent reported. The `session_name` mirror is a DELTA against this: a live Claude
@@ -507,7 +506,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// VOLATILE: the report pipeline overwrites it on every snapshot and `restart`/`/clear` blank it. Durable
     /// narrative belongs in `note`, which the pipeline never touches.
     public var desc: String
-    /// A durable, human/agent-authored one-liner about what this card IS — "Wave 2/4 — lease/claim delivery".
+    /// A durable, human/agent-authored one-liner about what this card IS — "Wave 2/4 — endpoint work".
     /// The counterpart to `desc`: `desc` is the volatile mirror of what the agent is doing THIS SECOND, so it
     /// cannot hold narrative that must outlive a turn; overloading it with both meanings is the same trap
     /// `titleProvisional` fell into. Set only by an explicit source (`spawn(note:)` / `set-note`), never by
@@ -567,36 +566,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// survives deterministically. Set at spawn's `store.create`, read by `materialize`, cleared on the
     /// `→.launching` transition. nil ⇒ HEAD / no base. Additive-optional Codable (mirrors `pendingSeed`).
     public var spawnBase: String?
-    /// When a card's queued delivery has been stuck (repeated failed attempts past the age threshold),
-    /// stamped by the reconciler arm (B4) and cleared by a confirmed delivery / `send`. Persisted so the
-    /// stuck state survives a daemon restart. Additive-optional Codable (mirrors `pendingSeed`); UI-less
-    /// until B5b surfaces it — nothing reads it in B2.
-    public var deliveryStuckSince: Date?
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var treeStat: TreeStat? // daemon-maintained child lineage status (BT4+); nil = none / uncomputed
-    /// One-bit snapshot: the card has queued inbox deliveries or a live delivery lease (`hasClaimable ∨
-    /// hasLiveLease`). Broadcast-only, maintained in the per-tick delivery reconciler — a later stall-
-    /// detection slice reads it to keep a card with pending work from ambering. Never authoritative state.
-    public var hasPendingDelivery: Bool
-    /// The card is the human's to PACE, so the stall row exempts it: a human-paced card never ambers
-    /// "stalled", however long it idles (see
-    /// [the attention system](../../docs/09-design-decisions.md#the-attention-system)). ONE bit, TWO ways
-    /// to earn it: the card was DRIVEN last by a human (a prompt typed into an idle-waiting session, or a
-    /// human-sourced `send`), OR it is a card awaiting the human's first move (a promptless "New agent"
-    /// card — `true` at that launch, and legacy `awaitingFirstPrompt` cards migrate to `true` on decode).
-    /// It is `false` for a seed-spawned or agent-delivered card, and flips back to `false` on a fresh
-    /// AGENT-driving turn — an agent/inbox delivery (a `.card`-sourced `send`) or a handoff SEED — so an
-    /// agent-driven card that never cleared `awaitingFirstPrompt` (a Codex provisional card given work)
-    /// still stalls. It is PRESERVED across a session-preserving relaunch (an involuntary daemon-reboot
-    /// recovery, a seedless idle-wake, a resumable reopen): a reboot is not a driving turn, and re-clearing
-    /// there would re-stall a human's own cards. The launch's own machine opening positional (seed /
-    /// wake-delivered inbox) reaches the report path as a `promptText` and a resume lands
-    /// `.waiting`, so `finishLaunch` marks that generation and the report path consumes the
-    /// marker on its first prompt rather than mistaking the seed for a human turn. The terminal-typing
-    /// signal rides Claude's `UserPromptSubmit` hook (`promptText`); Codex (`fileTail`) has no event
-    /// distinguishing a human turn from an injected one, so a Codex card leans on the agent-agnostic launch
-    /// + `send` classification. Broadcast-only, decode-with-default; the client stall fold is its only consumer.
+    /// Reserved for the stalled-state redesign. Inbox delivery never changes this value.
     public var humanPaced: Bool
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
@@ -634,7 +607,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         pendingSeed: String? = nil,
         pendingModel: String? = nil,
         spawnBase: String? = nil,
-        deliveryStuckSince: Date? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
         priorSessionIds: [String] = [],
@@ -642,7 +614,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         parentBranch: String? = nil,
         diffStat: DiffStat? = nil,
         treeStat: TreeStat? = nil,
-        hasPendingDelivery: Bool = false,
         humanPaced: Bool = false,
         archived: Bool = false,
         createdAt: Date = Date(),
@@ -676,7 +647,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.pendingSeed = pendingSeed
         self.pendingModel = pendingModel
         self.spawnBase = spawnBase
-        self.deliveryStuckSince = deliveryStuckSince
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
         self.priorSessionIds = priorSessionIds
@@ -684,7 +654,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.parentBranch = parentBranch
         self.diffStat = diffStat
         self.treeStat = treeStat
-        self.hasPendingDelivery = hasPendingDelivery
         self.humanPaced = humanPaced
         self.archived = archived
         self.createdAt = createdAt
@@ -705,8 +674,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         case desc, note, pendingQuestion, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
-        case deliveryStuckSince
-        case ctxPct, diffStat, treeStat, hasPendingDelivery, humanPaced, agentSessionId, priorSessionIds, initialPrompt, archived
+        case ctxPct, diffStat, treeStat, humanPaced, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
         case status, waitReason
@@ -761,7 +729,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // `try?`-guarded like the enum fields above (it contains one): a garbage `TreeState` rawValue must
         // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
         self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
-        self.hasPendingDelivery = try c.decodeIfPresent(Bool.self, forKey: .hasPendingDelivery) ?? false
         // Migration: a record predating this field decodes as human-paced IFF it was awaiting its first
         // prompt — that is exactly the "New agent" card the exemption must cover, and it lets a board full
         // of already-idle provisional cards go quiet the moment the field ships, without a relaunch. A
@@ -788,7 +755,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
         self.pendingModel = try c.decodeIfPresent(String.self, forKey: .pendingModel)
         self.spawnBase = try c.decodeIfPresent(String.self, forKey: .spawnBase)
-        self.deliveryStuckSince = try c.decodeIfPresent(Date.self, forKey: .deliveryStuckSince)
         // Migration: a record with a `phase` key is post-Stage-2 — decode it. Otherwise seed `phase`
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
         if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
@@ -847,11 +813,9 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
         try c.encodeIfPresent(pendingModel, forKey: .pendingModel)
         try c.encodeIfPresent(spawnBase, forKey: .spawnBase)
-        try c.encodeIfPresent(deliveryStuckSince, forKey: .deliveryStuckSince)
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(diffStat, forKey: .diffStat)
         try c.encodeIfPresent(treeStat, forKey: .treeStat)
-        try c.encode(hasPendingDelivery, forKey: .hasPendingDelivery)
         try c.encode(humanPaced, forKey: .humanPaced)
         try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
         try c.encode(priorSessionIds, forKey: .priorSessionIds)

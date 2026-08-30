@@ -27,10 +27,8 @@ public enum SessionSource: String, Sendable, Codable {
 /// field is set per event.
 public struct HookResponse: Sendable, Codable, Equatable {
     public var additionalContext: String?   // sessionStart → orientation
-    public var continuation: String?         // stop → inbox-drain block reason
-    public init(additionalContext: String? = nil, continuation: String? = nil) {
+    public init(additionalContext: String? = nil) {
         self.additionalContext = additionalContext
-        self.continuation = continuation
     }
 }
 
@@ -51,6 +49,4 @@ public enum HookEnvelope {
         return ""
     }
 
-    /// The Stop-hook `decision:block` continuation that hands `reason` to the model to continue.
-    public static func block(_ reason: String) -> String { StopDrain.blockJSON(reason: reason) }
 }

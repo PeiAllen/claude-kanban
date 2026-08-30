@@ -1,8 +1,7 @@
 import Foundation
 
-/// Stage-4 convergence: the service-actor callbacks a `PhaseStepper` delegates to (so the duties that
-/// touch actor-private state — `lineage`, `remoteParents`, `readinessWaiters`, `derivedCard`, `wake` —
-/// stay on the actor while the steppers themselves stay thin, stateless, off-actor structs). These are
+/// Stage-4 convergence: the service-actor callbacks a `PhaseStepper` delegates to, so actor-private
+/// state stays on the actor while the steppers remain thin, stateless, off-actor structs. These are
 /// the extracted forms of spawn's inline materialization / `launchAndConfirm`'s readiness machinery /
 /// `archive()`'s duty list, read from the PERSISTED card so crash recovery re-derives everything from disk.
 extension OrchestraService {
@@ -123,14 +122,8 @@ extension OrchestraService {
         return s
     }
 
-    /// Mark (or clear) the generation that owes a MACHINE opening turn — a launch whose flavor delivers a
-    /// daemon-supplied positional (a spawn/handoff seed, or a wake-delivered inbox batch). That positional
-    /// reaches the report path as a `promptText` just like a typed prompt, and a resume lands
-    /// `.waiting`, so the human-paced setter consumes this marker on the generation's first
-    /// prompt rather than reading the seed as a human turn (see `CardRuntime.seedTurnEpoch`). Called by
-    /// EVERY path that lands a seeded session `.live`: `finishLaunch` (the steppers) AND the reconciler's
-    /// epoch-identity adopt, which jumps `.launching→.live` WITHOUT a stepper. A promptless blank launch
-    /// delivers no positional, so its first prompt IS a human turn — the marker is cleared.
+    /// Mark the generation that carries a system-supplied launch seed, so its first prompt is not
+    /// classified as a direct human turn. Every path that lands a seeded session calls this helper.
     func markSeedTurn(_ id: UUID, flavor: LaunchFlavor, epoch: Int) {
         let deliversMachineTurn: Bool
         switch flavor {
@@ -175,10 +168,6 @@ extension OrchestraService {
         // Startup-abort retry spec (folded from spawn-startup-abort-classification): captured only for a
         // fresh spawn's blank launch so a bounded retry can re-`ensure` the SAME session + cwd.
         var armCtx: AdapterContext? = nil
-        // B3 tail watermark: for a fileTail RESUME (Codex — same rollout carries forward), the rollout path
-        // whose post-kill EOF fences a held relaunchSeed lease's confirm. nil for a blank launch, a
-        // non-fileTail agent (Claude confirms via the epoch-matched hook, not the tail), or no rollout.
-        var tailWatermarkPath: String? = nil
         // A staged `--model` re-seat (restart/handoff/resume) WINS over `model` for the launch. It has to:
         // restart/resume are intent-only, so the outgoing session stays alive and reporting for a reconcile
         // tick after the verb writes the card, and its statusline's model — applied through report()'s
@@ -228,12 +217,9 @@ extension OrchestraService {
                       let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp) else { return nil }
                 return tp
             }) ?? nil
-            guard let resolvedTranscript, let resumeArgv = adapter.resume(ctx) else {
+            guard resolvedTranscript != nil, let resumeArgv = adapter.resume(ctx) else {
                 return .timedOut   // transcript vanished between the stepper's pre-check and here
             }
-            // Only a fileTail agent confirms its held lease by rollout provenance; a hooksPush agent (Claude)
-            // uses the epoch-matched hook, so it needs no watermark (and its transcript is not a tailed rollout).
-            if adapter.capabilities.telemetry == .fileTail { tailWatermarkPath = resolvedTranscript }
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = resumeArgv
             launchContext = ctx
@@ -274,19 +260,10 @@ extension OrchestraService {
                 detail: "preflight: the host could not provide a \(report.resource.rawValue) "
                       + "(session not started, existing session left intact)", resource: report))
         }
-        let capturedWatermark: Int64?
-        let watermarkPath = tailWatermarkPath   // immutable copy for the @Sendable hop
         do {
-            // B3 watermark capture: kill → eofOffset → ensure, ALL in this one off-actor hop. The EOF is read
-            // AFTER the predecessor is killed (so it cannot append past the fence) and BEFORE the new session
-            // is launched (so the new session hasn't written yet). `eofOffset` is a stateless stat, so it runs
-            // inside this hop with no extra actor suspension — tightening the fence. A blank/non-fileTail
-            // launch has `watermarkPath == nil` and captures nothing.
-            capturedWatermark = try await offActor { [sessions] () -> Int64? in
+            try await offActor { [sessions] in
                 _ = try? sessions.kill(sessions.sessionName(id))   // idempotent for a fresh launch
-                let wm = watermarkPath.map { RolloutTailer.eofOffset(path: $0) }
                 _ = try sessions.ensure(task, argv: argv, env: env)
-                return wm
             }
         } catch {
             // The tmux stderr IS the diagnosis ("create window failed: fork failed: Device not configured")
@@ -348,18 +325,6 @@ extension OrchestraService {
             runtime[id]?.spawnAttempts = 0
             runtime[id]?.spawnRelaunch = (adapter.id, ctx)
         }
-        // B3: stamp the post-kill watermark + rollout path on the held relaunchSeed lease (fileTail resume
-        // only). Done AFTER the ensure + the ownership re-check (a superseded bring-up returned above, so its
-        // watermark never lands), and BEFORE readiness — so a rollout line tailed during the readiness wait is
-        // fenced. A no-op when there is no held lease (a handoff-only or seedless relaunch).
-        if let watermarkPath, let capturedWatermark {
-            // Seed the tail cursor at the same watermark: teardown `forget`s the cursor, and without a
-            // seed the next tail would re-read the rollout from byte 0 — replaying historic lines into
-            // the seq-gated status funnel (whose lastSeq the detach also reset).
-            await tailer.seedCursor(id, at: UInt64(max(0, capturedWatermark)))
-            try? await inbox.setTailWatermark(cardId: id, epoch: expectedEpoch,
-                                              watermark: capturedWatermark, path: watermarkPath)
-        }
         return await confirmReadiness(id, adapter: adapter, graceSeconds: grace, expectedEpoch: expectedEpoch)
     }
 
@@ -381,9 +346,8 @@ extension OrchestraService {
     ///
     /// 1. `detachCardRuntime` — the in-memory half: cancel the armed-task bag, resume any readiness
     ///    waiter `.superseded`, tombstone terminal ownership, drop `runtime[id]`. No-op-safe when absent.
-    /// 2. Durable duties — idempotent, re-run on every redrive, gated on the lease and NEVER on runtime
-    ///    presence: the card-file sweep, the watcher-side watch-registry removal (persisted), and the
-    ///    child find→nudge→wake (dedup-keyed, so a redrive fires it AT MOST ONCE).
+    /// 2. Durable duties — idempotent, re-run on every redrive, gated on the lifecycle fence and never
+    ///    on runtime presence: the card-file sweep, persisted watcher removal, and child notifications.
     /// Session-kill / releaseBorrow / run-dir reclaim stay in the stepper (reachable via `ctx`).
     func teardownActorDuties(_ id: UUID, expectedEpoch: Int) async {
         guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
@@ -419,14 +383,13 @@ extension OrchestraService {
         let active = await store.all().filter { $0.id != id }
         for cb in childBranches {
             guard let card = derivedCard(repo: t.repo, branch: cb, among: active) else { continue }
-            // Per-iteration lease check: each pass suspends (enqueue + wake), and a reopen mid-loop
+            // Per-iteration ownership check: each pass suspends, and a reopen mid-loop
             // must stop the remaining "parent archived" nudges — the parent is coming back.
             guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
-            try? await inbox.enqueue(
+            _ = try? await enqueueAndArm(
                 card.id,
                 "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship",
                 dedupKey: "\(card.id.uuidString.lowercased())|parent-archived:\(t.branch)")
-            await wake(card.id)
             // Archiving this card CHANGES OWNERSHIP of the parent branch for each of these children, and in
             // one direction the `.live`-landing hook cannot see: co-located siblings are permitted and
             // `derivedCard` picks the oldest, so archiving the owner promotes an already-live sibling with
@@ -442,8 +405,8 @@ extension OrchestraService {
             // Then schedule the CHILD's own recompute — not this card's fan-out debounce, which the
             // teardown above just cancelled — so the request re-routes to whoever owns the branch now, or
             // becomes an unowned request the human sees when nobody does.
-            await teardownNudgePause?()   // test seam: land a reopen inside the enqueue/wake window
-            // Re-fence AFTER the enqueue/wake suspensions: the trio below mutates the CHILD on the
+            await teardownNudgePause?()   // test seam: land a reopen inside the enqueue window
+            // Re-fence after the enqueue suspension: the trio below mutates the child on the
             // premise that the parent is gone — a reopen that landed during those awaits makes the
             // premise false, and a stale teardown must not stop a live child's nudge loop over it.
             guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }

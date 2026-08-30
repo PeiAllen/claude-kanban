@@ -96,9 +96,13 @@ extension OrchestraService {
         if let current = runtime[card.id]?.agentMessageHandle,
            current.identity == expected, current.endpoint == endpoint {
             runtime[card.id]?.pendingAgentMessageEndpoint = nil
+            armNativeInbox(card)
             return
         }
 
+        // Replacement is an ownership handoff, not an endpoint mutation. Cancel the old loop before
+        // dropping/closing its sender, then install one new exact handle and arm a fresh token.
+        disarm(card.id, .nativeInbox)
         let previous = runtime[card.id]?.agentMessageHandle
         runtime[card.id]?.agentMessageHandle = nil
         previous?.sender.shutdown()
@@ -114,9 +118,11 @@ extension OrchestraService {
             sender: sender
         )
         runtime[card.id]?.pendingAgentMessageEndpoint = nil
+        armNativeInbox(card)
     }
 
     private func stopAgentMessageHandle(_ cardId: UUID) {
+        disarm(cardId, .nativeInbox)
         guard let current = runtime[cardId]?.agentMessageHandle else { return }
         runtime[cardId]?.agentMessageHandle = nil
         current.sender.shutdown()

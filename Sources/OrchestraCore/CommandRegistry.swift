@@ -146,6 +146,15 @@ public struct CommandRegistry: Sendable {
                 return .ok()
             },
 
+            "inbox-retry": { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                guard let mid = UUID(uuidString: try p.string("id")) else {
+                    throw OrchestraError.invalidParams("id must be a message UUID")
+                }
+                try await svc.inboxRetry(t.id, messageId: mid)
+                return .ok()
+            },
+
             "inbox-reorder": { svc, p, _ in
                 let t = try await svc.resolveRef(try p.string("ref"))
                 guard let arr = p["ids"]?.arrayValue else {

@@ -46,10 +46,14 @@ final class ClaudeMessageSender: AgentMessageSender, @unchecked Sendable {
     }
 
     func send(_ message: String) async throws {
+        try await send(message, timeout: 15)
+    }
+
+    func send(_ message: String, timeout: TimeInterval) async throws {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 do {
-                    try sendBlocking(message)
+                    try sendBlocking(message, timeout: timeout)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -65,7 +69,7 @@ final class ClaudeMessageSender: AgentMessageSender, @unchecked Sendable {
         }
     }
 
-    private func sendBlocking(_ message: String) throws {
+    private func sendBlocking(_ message: String, timeout: TimeInterval) throws {
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
         let frames = try [
             Self.jsonLine(AuthFrame(token: token)),
@@ -73,7 +77,7 @@ final class ClaudeMessageSender: AgentMessageSender, @unchecked Sendable {
         ]
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
 
-        let fd = try UDS.connect(path: socketPath)
+        let fd = try UDS.connect(path: socketPath, ioTimeout: timeout)
         let accepted = stateLock.withLock {
             guard !isShutDown else { return false }
             activeFD = fd

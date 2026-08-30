@@ -42,15 +42,13 @@ struct CodexAdapterArgvTests {
         #expect(try reg.get("claude-code").id == "claude-code")   // both registered
     }
 
-    @Test("capabilities are Codex's discovered/fileTail/relaunch/stopHook tuple")
+    @Test("capabilities are Codex's discovered/fileTail tuple")
     func capabilities() {
         let c = CodexAdapter().capabilities
         #expect(c == .codex)
         #expect(c.sessionId == .discovered)
         #expect(c.telemetry == .fileTail)
         #expect(c.contextUsage == .tokens)
-        #expect(c.wakeTransport == .relaunch)
-        #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
@@ -61,21 +59,11 @@ struct CodexAdapterArgvTests {
         #expect(CodexAdapter().newSessionId() == nil)
     }
 
-    // F3 · live drain: Codex encodes a Stop-drain continuation into the SAME `decision:block` envelope as
-    // Claude (byte-identical framing). This is what `handleHook(.stop)` → `payloadForStop` rides.
-    @Test("encode(.continuation, for: .stop) is the shared block continuation")
-    func encodesStopContinuation() {
-        let out = CodexAdapter().encode(HookResponse(continuation: "DRAIN-ME"), for: .stop)
-        #expect(out == HookEnvelope.block("DRAIN-ME"))
-        #expect(out == StopDrain.blockJSON(reason: "DRAIN-ME"))
-    }
-
-    // The rendered Codex hooks file must wire the Stop event, or the drain above never fires.
-    @Test("rendered Codex hooks wire the Stop event to `_report --event stop --agent codex`")
-    func rendersStopHook() throws {
+    @Test("rendered Codex hooks omit the retired Stop callback")
+    func omitsStopHook() throws {
         let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")
-        #expect(json.contains("\"Stop\""))
-        #expect(json.contains("_report --event stop --agent codex"))
+        #expect(!json.contains("\"Stop\""))
+        #expect(!json.contains("_report --event stop --agent codex"))
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
@@ -91,7 +79,7 @@ struct CodexAdapterArgvTests {
 
     // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
     // the definitive card ↔ rollout correlation. Do not discard it and fall back to cwd/time discovery.
-    @Test("parse(SessionStart hooksPush) binds Codex's direct session id; Stop stays telemetry-free")
+    @Test("parse(SessionStart hooksPush) binds Codex's direct session id")
     func parseSessionStartHook() {
         let payload: JSONValue = .object([
             "session_id": .string("codex-session"),
@@ -100,7 +88,6 @@ struct CodexAdapterArgvTests {
         ])
         #expect(adapter.parse(.hooksPush(kind: "session", payload: payload)) == StatusReport(sessionId: "codex-session"))
         #expect(adapter.parse(.hooksPush(kind: "session", payload: .object([:]))) == nil)
-        #expect(adapter.parse(.hooksPush(kind: "stop", payload: .object([:]))) == nil)
     }
 
     @Test("fileTail turn-complete is ignored because app-server owns turn state")
@@ -196,7 +183,7 @@ struct CodexAdapterArgvTests {
         #expect(lines.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level = \"untrusted\""))
         #expect(lines.contains { $0.hasPrefix("hooks.SessionStart = ") && $0.contains("_report --event session --agent codex") })
         #expect(!lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") })
-        #expect(lines.contains { $0.hasPrefix("hooks.Stop = ") && $0.contains("_report --event stop --agent codex") })
+        #expect(!lines.contains { $0.hasPrefix("hooks.Stop = ") })
         #expect(lines.contains("[mcp_servers.orchestra]"))
         #expect(lines.contains("command = \"/abs/orchestra-mcp\""))
         #expect(lines.contains("default_tools_approval_mode = \"approve\""))
@@ -247,12 +234,12 @@ struct CodexAdapterArgvTests {
             "hooks": .array([
                 .object([
                     "type": .string("command"),
-                    "command": .string("/bin/orchestra _report --event stop"),
+                    "command": .string("/bin/orchestra _report --event session"),
                 ]),
             ]),
         ])
         #expect(TOMLOverride.value(hook) ==
-                "{hooks = [{command = \"/bin/orchestra _report --event stop\", type = \"command\"}]}")
+                "{hooks = [{command = \"/bin/orchestra _report --event session\", type = \"command\"}]}")
         #expect(TOMLOverride.value(.null) == nil)
     }
 
@@ -306,9 +293,9 @@ struct CodexAdapterArgvTests {
         #expect(a.sessionsDir == "/tmp/ch/sessions")
     }
 
-    // Defect 2 · hook-trust. This customized Codex build TRUST-GATES hooks behind a launch modal Orchestra
-    // can't answer → the Stop hook never runs → the inbox never drains. `--dangerously-bypass-hook-trust`
-    // enables the launch-scoped Orchestra hooks. It is the ONLY empirically-verified
+    // Defect 2 · hook trust. This customized Codex build trust-gates hooks behind a launch modal Orchestra
+    // cannot answer. `--dangerously-bypass-hook-trust` enables the launch-scoped Orchestra hooks. It is the
+    // only empirically verified
     // mechanism (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a
     // config-seed is fragile). Build-gated so a stock codex-rs build (no gate, no flag) still launches;
     // `hookTrustBypass:` injects the probe result for hermetic tests.

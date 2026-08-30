@@ -8,7 +8,6 @@ struct AuthWarnSpawnTests {
 
     static let apiKeyCaps = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .apiKey,
         readinessConfirmation: .relaunchLiveness)   // setup spawns land immediately (not a readiness test)
 

@@ -283,7 +283,7 @@ struct MergeRequestCapTests {
         #expect(await stat(env.svc, child.id)?.nudges == 0)               // no ghost count bump
     }
 
-    /// The CAS behind the fence. A tick suspends across `inbox.enqueue` + `wake`; if the request is resolved
+    /// The CAS behind the fence. A tick suspends across `enqueueAndArm`; if the request is resolved
     /// and freshly re-armed in that window, the new request is ALSO `.mergeRequested` — so a state-only
     /// guard would accept the stale write and could flip a brand-new request straight to stalled.
     @Test("a write computed against a stale count is dropped; a matching one lands")
