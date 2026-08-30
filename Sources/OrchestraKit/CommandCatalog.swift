@@ -16,8 +16,8 @@ public enum CommandExposure: Sendable, Equatable { case all, appOnly, terminalOn
 /// completes inline, idempotent, may hop off-actor, never changes `phase`. Convergence: the sync part
 /// persists *durable intent* — a `transition()` (the phase-keyed stepper drives the rest, returning
 /// `(card, rev)`) **or** durable side-state that a reconciler arm drives to its target. `send` is the
-/// second shape (B5a): its intent is the non-empty inbox row, the delivery arm drives it to empty, and it
-/// returns `{messageId, card}` — no `transition()`, no phase stepper.
+/// second shape: its durable intent is a queued inbox row, and the native sender advances that advisory
+/// projection to handed-off or failed. It returns `{messageId, card}` — no `transition()`, no phase stepper.
 public enum VerbKind: String, Sendable, Equatable { case query, mutation, convergence }
 
 public struct CommandSchema: Sendable, Equatable {

@@ -5,9 +5,9 @@ import Foundation
 /// the `orchestra` executable target, which tests can't `@testable import` — makes the ReportHelper→RPC
 /// wiring unit-testable, and gives the builder and the decoder one shared key vocabulary.
 public enum HookRPC {
-    /// The raw payload for the two turn-boundary hooks consumed by the replacement adapter reducer.
-    /// Tool/input payloads stay at the edge until their independent activity/request reconciliation is
-    /// implemented, so this field does not turn the hook channel into a general raw-event mirror.
+    /// The compact adapter-selected status payload consumed by the provider reducer. The edge projects
+    /// only provider fields used for turn, activity, or human-need observations, so this does not turn the
+    /// hook channel into a general raw-event mirror.
     public static let observationPayloadKey = "observationPayload"
     /// Optional, ephemeral provider-message endpoint. Its credential is manually encoded for this one
     /// local RPC and decoded into non-Codable runtime values; it must never be logged or persisted.
