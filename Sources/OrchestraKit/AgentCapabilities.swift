@@ -79,21 +79,10 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let terminalImagePaste: TerminalImagePaste
     public let readinessConfirmation: ReadinessConfirmation
 
-    /// The key chord the Needs-You gate sends to APPROVE an open permission request, and the
-    /// chord that DENIES it. These are agent-terminal-layout facts, not provider-neutral truths: Claude's
-    /// TUI accepts the pre-highlighted "Yes" with `Enter` and cancels with `Esc`. They live on the
-    /// capability (not on the neutral Needs-You queue) so each adapter states its own gate keys. An empty
-    /// chord means "this agent has no send-keys gate" and the gate is a no-op because approval rides a
-    /// structured response channel instead.
-    public let approveChord: [KeyToken]
-    public let denyChord: [KeyToken]
-
     public init(sessionId: SessionId, telemetry: Telemetry, contextUsage: ContextUsage,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
-                readinessConfirmation: ReadinessConfirmation = .sessionStartHook,
-                approveChord: [KeyToken] = [.named(.enter)],
-                denyChord: [KeyToken] = [.named(.esc)]) {
+                readinessConfirmation: ReadinessConfirmation = .sessionStartHook) {
         self.sessionId = sessionId
         self.telemetry = telemetry
         self.contextUsage = contextUsage
@@ -101,13 +90,11 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
         self.readinessConfirmation = readinessConfirmation
-        self.approveChord = approveChord
-        self.denyChord = denyChord
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionId, telemetry, contextUsage, readOnlyEnforcement, authMode
-        case terminalImagePaste, readinessConfirmation, approveChord, denyChord
+        case terminalImagePaste, readinessConfirmation
     }
 
     /// Capability payloads cross the daemon/client boundary. Decode additive fields with their historical
@@ -123,7 +110,5 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
             ?? .direct
         readinessConfirmation = try c.decodeIfPresent(ReadinessConfirmation.self, forKey: .readinessConfirmation)
             ?? .sessionStartHook
-        approveChord = try c.decodeIfPresent([KeyToken].self, forKey: .approveChord) ?? [.named(.enter)]
-        denyChord = try c.decodeIfPresent([KeyToken].self, forKey: .denyChord) ?? [.named(.esc)]
     }
 }

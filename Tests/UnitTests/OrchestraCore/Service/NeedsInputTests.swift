@@ -9,9 +9,8 @@ import TestSupport
 ///
 /// The verb is set/replace only; the daemon owns retirement, and everything below pins the same rule from
 /// a different angle: a question is cleared ONLY by proof that it is moot — the next turn demonstrably
-/// starting, or a session replacement that actually completed. Every case drives the real observation,
-/// lifecycle, or hook seam rather than seeding phase directly, so the tests exercise the production
-/// transition funnel.
+/// starting. Every case drives the real observation, lifecycle, or hook seam rather than seeding phase
+/// directly, so the tests exercise the production transition funnel.
 @Suite("needs-input — declare a block, cleared only by proof of the next turn")
 struct NeedsInputTests {
 
@@ -98,8 +97,8 @@ struct NeedsInputTests {
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
-    @Test("a relaunch INTENT does not clear it — only a landing does")
-    func relaunchIntentDoesNotClear() async throws {
+    @Test("a relaunch intent and failed landing both preserve it")
+    func relaunchIntentAndFailurePreserve() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
@@ -217,14 +216,14 @@ struct NeedsInputTests {
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
-    @Test("a current-generation session rollover clears it")
-    func rolloverClears() async throws {
+    @Test("a current-generation session rollover alone preserves it")
+    func rolloverAlonePreserves() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
 
         try await env.svc.report(t.id, StatusReport(sessionId: "fresh-session"), observedEpoch: epoch)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 }

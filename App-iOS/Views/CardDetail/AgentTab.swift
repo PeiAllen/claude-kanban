@@ -14,7 +14,7 @@ import OrchestraUI
 ///   • **Steer** — a "Message the agent" bar → `send` (queued for native harness delivery) with a
 ///     constrained key row → `send-keys` (D2: Esc/↵/arrows/y/n/^C — no live attach, no resize pressure).
 ///   • **Gates** — surfaced as Needs-You (M3), not here: any human-needed card shows a banner pointing
-///     at that queue. This tab deliberately does NOT reimplement approve/deny.
+///     at that queue. Provider prompts are resolved in the harness itself.
 ///   • **Take Over** — the explicit **Take Over Agent Terminal** button (the ONLY attach path) presents
 ///     T4's `AgentTakeoverView` full-screen under the exclusive owner lease.
 ///
@@ -87,7 +87,7 @@ struct AgentTab: View {
 // MARK: - Wait banner (status → Needs You)
 
 /// A compact banner surfacing why the card needs attention or is waiting. Gates live in the Needs-You
-/// queue (M3); this only points there — it never renders approve/deny.
+/// queue (M3); this only points there and does not answer provider prompts directly.
 /// This is an ephemeral display classification. `Task.requiresHuman` remains the sole membership fact;
 /// a provider subtype only refines the copy after that membership decision.
 enum AgentBannerKind: Equatable { case permission, input, humanRequired, waiting }

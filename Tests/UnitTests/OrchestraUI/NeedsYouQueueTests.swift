@@ -4,7 +4,7 @@ import OrchestraKit
 
 /// The Needs You attention queue (BT slice 5), re-homed onto the 3b `ownAttention` fold: membership is
 /// now the ONE contract (a card appears IFF a human action is required), the top signal drives the row,
-/// and the send-keys gate chords are unchanged. Pure logic over a hand-built `tasks` array + an injected
+/// and provider subtypes only refine its label. Pure logic over a hand-built `tasks` array + an injected
 /// `now` — no daemon, no iOS Simulator. (The per-reason derivation itself is covered in
 /// `BoardStoreAttentionTests`/`AttentionTests`; this pins the BUILDER — filter, sort, signal passthrough.)
 @MainActor
@@ -31,10 +31,9 @@ final class NeedsYouQueueTests: XCTestCase {
     }
 
     @MainActor
-    private func modelWith(_ tasks: [Task], agents: [AgentInfo] = []) -> BoardModel {
+    private func modelWith(_ tasks: [Task]) -> BoardModel {
         let m = BoardModel(platform: .noop)
         m.tasks = tasks
-        m.agents = agents
         return m
     }
 
@@ -120,61 +119,4 @@ final class NeedsYouQueueTests: XCTestCase {
         XCTAssertEqual(order, ["died", "perm-old", "perm", "ctx"])
     }
 
-    // MARK: gate chords — agent-capability facts, not neutral-layer constants (unchanged by slice 5)
-
-    private let standardGateCapabilities = AgentCapabilities(
-        sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-        readOnlyEnforcement: .sandboxed,
-        authMode: .subscription, approveChord: [.named(.enter)], denyChord: [.named(.esc)])
-
-    private var standardGateAgent: AgentInfo {
-        AgentInfo(id: "claude-code", name: "Claude", icon: "sparkle",
-                  models: [AgentModel(id: "m")], capabilities: standardGateCapabilities)
-    }
-
-    func testGateChordsLiveOnAgentCapabilities() {
-        XCTAssertEqual(standardGateCapabilities.approveChord, [.named(.enter)])
-        XCTAssertEqual(standardGateCapabilities.denyChord, [.named(.esc)])
-    }
-
-    func testUnknownAgentHasNoCapabilityProfile() {
-        XCTAssertNil(modelWith([]).capabilities(for: "future-agent"))
-    }
-
-    func testUnknownAgentCannotBorrowClaudePermissionKeys() {
-        var unknown = card("permission", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
-        unknown.agentId = "future-agent"
-        let m = modelWith([unknown])
-        XCTAssertNil(m.permissionGateChord(unknown.id, \.approveChord))
-        XCTAssertNil(m.permissionGateChord(unknown.id, \.denyChord))
-    }
-
-    func testGateFiresOnlyWhileWaitingOnPermission() {
-        let perm = card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
-        let humanTurn = card("human", phase: .live(.waiting))
-        let running = card("run", phase: .live(.running))
-        let dead = card("dead", phase: .dead(.agentExited))
-        let m = modelWith([perm, humanTurn, running, dead], agents: [standardGateAgent])
-
-        XCTAssertEqual(m.permissionGateChord(perm.id, \.approveChord), [.named(.enter)])
-        XCTAssertEqual(m.permissionGateChord(perm.id, \.denyChord), [.named(.esc)])
-        XCTAssertNil(m.permissionGateChord(humanTurn.id, \.approveChord))
-        XCTAssertNil(m.permissionGateChord(running.id, \.approveChord))
-        XCTAssertNil(m.permissionGateChord(dead.id, \.approveChord))
-        XCTAssertNil(m.permissionGateChord(UUID(), \.approveChord))
-    }
-
-    func testGateChordComesFromTheCardsAgentCapability() {
-        let tabCaps = AgentCapabilities(
-            sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-            readOnlyEnforcement: .sandboxed,
-            authMode: .subscription, approveChord: [.named(.tab)], denyChord: [])
-        let agent = AgentInfo(id: "tabber", name: "Tabber", icon: "sparkle",
-                              models: [AgentModel(id: "m")], capabilities: tabCaps)
-        var t = card("perm", phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
-        t.agentId = "tabber"
-        let m = modelWith([t], agents: [agent])
-        XCTAssertEqual(m.permissionGateChord(t.id, \.approveChord), [.named(.tab)])
-        XCTAssertNil(m.permissionGateChord(t.id, \.denyChord))
-    }
 }

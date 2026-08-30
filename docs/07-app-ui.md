@@ -656,8 +656,8 @@ all tinted from the attention fold, so an amber chip and an amber eye are one fa
 `ownAttention`, the same definition the card chips use — so a card appears there exactly when it needs a
 human, and each row lists the card's own reasons with their labels; the most-blocked reason drives the
 row's colour and primary action. For the single `.humanRequired` reason, membership is
-`Task.requiresHuman` and the primary action is always **Open Harness**; a permission's guarded
-Approve/Deny controls remain secondary conveniences. Because membership is that single contract, a card
+`Task.requiresHuman` and the action is always **Open Harness**; provider subtypes may refine the copy but
+never the action or clearing rule. Because membership is that single contract, a card
 that is merely idle between turns no longer sits in the queue — it surfaces only when its provider has a
 current human need, it declares a question, requests a merge a human must grant, dies, or reaches the
 current compatibility stall threshold.

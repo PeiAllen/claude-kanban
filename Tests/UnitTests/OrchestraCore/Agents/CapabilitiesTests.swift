@@ -83,6 +83,19 @@ struct CapabilitiesTests {
         #expect(decoded == .claudeCode)
     }
 
+    @Test("retired direct permission-gate keys are ignored")
+    func retiredPermissionGateKeysIgnored() throws {
+        let encoded = try OrchestraJSON.wire.encode(AgentCapabilities.claudeCode)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["approveChord"] = []
+        object["denyChord"] = []
+
+        let legacyPayload = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try OrchestraJSON.decoder.decode(AgentCapabilities.self, from: legacyPayload)
+
+        #expect(decoded == .claudeCode)
+    }
+
     @Test("AdapterContext.seed defaults to nil and round-trips when set")
     func seedField() {
         #expect(AdapterContext(cwd: "/wt").seed == nil)

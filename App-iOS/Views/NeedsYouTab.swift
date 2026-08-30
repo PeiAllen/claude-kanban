@@ -6,9 +6,9 @@ import OrchestraUI
 /// The **Needs You** attention queue (design §6), re-homed (BT slice 5) onto the 3b `ownAttention` fold —
 /// the SAME definition of "needs you" the card L1/L4 chips, peek rows, and eye tint use. Each row shows
 /// the card's own reasons with their labels; the top reason drives the row's section, color, and primary
-/// action — Open Harness for every live need, Recover for a dead card. Inline permission controls remain
-/// secondary convenience only. Background-waiting cards never appear (they hold no reason). Membership is time-derived (a card
-/// stalls with no daemon traffic), so the tab ticks a `now`.
+/// action — Open Harness for every live need, Recover for a dead card. Background-waiting cards never
+/// appear (they hold no reason). Membership is time-derived (a card stalls with no daemon traffic), so the
+/// tab ticks a `now`.
 struct NeedsYouTab: View {
     @EnvironmentObject private var model: BoardModel
     @EnvironmentObject private var snooze: NeedsYouSnooze
@@ -198,11 +198,9 @@ private struct AttentionRow: View {
     let onOpen: () -> Void
     let onRecover: () -> Void
 
-    @EnvironmentObject private var model: BoardModel
     @EnvironmentObject private var snooze: NeedsYouSnooze
     @Environment(\.theme) private var theme: Theme
 
-    @State private var busy = false          // guards the async gate/reply so a double-tap can't double-fire
     @Environment(\.animationsActive) private var animationsActive
 
     private var task: Task { item.task }
@@ -284,7 +282,7 @@ private struct AttentionRow: View {
             switch top {
             case .humanRequired:
                 ActionButton("Open Harness", systemImage: "arrow.up.forward.square", tint: theme.amber,
-                             filled: true, busy: busy) { onOpen() }
+                             filled: true) { onOpen() }
             case .dead:
                 ActionButton("Recover", systemImage: "cross.case", tint: theme.red, filled: true) { onRecover() }
             case .mergeRequested, .stalled, .ctxCritical:
@@ -293,21 +291,12 @@ private struct AttentionRow: View {
             Spacer(minLength: 0)
             overflow
         }
-        .disabled(busy)
     }
 
     /// The always-present secondary menu: open the card, snooze, dismiss.
     private var overflow: some View {
         Menu {
             Button { onOpen() } label: { Label("Open card", systemImage: "rectangle.stack") }
-            if task.agentState?.humanNeed == .permission {
-                Button { run { await model.approvePermission(task.id) } } label: {
-                    Label("Approve permission", systemImage: "checkmark")
-                }
-                Button { run { await model.denyPermission(task.id) } } label: {
-                    Label("Deny permission", systemImage: "xmark")
-                }
-            }
             Menu {
                 ForEach(NeedsYouSnooze.options, id: \.label) { opt in
                     Button(opt.label) { withAnimation { snooze.snooze(task.id, for: opt.interval) } }
@@ -321,18 +310,6 @@ private struct AttentionRow: View {
                 .frame(width: 32, height: 28)
         }
         .accessibilityLabel("More actions")
-    }
-
-    /// Run an async action guarded by `busy` (so the button can't double-fire), then an optional
-    /// main-actor completion.
-    private func run(_ action: @escaping () async -> Void, then done: (() -> Void)? = nil) {
-        guard !busy else { return }
-        busy = true
-        _Concurrency.Task {
-            await action()
-            busy = false
-            done?()
-        }
     }
 }
 
@@ -367,18 +344,16 @@ private struct ActionButton: View {
     let systemImage: String
     let tint: SemColor
     var filled = false
-    var busy = false
     let action: () -> Void
     init(_ title: String, systemImage: String, tint: SemColor,
-         filled: Bool = false, busy: Bool = false, action: @escaping () -> Void) {
+         filled: Bool = false, action: @escaping () -> Void) {
         self.title = title; self.systemImage = systemImage; self.tint = tint
-        self.filled = filled; self.busy = busy; self.action = action
+        self.filled = filled; self.action = action
     }
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                if busy { ProgressView().controlSize(.mini) }
-                else { Image(systemName: systemImage) }
+                Image(systemName: systemImage)
                 Text(title)
             }
             .font(.footnote.weight(.semibold))

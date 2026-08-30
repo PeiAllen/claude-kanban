@@ -562,9 +562,5 @@ public extension AgentCapabilities {
         // writes NO rollout at resume time, so a relaunch has no marker; the universal N=3 liveness-tick
         // fallback resolves the still-pending waiter within the grace, keeping the relaunch on the readiness
         // gate (never an immediate ensure-is-confirmation that would bypass it).
-        readinessConfirmation: .rolloutMeta,
-        // App-server detects Codex's permission gate, while the current UI answers its TUI prompt with
-        // Enter / Esc. A future structured response channel can replace these chords independently.
-        approveChord: [.named(.enter)],
-        denyChord: [.named(.esc)])
+        readinessConfirmation: .rolloutMeta)
 }
