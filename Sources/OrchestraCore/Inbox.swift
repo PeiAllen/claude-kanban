@@ -58,9 +58,13 @@ public actor Inbox {
         return messages
     }
 
-    public func peek(_ cardId: UUID) -> [InboxMessage] {
+    /// Returns one actor-snapshot of the unresolved queue, optionally including provider-accepted history.
+    /// The opt-in keeps background consumers on their existing unresolved-only contract.
+    public func peek(_ cardId: UUID, includeHistory: Bool = false) -> [InboxMessage] {
         ensureLoaded()
-        return messages.filter { $0.cardId == cardId && $0.state != .handedOff }
+        return messages.filter {
+            $0.cardId == cardId && (includeHistory || $0.state != .handedOff)
+        }
     }
 
     public func history(_ cardId: UUID) -> [InboxMessage] {

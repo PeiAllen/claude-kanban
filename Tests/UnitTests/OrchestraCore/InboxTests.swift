@@ -32,6 +32,23 @@ struct InboxTests {
         #expect(await restarted.peek(card).map(\.state) == [.queued])
     }
 
+    @Test("history is opt-in while a single snapshot preserves inbox order")
+    func peekCanIncludeProviderAcceptedHistory() async throws {
+        let path = Self.temporaryPath(); defer { Self.remove(path) }
+        let card = UUID()
+        let inbox = Inbox(path: path)
+        try await inbox.enqueue(card, "handed off")
+        try await inbox.enqueue(card, "queued")
+
+        let first = try #require(await inbox.nextDeliverable(card))
+        #expect(try await inbox.markHandedOff(
+            cardId: card, messageId: first.id, expectedText: first.text
+        ))
+
+        #expect(await inbox.peek(card).map(\.text) == ["queued"])
+        #expect(await inbox.peek(card, includeHistory: true).map(\.text) == ["handed off", "queued"])
+    }
+
     @Test("failed FIFO head blocks later work until the owner retries it")
     func failedHeadBlocksAndRetryRequeues() async throws {
         let path = Self.temporaryPath(); defer { Self.remove(path) }

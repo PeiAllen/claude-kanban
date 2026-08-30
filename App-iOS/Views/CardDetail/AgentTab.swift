@@ -11,7 +11,7 @@ import OrchestraUI
 ///     `capture-pane` scrape; ugly but zero-attach and sizing-safe) plus the live status pill / context
 ///     gauge / agent state from the board event stream (the header already carries status+ctx; this tab
 ///     surfaces an ordinary wait or human-needed state as an actionable banner).
-///   • **Steer** — a "Message the agent" bar → `send` (queued to the inbox, drained at turn-end) with a
+///   • **Steer** — a "Message the agent" bar → `send` (queued for native harness delivery) with a
 ///     constrained key row → `send-keys` (D2: Esc/↵/arrows/y/n/^C — no live attach, no resize pressure).
 ///   • **Gates** — surfaced as Needs-You (M3), not here: any human-needed card shows a banner pointing
 ///     at that queue. This tab deliberately does NOT reimplement approve/deny.
@@ -348,10 +348,10 @@ private struct CapturePaneText: UIViewRepresentable {
     }
 }
 
-// MARK: - Steer bar (send = queued · send-keys = constrained keys)
+// MARK: - Steer bar (send = native inbox · send-keys = constrained keys)
 
-/// The "Message the agent" bar. The text field **queues** a message via `send` (inbox, drained at the
-/// agent's next turn-end) — no attach. The key row sends **constrained keys** via `send-keys` for TUI
+/// The "Message the agent" bar queues a message via `send` for native harness delivery — no attach. The
+/// key row sends **constrained keys** via `send-keys` for TUI
 /// prompts (y/n, a menu, Esc-to-cancel) without attaching or resizing. Both are D1/D2 primitives; neither
 /// joins the tmux window.
 private struct SteerBar: View {
@@ -364,6 +364,7 @@ private struct SteerBar: View {
 
     @State private var draft = ""
     @State private var justQueued = false
+    @State private var isQueueing = false
 
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -382,6 +383,7 @@ private struct SteerBar: View {
                     .submitLabel(.send)
                     .focused($composerFocused)
                     .onSubmit(queue)
+                    .disabled(isQueueing)
                     // Explicit dismissal from the keyboard accessory bar — the field is `.vertical`, so
                     // Return inserts a newline rather than closing; "Done" gives a guaranteed way out.
                     .toolbar {
@@ -396,14 +398,14 @@ private struct SteerBar: View {
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 40, height: 38)
                         .foregroundStyle(.white)
-                        .background(trimmed.isEmpty ? theme.text3 : theme.accent,
+                        .background(trimmed.isEmpty || isQueueing ? theme.text3 : theme.accent,
                                     in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(trimmed.isEmpty)
+                .disabled(trimmed.isEmpty || isQueueing)
             }
-            Text(justQueued ? "Queued — the agent drains it at its next turn-end."
-                            : "Queues a message to the agent’s inbox — no live attach.")
+            Text(justQueued ? "Queued with Orchestra."
+                            : "Queues a message for native harness delivery — no terminal attach.")
                 .font(.caption2)
                 .foregroundStyle(justQueued ? theme.green.text : theme.text3)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -447,10 +449,16 @@ private struct SteerBar: View {
 
     private func queue() {
         let msg = trimmed
-        guard !msg.isEmpty else { return }
-        draft = ""
-        flashQueued()
-        _Concurrency.Task { await model.send(cardId, msg) }
+        guard !msg.isEmpty, !isQueueing else { return }
+        isQueueing = true
+        _Concurrency.Task {
+            let accepted = await model.send(cardId, msg)
+            if accepted {
+                draft = ""
+                flashQueued()
+            }
+            isQueueing = false
+        }
     }
 
     private func send(_ chord: [KeyToken]) {

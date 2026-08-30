@@ -519,8 +519,11 @@ private struct DebugLaunchHook: ViewModifier {
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/demo",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), initialPrompt: "demo")
-        let seed = ["charlie", "BRAVO (edited)", "review the auth refactor before merging"]
-            .map { InboxMessage(cardId: card.id, text: $0) }
+        let seed = [
+            InboxMessage(cardId: card.id, text: "review the auth refactor before merging", state: .queued),
+            InboxMessage(cardId: card.id, text: "retry the unavailable provider", state: .failed),
+            InboxMessage(cardId: card.id, text: "branch context for the harness", state: .handedOff),
+        ]
         let view = InboxEditorView(task: card, preview: seed)
             .environmentObject(model)
             .environment(\.theme, theme)

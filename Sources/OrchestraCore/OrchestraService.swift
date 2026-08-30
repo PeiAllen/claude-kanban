@@ -711,10 +711,10 @@ public actor OrchestraService {
         try sessions.sendChord(sessions.sessionName(t.id), tokens: tokens, window: window)
     }
 
-    /// Inbox editor (UI + MCP): list a card's pending messages. Non-destructive.
-    public func inboxPeek(_ id: UUID) async throws -> [InboxMessage] {
+    /// Inbox editor (UI + MCP): list a card's advisory rows. History is explicitly opt-in.
+    public func inboxPeek(_ id: UUID, includeHistory: Bool = false) async throws -> [InboxMessage] {
         let t = try await require(id)
-        return await inbox.peek(t.id)
+        return await inbox.peek(t.id, includeHistory: includeHistory)
     }
 
     /// Inbox editor operations are owner-scoped: an id from another card cannot edit its queue.

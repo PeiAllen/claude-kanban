@@ -125,7 +125,8 @@ public struct CommandRegistry: Sendable {
 
             "inbox": { svc, p, _ in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                return try JSONValue(encodable: await svc.inboxPeek(t.id))
+                let includeHistory = p["includeHistory"]?.boolValue ?? false
+                return try JSONValue(encodable: await svc.inboxPeek(t.id, includeHistory: includeHistory))
             },
 
             "inbox-edit": { svc, p, _ in

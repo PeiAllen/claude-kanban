@@ -1055,17 +1055,6 @@ public class BoardStore: ObservableObject {
             return t
         } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
-    public func send(_ id: UUID, _ message: String) async {
-        // Mint the required message id here (the daemon requires it; this is a client seam like the CLI
-        // and MCP bridge). A fresh id per UI send is correct — the phone's reply/compose is a new intent,
-        // not a retry.
-        let messageId = UUID()
-        do { _ = try await client.call("send", .object(["ref": .string(id.uuidString),
-                                                        "message": .string(message),
-                                                        "id": .string(messageId.uuidString)])) }
-        catch { toast("Couldn't send message", sub: "\(error)", color: .red) }
-    }
-
     /// Register this device for push (N1): hand the APNs device token + the current notification-pref
     /// snapshot to the daemon over the shared `client`, so it can push attention alerts while the phone is
     /// backgrounded. Call after `registerForRemoteNotifications` yields a token, and again whenever a
@@ -1131,27 +1120,6 @@ public class BoardStore: ObservableObject {
     /// is recoverable by tapping again, and the steer bar shouldn't error-toast on every miss.
     public func sendKeysToAgent(_ id: UUID, _ chord: [KeyToken], window: String = "agent") async {
         try? await client.sendKeys(ref: id.uuidString, chord, window: window)
-    }
-
-    /// Inbox editor: list a card's pending messages (empty on any error).
-    public func inboxPeek(_ id: UUID) async -> [InboxMessage] {
-        (try? await client.call("inbox", .object(["ref": .string(id.uuidString)]))
-            .decode([InboxMessage].self)) ?? []
-    }
-    /// Inbox editor: edit one queued message's text.
-    public func inboxEdit(_ id: UUID, messageId: UUID, text: String) async {
-        _ = try? await client.call("inbox-edit", .object(["ref": .string(id.uuidString),
-            "id": .string(messageId.uuidString), "text": .string(text)]))
-    }
-    /// Inbox editor: remove one queued message.
-    public func inboxRemove(_ id: UUID, messageId: UUID) async {
-        _ = try? await client.call("inbox-remove", .object(["ref": .string(id.uuidString),
-            "id": .string(messageId.uuidString)]))
-    }
-    /// Inbox editor: reorder a card's queued messages (full new order).
-    public func inboxReorder(_ id: UUID, orderedIds: [UUID]) async {
-        _ = try? await client.call("inbox-reorder", .object(["ref": .string(id.uuidString),
-            "ids": .array(orderedIds.map { .string($0.uuidString) })]))
     }
 
     /// Read-only trust check for the spawn sheet's freeform trust indicator (T1's ledger via the daemon).

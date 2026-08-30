@@ -150,18 +150,22 @@ public enum CommandCatalog {
                       kind: .convergence, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox",
-                      summary: "List a card's pending inbox messages, including source provenance, in FIFO order.",
-                      params: schema(["ref": refProp()], required: ["ref"]),
+                      summary: "List a card's unresolved inbox messages in FIFO order. Set includeHistory to also "
+                          + "return provider-accepted advisory history.",
+                      params: schema(["ref": refProp(),
+                                      "includeHistory": boolProp("Include provider-accepted advisory history.")],
+                                     required: ["ref"]),
                       kind: .query, phaseGate: gAll),
 
-        CommandSchema(name: "inbox-edit", summary: "Edit the text of a queued inbox message.",
+        CommandSchema(name: "inbox-edit",
+                      summary: "Edit an unresolved inbox message; editing a failed row requeues it.",
                       params: schema(["ref": refProp(),
                                       "id": strProp("Inbox message id (a UUID from `inbox`)"),
                                       "text": strProp("New message text")],
                                      required: ["ref", "id", "text"]),
                       kind: .mutation, phaseGate: gNonArchived),
 
-        CommandSchema(name: "inbox-remove", summary: "Remove a queued inbox message by id.",
+        CommandSchema(name: "inbox-remove", summary: "Remove an inbox message, including handed-off history.",
                       params: schema(["ref": refProp(),
                                       "id": strProp("Inbox message id (a UUID from `inbox`)")],
                                      required: ["ref", "id"]),
@@ -174,12 +178,12 @@ public enum CommandCatalog {
                       kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox-reorder",
-                      summary: "Reorder a card's pending inbox messages (`ids` = the full new order).",
+                      summary: "Reorder a card's unresolved messages; failed rows must be resolved first.",
                       params: schema(["ref": refProp(),
                                       "ids": .object([
                                           "type": .string("array"),
                                           "items": .object(["type": .string("string")]),
-                                          "description": .string("The card's message ids in the desired new order"),
+                                          "description": .string("All unresolved message ids in the desired order"),
                                       ])],
                                      required: ["ref", "ids"]),
                       kind: .mutation, phaseGate: gNonArchived),
