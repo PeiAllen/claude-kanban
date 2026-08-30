@@ -105,6 +105,25 @@ struct AgentObservationCoordinatorTests {
         #expect(await state.turnStatus() == .unavailable)
     }
 
+    @Test("a running snapshot preserves an identified active-turn fence")
+    func runningSnapshotPreservesActiveTurnFence() async {
+        let coordinator = AgentObservationCoordinator()
+        let state = AgentStateBox()
+        let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
+
+        for signal in [
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnStarted),
+            AgentSignal(sessionEpoch: epoch, kind: .turnReconciled(.running, humanNeed: nil)),
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnCompleted()),
+        ] {
+            await coordinator.submit(scope: scope, signals: [signal]) {
+                await state.apply($0, epoch: epoch)
+            }
+        }
+
+        #expect(await state.turnStatus() == .waiting())
+    }
+
     @Test("a distinct turn start clears the prior turn detail while a duplicate is ignored")
     func distinctStartIsSemanticBoundary() async {
         let coordinator = AgentObservationCoordinator()

@@ -108,11 +108,17 @@ actor AgentObservationCoordinator {
             lastCompletedTurnID = nil
             return signal
 
-        case .turnReconciled:
-            // Snapshot-style providers supersede event-pair history atomically. Claude also uses this
-            // signal for session clear/resume, which must not retain the prior prompt's fence.
-            activeTurnID = nil
-            lastCompletedTurnID = nil
+        case .turnReconciled(let status, _):
+            // A current-session running snapshot refines the active turn without erasing an exact ID that
+            // event notifications already established. If there is no active ID, the snapshot represents
+            // an uncorrelated open turn and any older completed-turn history is no longer usable. Waiting
+            // and unavailable snapshots retire all turn-pair history.
+            if case .running = status {
+                if activeTurnID == nil { lastCompletedTurnID = nil }
+            } else {
+                activeTurnID = nil
+                lastCompletedTurnID = nil
+            }
             return signal
         }
     }
