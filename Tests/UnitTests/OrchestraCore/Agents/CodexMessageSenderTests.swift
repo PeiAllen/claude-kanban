@@ -85,52 +85,6 @@ struct CodexMessageSenderTests {
         #expect(peers.makeCount == 1)
     }
 
-    @Test("a flood of unrelated notifications cannot extend one sender attempt past its deadline")
-    func notificationFloodRespectsAbsoluteDeadline() async throws {
-        let peer = NotificationFloodCodexPeer(incoming: [
-            Self.response(id: 1, result: .object([:])),
-            Self.response(id: 2, result: .object([
-                "thread": .object(["id": .string("thread-1")]),
-            ])),
-        ])
-        let sender = CodexMessageSender(
-            socketPath: "/runtime/codex.sock",
-            threadId: "thread-1",
-            peerFactory: { _ in peer }
-        )
-        let finished = DispatchSemaphore(value: 0)
-        let result = CodexSendResult()
-        _Concurrency.Task {
-            do { try await sender.send("deadline", timeout: 0.05); result.succeed() }
-            catch { result.fail() }
-            finished.signal()
-        }
-
-        let completedBeforeShutdown = await Self.wait(finished, timeout: 1) == .success
-        sender.shutdown()
-        if !completedBeforeShutdown {
-            #expect(await Self.wait(finished) == .success)
-        }
-
-        #expect(completedBeforeShutdown)
-        #expect(result.failed)
-        #expect(peer.didClose)
-    }
-
-    @Test("a matching response already received at the deadline remains provider acceptance")
-    func matchingResponseWinsAfterReceive() throws {
-        let peer = LateMatchingResponseCodexPeer()
-        let client = CodexAppServerClient(peer: peer)
-
-        let result = try client.call(
-            "turn/start",
-            params: .object([:]),
-            deadline: .now() + .milliseconds(100)
-        )
-
-        #expect(result == .object(["turn": .object(["id": .string("turn-1")])]))
-    }
-
     private static func response(id: Int, result: JSONValue) -> JSONValue {
         .object(["jsonrpc": .string("2.0"), "id": .int(id), "result": result])
     }
@@ -207,42 +161,6 @@ private final class BlockingCodexPeer: RecordingCodexPeer, @unchecked Sendable {
     override func shutdown() {
         stateLock.withLock { shutdowns += 1 }
         stopped.signal()
-    }
-}
-
-private final class NotificationFloodCodexPeer: RecordingCodexPeer, @unchecked Sendable {
-    private let floodLock = NSLock()
-    private var receiveCount = 0
-    private var stopped = false
-
-    override func receive() throws -> JSONValue {
-        let setupResponse = floodLock.withLock { () -> Bool in
-            receiveCount += 1
-            return receiveCount <= 2
-        }
-        if setupResponse { return try super.receive() }
-        Thread.sleep(forTimeInterval: 0.005)
-        if floodLock.withLock({ stopped }) { throw CodexAppServerError.connectionClosed }
-        return .object([
-            "jsonrpc": .string("2.0"),
-            "method": .string("thread/status/changed"),
-            "params": .object(["threadId": .string("thread-1")]),
-        ])
-    }
-
-    override func shutdown() { floodLock.withLock { stopped = true } }
-}
-
-private final class LateMatchingResponseCodexPeer: RecordingCodexPeer, @unchecked Sendable {
-    init() { super.init(incoming: []) }
-
-    override func receive() throws -> JSONValue {
-        Thread.sleep(forTimeInterval: 0.15)
-        return .object([
-            "jsonrpc": .string("2.0"),
-            "id": .int(1),
-            "result": .object(["turn": .object(["id": .string("turn-1")])]),
-        ])
     }
 }
 

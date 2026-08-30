@@ -317,6 +317,19 @@ struct CodexAppServerTransportTests {
         #expect(result.sawEOF)
     }
 
+    @Test("a matching response already received at the deadline remains provider acceptance")
+    func matchingResponseWinsAfterReceive() throws {
+        let client = CodexAppServerClient(peer: LateMatchingResponseCodexPeer())
+
+        let result = try client.call(
+            "turn/start",
+            params: .object([:]),
+            deadline: .now() + .milliseconds(100)
+        )
+
+        #expect(result == .object(["turn": .object(["id": .string("turn-1")])]))
+    }
+
     @Test("continuous WebSocket control frames cannot outlive a real sender attempt deadline")
     func controlFrameFloodStopsAtAbsoluteDeadline() async throws {
         let controlFrameCount = 4_000
@@ -565,6 +578,21 @@ private enum CodexTransportServerError: Error {
     case invalidHandshake
     case unexpectedFrame
     case writeFailed
+}
+
+private final class LateMatchingResponseCodexPeer: CodexAppServerPeer, @unchecked Sendable {
+    func open() throws {}
+    func send(_ message: JSONValue) throws {}
+    func receive() throws -> JSONValue {
+        Thread.sleep(forTimeInterval: 0.15)
+        return .object([
+            "jsonrpc": .string("2.0"),
+            "id": .int(1),
+            "result": .object(["turn": .object(["id": .string("turn-1")])]),
+        ])
+    }
+    func shutdown() {}
+    func close() {}
 }
 
 private final class CodexTransportServerResult: @unchecked Sendable {
