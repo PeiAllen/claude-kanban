@@ -158,7 +158,7 @@ reconciler step — routes through it, which in one call:
    with the phase;
 3. fires the terminal `Conclusion` exactly once, on entry into a terminal phase from a non-terminal one —
    `wait` resolves off this, never off `git`;
-4. wakes a message parked while the card was being born (`wakeIfPending`) on entry into `.live`.
+4. retires any old per-session runtime handle before a replacement session can install its own.
 
 ### `sessionEpoch` — making stale signals harmless
 
@@ -418,7 +418,7 @@ Codex through a per-launch profile file (`-p`) — without replacing Codex's nor
 plugins, or state. Claude's `statusLine` and structured hooks call the thin edge helper,
 `orchestra _report --event <kind> --agent <id>`, which sends a typed `hook` RPC over the control socket.
 The adapter separates metadata from a current-session observation before it reaches the provider-neutral
-reducer. The response can carry orientation or inbox-drain content back to the agent:
+reducer. Hook responses carry SessionStart orientation only:
 
 | Claude event | `_report --event` | What it updates on the card |
 |--------------|-------------------|------------------------------|
@@ -427,31 +427,35 @@ reducer. The response can carry orientation or inbox-drain content back to the a
 | `UserPromptSubmit` | `prompt` | prompt text → auto-title; normalized, identified top-level turn start |
 | `Pre/PostToolUse` | `pretool` / `posttool` | activity detail only |
 | known permission/input prompt | `notification` | current provider `humanNeed`, tagged `.permission`, `.input`, or `.unspecified` |
-| resolution event | `notification` / tool hook | clears human need only for the current identified prompt |
-| `Stop` | `stop` | exact current top-level turn completion; it may also arm the transitional inbox drain |
+| resolution event | `notification` / tool hook | clears provider human need only within the current correlated turn |
+| `Stop` | `stop` | exact current top-level turn completion |
 | `SessionEnd` | `sessionend` | exit reason → may drive the card to `dead(_)` via the `transition()` funnel |
 
 Claude accepts only prompt/session-correlated observations: delayed notifications and child-tool activity
 cannot change a top-level turn, a missing identity fails closed to `unavailable`, and an older event is
 ignored. Its exact OTLP span is only a missing-`Stop` fallback, not a polling or replay authority.
 
-Codex uses the hook channel for SessionStart orientation and the existing Stop inbox drain, but its
-turn state and provider-human need come only from a launch-local app-server observer. The rollout tail is
-metadata only: it discovers the session and reports context, model, and coarse activity text.
+Codex uses the hook channel for SessionStart orientation, while its turn state and provider-human need come
+only from a launch-local app-server observer. The rollout tail is metadata only: it discovers the session
+and reports context, model, and coarse activity text.
 
 `humanNeed` describes the provider's current request and is not itself a second phase. The separate,
 durable `pendingQuestion` records a task-authored question. `Task.requiresHuman` is their pure OR, so an
 ordinary `waiting` turn is not a Needs You reason. `pendingQuestion` clears only when a positively
-identified **distinct** next turn starts, including `running → running`, or when a completed session is
-replaced; reconnecting the same session, provider resolution,
-opening the harness, sending a message, and inbox delivery leave it alone.
+identified **distinct** next turn starts, including `running → running`; reconnecting the same session,
+provider resolution, opening the harness, sending a message, resolving a native prompt, and inbox delivery
+leave it alone.
 
-This is a **two-way** channel. Agent → Orchestra carries metadata and provider observations; the current
-Orchestra → agent direction carries a new-card or resume seed on the opening turn, SessionStart orientation
-in `additionalContext`, and the shipped F3 Stop-drain of the durable inbox. The Stop drain's claim, lease,
-and receipt protocol is transitional: it is state-silent and never changes `AgentState` or clears
-`pendingQuestion`. Native best-effort delivery, delivered/handed-off/failed UI, and reminder behavior are
-later inbox work. See [the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel).
+This is a **two-way** channel. Agent → Orchestra carries metadata and provider observations; Orchestra →
+agent carries authored launch or handoff context and SessionStart orientation in `additionalContext`.
+
+Normal inbox delivery is a separate per-live-session path. `send` first persists a local row, then a sender
+uses the provider handle held only in `CardRuntime`. Claude's endpoint and token are ephemeral hook metadata;
+Claude Stop remains status-only. Codex's app-server observer remains the status authority while a separate
+sender peer submits `turn/start`. On provider acceptance the row becomes `handedOff`; that means the harness
+accepted the request, not that a model read or acted on it. The sender never emits status, and it does not
+wait for `running`, `waiting`, `unavailable`, attention, `pendingQuestion`, or `wait`. See
+[the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel).
 
 Two robustness rules matter:
 

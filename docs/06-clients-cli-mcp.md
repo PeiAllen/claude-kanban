@@ -34,9 +34,9 @@ orchestra list                       # all cards
 orchestra list --col review          # one column
 orchestra status <ref>               # JSON status for one card
 orchestra send <ref> "use a token bucket"
-orchestra inbox <ref>                # list a card's queued inbox messages (also inbox-edit/-remove/-reorder)
+orchestra inbox <ref>                # list unresolved inbox messages; includeHistory returns handed-off history
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
-orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card, seeded (F1)
+orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card with authored context
 orchestra handoff <ref> "summary…" --model claude-fable-5   # …and RE-SEAT it onto a stronger model
 orchestra trust <path>               # grant a human's write-trust for a dir (interactive only)
 orchestra move <ref> --col review
@@ -53,14 +53,9 @@ handles, close the client, and then `tmux attach` **in-process** so your termina
 card's shell (or a read-only agent, for `inspect`). `batch-spawn` reads a JSON array on stdin (or one
 prompt per line with `--repo`/`--branch`).
 
-`orchestra wait <ref…>` is how an orchestrator agent drives the reactive fan-out. It blocks until one of
-the watched cards concludes, prints that conclusion, and **exits** — which, for a card launched by
-Orchestra, is the wake: Claude's `nativeReinvoke` `wakeTransport` re-invokes the caller in-session when its
-background `orchestra wait` process ends, so the orchestrator wakes, reads the durable inbox, and re-issues
-`orchestra wait` on the cards that remain. It reads `$ORCHESTRA_TASK_ID` (set at launch) as the `watcher`,
-so conclusions coalesce into the caller's own inbox. (See
-[merge-watch / `wait`](05-command-reference.md#notes-on-key-commands) and
-[chapter 9](09-design-decisions.md#shipped-feature-history).)
+`orchestra wait <ref…>` is how an orchestrator subscribes to reactive fan-out. It blocks until one watched
+card concludes, prints that conclusion, and exits; the caller re-issues it for remaining cards. The command
+observes only lifecycle conclusions, so it is independent of ordinary inbox submission and provider status.
 
 Note `wait` resolves only on a **real conclusion** — a merge/archive (`.done`) or a death (`.exited`).
 A read-only delegate (a reviewer or fork) that finishes its turn idles `.live(AgentState.waiting)` and does **not**
@@ -73,8 +68,7 @@ delegate's result.
 queued message; an external CLI or MCP process without it sends as **Human**. The source is edge-owned:
 the CLI creates its `senderCard` context only from the environment, and the MCP bridge discards any raw
 caller value before attaching the same context. It is attribution metadata on the local control plane, not a
-signed authorization identity; it does not change the model-facing payload, which uses the shared
-operator-relayed delivery header.
+signed authorization identity or a delivery guarantee.
 
 `--model <id>` on `restart` / `handoff` / `resume` **re-seats the card onto another model in place** — the
 [`--model` re-seat](05-command-reference.md#the---model-re-seat). It is declared on those three schemas in
@@ -117,8 +111,8 @@ English, to *"split the rate-limiting work into three PRs and fan them out."* It
 times and then `wait`s — and the board fills itself in. Whether it reaches those commands as MCP tools
 or through the `orchestra` CLI is an implementation detail of the agent's toolset: both doors open onto
 the one `CommandRegistry`, which is exactly why an agent driving Orchestra is indistinguishable from you
-driving it. The delivery machinery underneath is
-[the orchestration seam](04-cards-worktrees-sessions.md#the-orchestration-seam-handoff--fork--fan-out--send--wait).
+driving it. `wait` observes conclusions, while ordinary messages use the card's independent native inbox
+sender.
 
 - **Tool generation.** On `ListTools`, it maps every `CommandRegistry` command to an MCP `Tool` whose
   name is the command name, description is the command summary, and input schema is the command's own
@@ -171,9 +165,9 @@ the service manager for the daemon lifecycle.
 
 ## The hooks / `_report` channel
 
-Hooks are a **first-class, core-owned channel** for metadata, orientation, and the current transitional
-delivery route. Claude also carries its strictly correlated runtime observations through this channel;
-Codex does not — its app-server observer is the sole Codex runtime-status and provider-human authority.
+Hooks are a **first-class, core-owned channel** for metadata, orientation, and Claude's strictly correlated
+runtime observations. Codex does not use hooks for runtime state — its app-server observer is the sole
+Codex runtime-status and provider-human authority.
 Core owns the protocol (`HookEvent` + `HookResponse`) and the generic status reducer; each adapter owns
 provider interpretation (`parse` metadata, Claude hook-observation projection where applicable,
 `agentSignals`, response encoding, and hook rendering). The edge forwards only the small raw subset the
@@ -206,9 +200,9 @@ the command carries a baked `--agent <id>` so the client can resolve its adapter
 
 The `--event` strings **are** the `HookEvent` raw values (Core), so the template, client, and daemon
 share one vocabulary. `Notification`/`Stop` and `PreToolUse`/`PostToolUse` each get a distinct event —
-so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires SessionStart and Stop; its
-app-server connection is the sole source of turn status and provider human need, while Stop remains the
-transitional inbox-drain return channel. A card that also needs per-card settings (read-only enforcement — see [the
+so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires SessionStart and Stop for its
+native hook lifecycle, while its app-server connection remains the sole source of turn status and provider
+human need. A card that also needs per-card settings (read-only enforcement — see [the
 read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier)) does **not** get a second
 `--settings`; `SettingsComposer` deep-merges those overlays *onto* this base into one file (Claude applies
 multiple `--settings` last-file-wins, so a second file would silently drop the statusLine + hooks).
@@ -222,25 +216,13 @@ multiple `--settings` last-file-wins, so a second file would silently drop the s
    `adapter.sessionSource` extracts SessionStart source, and Claude's `hookObservationPayload` selects the
    bounded raw fields needed for current-session status normalization. Codex hook payloads do not produce
    runtime state. Large tool bodies die here.
-4. **Send one typed `hook` RPC** — `{ref, event, report?, source?, observationPayload?}` — under a tight budget (~50 ms
-   statusline fire-and-forget, ~2 s otherwise). The daemon's `OrchestraService.handleHook` dispatches
-   both directions: it applies metadata, asks the Card's adapter for normalized `AgentSignal`s after
-   epoch/session fencing, and for
-   `session` composes the live orientation ([SessionBrief](04-cards-worktrees-sessions.md), skipped on a
-   `compact` source) or for `stop` drains the [durable inbox](03-data-model.md#the-inbox-store-f3) (F3)
-   into a neutral `HookResponse`.
-5. **Encode the response to stdout:** if the daemon returns a `HookResponse`, `adapter.encode` wraps it
-   in the agent's native envelope — `hookSpecificOutput.additionalContext` for orientation, or
-   `{"decision":"block","reason":<payload>}` for the Stop-hook continuation — and the client prints it.
-   The drain payload (`StopDrain`) leads with a channel-neutral **provenance header** — telling the model
-   these are real instructions queued via Orchestra, not hook noise to distrust — followed by the messages
-   `[k/N]`-numbered when batched; only the *whole messages that fit* the 10 000-char budget are delivered,
-   with overflow left queued for the next turn-end. A per-card **consecutive-inject loop guard**
-   (`OrchestraService.payloadForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
-   Stop→inject→Stop cycle. Delivery is claim-then-confirm: the batch is *leased* into the continuation and
-   leaves the inbox only when the next same-epoch Stop proves the continuation ran (`stop_hook_active`).
-   This shipped route is transitional and state-silent: it does not emit `AgentSignal`, change
-   `AgentState`, or clear `pendingQuestion`.
+4. **Send one typed `hook` RPC** — `{ref, event, report?, source?, observationPayload?}` — under a tight
+   budget (~50 ms statusline fire-and-forget, ~2 s otherwise). The daemon applies metadata and asks the
+   card's adapter for normalized `AgentSignal`s after epoch/session fencing. A `session` response may
+   carry the live orientation ([`SessionBrief`](04-cards-worktrees-sessions.md)); Stop has no delivery
+   response.
+5. **Encode orientation to stdout:** if the daemon returns a `HookResponse`, `adapter.encode` wraps the
+   SessionStart orientation in the provider's native `additionalContext` envelope and prints it.
 
 This single `hook` RPC replaced the former `report`/`drain`/`sessionBrief` methods. Because the daemon
 resolves the card's adapter from the persisted `agentId`, there is no agent identity on the wire beyond
@@ -276,14 +258,11 @@ On the daemon side, `OrchestraService+Report.swift` merges the report's event ha
 `desc`, model, session name). `OrchestraService+AgentObservation.swift` independently applies normalized
 signals through `AgentStateReducer` and atomically writes the resulting `Phase.live(AgentState)`.
 
-This same channel now carries the **first realized Orchestra → agent direction**: the F3 Stop-drain
-(step 4 above) injects the durable inbox back into the agent at its turn-end. It remains a transitional,
-state-silent route rather than native best-effort delivery. The **F1 resume seed** (PR C3)
-adds a second injection path — an authored handoff/fork context folded with that same inbox, delivered as a
-resumed session's opening positional turn (argv, not this settings channel) — now callable end-to-end via
-the [`handoff` command](05-command-reference.md#notes-on-key-commands) (PR D1). The **new-card** counterpart
-has since landed too (PR D3): a defaulted `SpawnInput.seed` on `spawn`/`batch-spawn` folds authored context
-ahead of a fresh card's prompt, completing the handoff/fork/fan-out delivery the
-[roadmap](10-roadmap.md) called for. The **SessionStart orientation** (step 5) is a further Orchestra→agent
-path — but unlike the seeds it rides the hook's `additionalContext` envelope rather than an opening turn, and
-its brief is byte-identical across Claude and Codex ([chapter 9](09-design-decisions.md#shipped-feature-history)).
+### Native inbox submission
+
+Normal inbox submission does not travel through `_report`, `Stop`, or a handoff seed. `send` first writes a
+local queued row. While a live provider connection exists, the card runtime gives the provider sender an
+ephemeral native handle: Claude uses hook-supplied endpoint/token metadata, and Codex opens a separate
+app-server peer for `turn/start`. A successful native request changes the row to `handedOff`, meaning only
+that the harness accepted it. Sender attempts are bounded and may retry briefly across a reconnect, but
+they do not create status, wait for a display state, wake/relaunch a session, or claim model-level receipt.

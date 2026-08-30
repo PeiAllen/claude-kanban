@@ -29,11 +29,10 @@ yourself: you can **ask an agent to do it**, in plain English, and watch the boa
 
 Above: one orchestrator card is told *"split the rate-limiting work into three PRs and fan them out."*
 It calls the ordinary `spawn` command three times — three children appear on the board, each cut into
-its own git worktree, each reporting its own live context-% and diffstat — then `wait`s on them and
-wakes as each one concludes. Nothing about that card is special: it is a normal agent session holding
-the same commands you have. The machinery underneath is
-[one delivery seam](docs/04-cards-worktrees-sessions.md#the-orchestration-seam-handoff--fork--fan-out--send--wait),
-which `handoff`, `fork`, `fan-out`, `send`, and `wait` all compose from.
+its own git worktree, each reporting its own live context-% and diffstat — then subscribes with `wait`
+for real conclusions. Nothing about that card is special: it is a normal agent session holding the same
+commands you have. `handoff` and seeds carry authored session context; `send` records a local inbox row
+and uses the live provider's native message path independently of a card's displayed runtime status.
 
 ## …or never touch the mouse
 
@@ -68,10 +67,11 @@ intercepts keys meant for the live agent terminal:
   sessions after a crash or reboot; unrecoverable cards surface a Recovery panel. Even a finished card
   isn't terminal — **Reopen** a Done card and the daemon recreates its worktree and resumes the agent.
 - **Agents orchestrate agents.** A card can **hand off** to a clean-context resume, **fork** a slice into
-  a new card, **fan out** across many, or **send** into another card's durable inbox — and an orchestrator
-  card can `wait` on its children and wake as each concludes. All four compose from one live-delivery seam
-  (F1 resume · F2 wake · F3 inbox), driven from the CLI or MCP (the app surfaces the inbox as an editor —
-  list/reorder/edit/append/remove — while handoff/fork/fan-out are agent/CLI moves). A card can also
+  a new card, **fan out** across many, or **send** into another card's durable inbox; `wait` is a separate
+  subscription for a child reaching a real conclusion. A successful `send` means the local row was queued.
+  Later `handedOff` means the native harness accepted the request, never that the model read or acted on
+  it. The app exposes queued, failed, and bounded handed-off history with retry/edit/remove controls, while
+  handoff/fork/fan-out remain agent/CLI moves. A card can also
   **re-seat itself onto a different model in place** — `handoff <ref> "<summary>" --model <id>` keeps the
   card, worktree, and context and comes back on the stronger model, so an agent that finds its task too
   hard escalates itself instead of spawning a successor

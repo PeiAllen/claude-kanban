@@ -17,8 +17,8 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `awaitingFirstPrompt` | `Bool` | If `true`, this session has never received a genuine user prompt. A blank launch has no positional prompt, and its live turn state remains `unavailable` until current provider evidence arrives. Set by a promptless spawn, `restart`, a blank `reopen`, and `SessionStart(clear)`; cleared by the first prompt. Lifecycle state, not a naming concept. A promptless (provisional) card is the human's first move, so it seeds [`humanPaced`](#the-task-card) `true` at launch — but the stall exemption keys on `humanPaced`, not this flag (which is sticky on Codex). |
 | `lastSessionName` | `String?` | The last session name seen for this card — the `--name` a launch pushed, or the last value the agent reported. The `session_name` mirror is a **delta** against this, so a live session echoing its launch name can't overwrite a newer title. |
 | `desc` | `String` | **Volatile** one-line blurb of what the agent is doing now, reported as metadata (Claude hooks or the Codex rollout tail; pane-parse fallback). The report pipeline overwrites it every snapshot and `restart`/`/clear` blank it. |
-| `note` | `String?` | **Durable** authored one-liner about what this card IS — e.g. `Wave 2/4 — lease/claim delivery`. Set only by `spawn(note:)` / `set-note`, never by telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it. See [desc vs note](09-design-decisions.md#desc-vs-note-volatile-status-vs-durable-narrative). |
-| `pendingQuestion` | `PendingQuestion?` | The agent's **declared** open question (`{text, declaredAt}`) — set by [`needs-input`](05-command-reference.md#registry-commands) when it ends a turn blocked on a decision only the card's owner can make. It clears only when an identified distinct next turn starts or when a completed session is replaced; a same-session reconnect, provider resolution, opening the harness, sending a message, and Stop-drain delivery do not clear it. `declaredAt` supplies display age; the two fields travel as one value. nil ⇒ no open question. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
+| `note` | `String?` | **Durable** authored one-liner about what this card IS — e.g. `Wave 2/4 — native inbox delivery`. Set only by `spawn(note:)` / `set-note`, never by telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it. See [desc vs note](09-design-decisions.md#desc-vs-note-volatile-status-vs-durable-narrative). |
+| `pendingQuestion` | `PendingQuestion?` | The agent's **declared** open question (`{text, declaredAt}`) — set by [`needs-input`](05-command-reference.md#registry-commands) when it ends a turn blocked on a decision only the card's owner can make. It clears only when an identified distinct next turn starts. A same-session reconnect, provider resolution, opening the harness, sending a message, resolving a native prompt, and native inbox delivery do not clear it. `declaredAt` supplies display age; the two fields travel as one value. nil ⇒ no open question. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
 | `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **cache** derived from the git-config lineage store: `set-parent`, `spawn --base`, and converge write it; nil means the card has no parent link. |
@@ -34,14 +34,13 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `phase` | `Phase` | The **persisted lifecycle SSOT**. `creatingWorktree` \| `launching` \| `live(AgentState)` \| `relaunching` \| `dead(DeadReason)` \| `archived(teardownComplete:)`. The `transition()` funnel is its sole writer; provider-neutral `AgentSignal`s reduce the value carried by `live`. |
 | `sessionEpoch` | `Int` | Monotonic per-card session generation, bumped on each (re)launch entry so a stale signal (a late hook, a liveness poll) from a superseded session is fenced out. |
 | `phaseChangedAt` | `Date` | When the lifecycle phase or live `TurnStatus` last changed — live activity or human-need detail does not reset it. Drives status-relative timers and terminal-dwell checks. |
-| `pendingSeed` | `String?` | Handoff/seeded-wake seed staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared on the `.live` landing (see [migration & persistence](#persistence-and-migration)). |
+| `pendingSeed` | `String?` | Authored handoff context staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared on the `.live` landing (see [migration & persistence](#persistence-and-migration)). It never carries ordinary inbox rows. |
 | `pendingModel` | `String?` | A [`--model` re-seat](05-command-reference.md#the---model-re-seat) staged for the NEXT (re)launch (`restart`/`handoff`/`resume`), consumed+cleared on the `.live` landing exactly like `pendingSeed`. Separate from `model` because it is the **launch intent**, and it is the one thing `report()` cannot clobber: the report path owns `model` and is not epoch-fenced, so the *dying* session's last statusline would otherwise revert the override before the relaunch read it (see [migration & persistence](#persistence-and-migration) and [ch. 9](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence)). |
 | `deadReason` | `DeadReason?` | Set together with `phase = .dead(_)`; carries the terminal reason. |
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`/`spawnFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer and the inspector header (axis 7), measured against the card's default baseline — parent-relative when it has a parent branch, else branch-relative. Nil for a non-git / zero-change / not-yet-computed card. |
-| `hasPendingDelivery` | `Bool` | Broadcast-only snapshot bit: the card has a claimable inbox message or a live delivery lease (`hasClaimable ∨ hasLiveLease`). Maintained in the per-tick delivery reconciler (so it arms even for a running card, whose `wake` returns before delivering, and disarms when the queue drains). Consumed by the current compatibility stall detector — a card with pending work in flight is not idle. It is delivery bookkeeping only: never an `AgentState` or `pendingQuestion` authority. |
-| `humanPaced` | `Bool` | Compatibility bit for the current client stall row: the card is the human's to pace, so per-card quiescence does not amber it. A human prompt or human-sourced `send` sets it; an agent/inbox delivery or handoff seed clears it; session-preserving relaunches preserve it. The launch's own machine prompt is generation-marked so the prompt report does not misclassify it as human input. This bit is separate from `AgentState`; the proposed root-level stalled watchdog and removal of this compatibility rule are deferred. |
+| `humanPaced` | `Bool` | Compatibility bit for the current client stall row: the card is the human's to pace, so per-card quiescence does not amber it. A human prompt sets it; an authored handoff seed clears it. Native inbox delivery does not alter it. The launch's own machine prompt is generation-marked so the prompt report does not misclassify it as human input. This bit is separate from `AgentState`; the proposed root-level stalled watchdog and removal of this compatibility rule are deferred. |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |
@@ -182,8 +181,8 @@ Other schema compat is unchanged: the legacy `worktree: String` field is decode-
 store always writes `cwd` + `origin`), and optional fields decode with sane defaults, so a board created
 before borrowed/scratch cards existed still opens.
 
-> **Note on `pendingSeed`.** Wired in PR4b: `resume(id, seed:)` (driving handoff's `resumeInCard` and
-> seeded-wake) persists the folded seed as `pendingSeed` in the **same** funnel patch as
+> **Note on `pendingSeed`.** Wired in PR4b: `resume(id, seed:)` (driving handoff's `resumeInCard`)
+> persists the authored context as `pendingSeed` in the **same** funnel patch as
 > `transition(.relaunching)`; `restart` clears it (a blank restart carries no seed). It is consumed and
 > cleared on the `.live` landing at each lifecycle-owned landing site: the `RelaunchStepper`, the
 > `LaunchStepper` (a reopened resumable card), and the reconciler's same-epoch *adopt* path. Each clears it in the same
@@ -200,45 +199,26 @@ before borrowed/scratch cards existed still opens.
 > the launch argv from `pendingModel ?? model.id`, so the intent — not the display field — is what actually
 > launches.
 
-## The inbox store (F3)
+## The inbox store
 
 Alongside `tasks.json`, the daemon keeps a second durable store — the **`Inbox`** (`Inbox.swift`), a
 sibling to `TaskStore` built on the same actor-over-JSON pattern (lazy load, atomic write, malformed →
-`.bak` + `[]`). It holds a flat, append-ordered array of `InboxMessage`
- (`{id, cardId, text, source?, dedupKey?, createdAt, lease?}`) at
- `~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO-per-card** delivery via a stable
- filter on `cardId`. New messages carry **Human** for direct service sends and external CLI/MCP sends without
- a card context, **Card** for a durable title/id snapshot from a card bridge (displayed as title + short id),
- or **Orchestra** for daemon-generated/internal nudges (the direct `Inbox.enqueue` default); legacy records
- without `source` render as Unknown (queued before source tracking). Source is human-facing metadata, not an
- authorization credential: the inbox API and editors expose it, but no permission or model-facing trust
- decision may depend on it. The Stop-hook and resume-seed delivery text uses the shared
- operator-relayed header rather than rendering `From <source>` to the receiving model. `enqueue` appends, `peek` reads without
- removing, and `claim(cardId, route:, epoch:, budget:, render:, now:)` selects + fits + leases a FIFO batch
- in one call — the Stop-hook delivery's *whole-messages-to-fit* path (deliver the messages that fit this
- turn's 10 000-char budget, defer the overflow to the next turn-end; see
- [Design decisions](09-design-decisions.md#the-durable-inbox-is-the-delivery-ssot-claim-then-confirm)). A
- claimed batch leaves the inbox only through `confirm(token:)` on a receipt proof — it is *leased*, not
- removed, so a crash or a lost reply re-delivers rather than losing silently. Messages persist until
- confirmed, so they survive a daemon restart. Three editor mutators — `remove(id)`, `update(id, text:)`
- (text only; id/cardId/source/dedupKey/createdAt preserved), and
-`reorder(cardId, orderedIds:)` (a permutation of that card's ids, refilling only its own array slots so
-other cards' interleaving is untouched) — back the app's [inbox editor](07-app-ui.md#the-inspector) and
-the [`inbox*` commands](05-command-reference.md#registry-commands).
+`.bak` + `[]`). It holds an append-ordered array of `InboxMessage`
+(`{id, cardId, text, source?, dedupKey?, createdAt, state}`) at
+`~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO per card**.
 
-This is the durable merge-back channel for **F3** (see [Design decisions](09-design-decisions.md#one-seed-four-topologies)):
-`send` enqueues here instead of typing into tmux (then [wakes the card](09-design-decisions.md#shipped-feature-history)
-so an idle agent drains promptly rather than at its next unprompted turn; `send` rejects a message over
-`StopDrain.maxMessageChars` at enqueue so any accepted one delivers whole — the inbox is a nudge channel, not
-a document transfer), and the agent's Stop hook claims it into the agent at its next turn-end
-(`OrchestraService.payloadForStop` — epoch-fenced claim-then-confirm, dispatched by the
-[`hook` RPC](05-command-reference.md#server-only-built-in-methods)
-on the `stop` event — see the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)).
+`send` succeeds when it durably admits a `queued` row; it does not claim that a provider or model has seen
+the text. A sender attached to the card's live provider handle later makes the row `handedOff` only when the
+native harness accepts its request. That state is advisory history, never proof that a model read or acted on
+the message, and the store retains at most 100 handed-off rows per card. `inbox` returns unresolved rows by
+default; `includeHistory` also returns that bounded history.
 
-This shipped claim/lease/receipt route is the current **transitional** inbox transport. Its claim,
-confirmation, and wake outcomes are state-silent: they do not emit `AgentSignal`, alter `AgentState`, or
-clear `pendingQuestion`. Native best-effort provider delivery and per-message handed-off or failed UI are
-later inbox work, not properties of this store today.
+The only stored states are `queued`, `failed`, and `handedOff`. A failed FIFO head deliberately pauses later
+rows until a human retries, edits, or removes it. Editing an unresolved row makes it queued again;
+`handedOff` history is immutable except for removal; and reordering operates only on unresolved rows after
+failed rows are resolved. Source is human-facing provenance — Human, Card, Orchestra, or legacy Unknown —
+not an authorization or delivery guarantee. Neither this store nor its sender owns runtime status,
+`pendingQuestion`, attention, session wakeups, or `wait`.
 
 ## The trust ledger (T1)
 
@@ -358,5 +338,5 @@ Claude's current-session hook observations and Codex app-server messages go thro
 `AgentSignal`s; `AgentStateReducer` is the only generic fold, and `transition()` atomically persists its
 output as the new `Phase.live(AgentState)`. Every signal carries the launch `sessionEpoch`; Codex sources
 are additionally bound to the provider thread id, and Claude hooks are checked against the current session
-and prompt identity. The Codex rollout tail and its SessionStart/Stop hooks remain metadata/orientation or
-transitional inbox paths only. There is no status field in `StatusReport` and no second Core status reducer.
+and top-level turn. The Codex rollout tail and hooks remain metadata/orientation only. There is no status
+field in `StatusReport` and no second Core status reducer.

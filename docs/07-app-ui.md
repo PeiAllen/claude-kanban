@@ -327,20 +327,19 @@ plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + desi
 since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a
 large card doesn't flood Obsidian. It is also bound to the bare
 [`o` keyboard shortcut](#keyboard-navigation) on the selected card. The per-card **Inbox** button
-(`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
-Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
-(see [chapter 9](09-design-decisions.md#shipped-feature-history)):
+(`tray.full`, hidden for a `dead` card) is the manual message surface; the earlier Send/Handoff/Fork buttons
+were removed in favor of it plus the natural-language → MCP delegation path:
 
-- **Inbox** — opens a popover editor over the card's durable [inbox](03-data-model.md#the-inbox-store-f3)
-  (F3). It lists the queued messages (header `Inbox — N queued`), and per row lets you **reorder** (up/down
-  chevrons → `inbox-reorder`), **edit** the text inline (tap → commit → `inbox-edit`), and **delete**
-  (→ `inbox-remove`), with an **append** field at the bottom (→ `send`). Every op round-trips to the daemon
-  over the [`inbox*` commands](05-command-reference.md#registry-commands) and reloads; the list loads fresh
-  each time the popover opens. Desktop and iOS show immutable `From …` provenance above every editable
-  body — Human, the sending Card title plus short id, Orchestra, or the legacy Unknown fallback — including
-  while the desktop editor is open; editing changes the body, not its source. This is human-facing metadata;
-  the model delivery string uses its own operator-relayed header. The shipped Stop-drain claim/lease/receipt
-  path is transitional and state-silent: delivery never changes `AgentState` or clears `pendingQuestion`.
+- **Inbox** — opens an advisory editor over the card's durable [inbox](03-data-model.md#the-inbox-store).
+  It lists **Unresolved** rows (`queued` or `failed`) and bounded **Handed off** history. Appending calls
+  `send`, whose success means the row was queued locally. A `handedOff` row means the native harness
+  accepted its request, never that the model read or acted on it. Queued rows can be edited, removed, and
+  reordered; a failed head must be retried, edited, or removed before reordering. Failed rows expose
+  **Retry**; handed-off history is immutable except for **Remove**. Every operation uses the
+  [`inbox*` commands](05-command-reference.md#registry-commands) and reloads the projection. Desktop and
+  iOS show immutable `From …` provenance — Human, sending Card title plus short id, Orchestra, or legacy
+  Unknown — as human-facing metadata only. Inbox activity never changes `AgentState` or clears
+  `pendingQuestion`.
 
 **Handoff**, **Fork**, and board **Fan-out** are no longer buttons — those moves are driven by talking to
 the agent (which calls the `handoff` / `spawn` / `batch-spawn` MCP tools), where an exploratory fork now
@@ -605,7 +604,6 @@ General tab's Notifications section) and backed by `NotificationPrefs` + `AgentN
 |---|---|---|---|
 | 🙋 **Human action needed** | `Task.requiresHuman` changes `false → true` | **Always** — you are blocking it | Hero |
 | 💀 **Died** | the card's session died | **Always** — rare but important | Basso |
-| 📪 **Delivery stuck** | a delivery-stuck edge | **Background only** | Submarine |
 | 🚧 **Merge stalled** | a merge-request-stalled edge | **Background only** | Submarine |
 
 Each trigger carries a **scope dial** ({`off` · `background` · `always`}) and a per-trigger **system

@@ -45,7 +45,7 @@ The decisions that shape it:
   poll) carries the epoch it observed; a superseded epoch is dropped by the funnel's fence — a late signal
   is *provably* harmless rather than heuristically ignored. A pre-upgrade **nil-epoch** kill signal can't be
   fenced, so it must pass a fresh liveness probe before it may kill a card. Epochs also absorb the old
-  `recovering` set's grace-window role (its narrow atomic-claim role became the `relaunchClaimed` set).
+  `recovering` set's grace-window role; native inbox submission no longer needs its relaunch-claim role.
 - **Being-born readiness is a capability, not an identity branch (the D1 resolution).** How a `launching`
   **or** `relaunching` card is confirmed alive is one adapter axis — `AgentCapabilities.readinessConfirmation`
   ∈ `{sessionStartHook, rolloutMeta, relaunchLiveness}` — covering *both* being-born phases (generalizing
@@ -132,8 +132,7 @@ is Claude-specific by design — the mirror is inert for Codex simply because Co
 
 Splitting `titleProvisional` was the precondition for all of it. That one flag meant both "the title is a
 default" and "this card has never had its first genuine prompt", and only the second meaning is
-load-bearing: `deriveLaunchFlavor` reads it to blank-launch a card with no positional, and the wake ladder
-and delivery-stuck gates read it as "there is still a route to revive this card." Naming moved to
+load-bearing: `deriveLaunchFlavor` reads it to blank-launch a card with no positional. Naming moved to
 `titleSource`, the lifecycle flag was renamed to `awaitingFirstPrompt`, and both are now generation-fenced
 where they are mutated — a stale prompt hook from a superseded session could otherwise clear the flag on the
 incoming generation and strand the card `.resumeFailed`.
@@ -142,7 +141,7 @@ incoming generation and strand the card `.resumeFailed`.
 
 A card carries two one-liners because they answer different questions and have different lifetimes.
 `desc` is what the agent is doing **this second** — the report pipeline overwrites it on every snapshot,
-and `restart`/`/clear` blank it. `note` is what the card **is**: "Wave 2/4 — lease/claim delivery". It is
+and `restart`/`/clear` blank it. `note` is what the card **is**: "Wave 2/4 — native inbox delivery". It is
 written only by an explicit source (`spawn(note:)` / `set-note`), telemetry never touches it, and it
 survives restart, clear, and handoff.
 
@@ -173,16 +172,15 @@ non-persisted OR of its presence and the separate durable `pendingQuestion`. An 
 Needs You reason.
 
 Codex's launch-local app-server observer is the only producer of Codex turn state and provider-human
-need. Its rollout tail supplies metadata only, and its SessionStart/Stop hooks supply orientation or the
-transitional inbox route, never status. Claude accepts only session- and prompt-correlated hook evidence;
+need. Its rollout tail supplies metadata only, and its hooks supply orientation, never status. Claude accepts
+only session- and current-turn-correlated hook evidence;
 an exact OTLP interaction span is the missing-Stop fallback. A terminal event without required current
 identity fails closed to unavailable, while a positively stale terminal is ignored.
 
 `StatusReport` is metadata/lifecycle-only; it has no `run` or `turnCompleted` field. Decode-time
 compatibility preserves the live lifecycle while old status shapes and `activeRequests` become unavailable,
 then a clean daemon restart waits for fresh provider evidence instead of guessing from persisted telemetry.
-The shipped Stop-drain/lease/receipt inbox remains separate and state-silent: it does not create status or
-clear `pendingQuestion`. The full migration mapping is in
+Native inbox submission remains separate from status and never clears `pendingQuestion`. The full migration mapping is in
 [chapter 3](03-data-model.md#schema-migration--legacy-status-snapshots-become-live-but-unavailable).
 
 ### "Done" is not observable — success is agent-signalled, not inferred
@@ -232,16 +230,14 @@ line, and the card can surface it. The verb is set/replace with **no clear form*
 `needs-input` is the complement (the question that outlives the turn, and the only option for a backend
 with no such prompt), never a replacement.
 
-Retirement is keyed to **proof that the declaring turn is no longer current**, never to delivery intent.
-There are only two proofs: a positively identified **distinct next top-level turn** starts, or a completed
-session is replaced. The first rule applies even across `running → running`, so every prior turn detail and
-question retire before the new turn begins; a duplicate start for the same turn is a no-op. The second
-applies only once the prior session has completed. A same-session reconnect preserves the question.
+Retirement is keyed to **proof that the declaring turn is no longer current**, never to delivery intent: a
+positively identified **distinct next top-level turn** starts. The rule applies even across
+`running → running`, so every prior turn detail and question retire before the new turn begins; a duplicate
+start for the same turn is a no-op. A session replacement by itself preserves the declaration.
 
 Nothing else clears it: provider permission/input resolution, opening or dismissing the harness, sending a
-message, old-turn completion, and the current Stop-drain claim or receipt all leave `pendingQuestion`
-unchanged. This keeps the existing inbox transport state-silent until its later native-delivery replacement
-and prevents a message that was merely offered, or a stale event, from erasing a declaration.
+message, old-turn completion, and native inbox submission all leave `pendingQuestion` unchanged. This
+prevents a message that was merely offered, or a stale event, from erasing a declaration.
 
 Turn starts arrive on serial current-session sources: Claude's correlated hook path or the Codex app-server
 observer. Both are fenced by card epoch and provider session identity before the reducer clears the
@@ -658,6 +654,30 @@ The mechanisms that make the wholesale drop safe:
 - **`diffStatDebounce` is cancelled at teardown** like its twins (previously its only cleanup was
   its own self-clear, so an in-flight diffstat survived archive and recomputed against a dead card).
 
+### Native inbox: provider acceptance, not model delivery
+
+The inbox is a local advisory projection with one modest success boundary: `send` succeeds when Orchestra
+durably queues a row, and `handedOff` means the native harness accepted a later send request. Neither fact
+proves that a model read, understood, or acted on the message. The stored row is `queued`, `failed`, or
+`handedOff`; a failed FIFO head pauses later rows until retry, edit, or removal, and handed-off rows are
+bounded immutable history except for removal.
+
+Each live session owns an ephemeral native sender handle in `CardRuntime`. Claude's endpoint/token is hook
+metadata, and Claude Stop is status-only. Codex's app-server observer is its status authority; a distinct
+peer sends `turn/start`. Senders are bounded best effort and may reconnect briefly, but they do not wait for
+a displayed running/waiting state, manufacture runtime status, clear `pendingQuestion`, wake/relaunch a
+session, or participate in `wait`. Handoff remains authored session context rather than an inbox carrier.
+
+The separate `wait` primitive remains a subscription to a lifecycle conclusion. Deferred work is explicit:
+provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog, and possible
+deprecations of `wait` and `needs-input`.
+
+## Superseded pre-native delivery protocol — historical only
+
+The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and
+decisions remain intelligible. It is historical only; the current inbox contract is the native provider
+acceptance contract above.
+
 ### One seed, four topologies
 
 Handoff, fork, fan-out, and (Claude) subagents are **one primitive** — a fresh session seeded with
@@ -682,7 +702,7 @@ the durable record, so successive handoffs don't degrade into a telephone game. 
 substrate** these topologies compose from is three functions — **F1** resume-in-card,
 **F2** wake an idle card, **F3** the durable per-card **inbox** (merge-back drains at the next turn-end).
 **F3 has
-now landed** (PR C1, below): `send` routes through a durable [inbox store](03-data-model.md#the-inbox-store-f3),
+now landed** (PR C1, below): `send` routes through a durable [inbox store](03-data-model.md#the-inbox-store),
 and the Claude Stop hook drains it into the agent at its turn-end. `send`-to-tmux is retired exactly as the
 maxim demanded — a queued conclusion no longer throws if the session died, and coalesces with other returns
 until the next turn. **F2 wake + the conclusion-watch have now landed too** (PR C2, below): the
@@ -1351,7 +1371,7 @@ A fourth landed PR is **C1 — the durable inbox + F3 Stop-drain**.
 It builds the first of the design's three live-delivery
 functions (see [One seed, four topologies](#one-seed-four-topologies)): a durable per-card **`Inbox`**
 store (sibling to `TaskStore`, actor-over-JSON, FIFO-per-card, restart-durable — see
-[the inbox store](03-data-model.md#the-inbox-store-f3)), with `send` **rerouted through it** instead of
+[the inbox store](03-data-model.md#the-inbox-store)), with `send` **rerouted through it** instead of
 typing into tmux, and a `StopDrain` helper that composes the pending messages into a 10 000-char-bounded
 payload. The delivery rides the Claude Stop hook: on the `stop` event the daemon's `handleHook` drains the inbox
 and returns a `HookResponse.continuation`, which the edge encodes as a `{"decision":"block","reason":…}`
@@ -1720,7 +1740,7 @@ the delegation moves and the board chrome should stay minimal. Three moves:
   **untouched** — `handoff`, `spawn`, and `batch-spawn` still work over MCP/CLI — so *reset the context*
   (handoff) and *explore a slice, then get data back* (fork) are served by just talking to the agent. The
   per-card header now shows only **Inbox** + **Archive** (plus View-changes / close).
-- **Send → a durable [inbox](03-data-model.md#the-inbox-store-f3) editor.** The one-shot Send composer
+- **Send → a durable [inbox](03-data-model.md#the-inbox-store) editor.** The one-shot Send composer
   becomes an **Inbox** popover that manages the whole queue: list, **reorder** (up/down chevrons), inline
   **edit**, **delete**, and **append**. The `Inbox` actor gains `remove`/`update`/`reorder`, exposed as
   four registry commands — [`inbox` / `inbox-edit` / `inbox-remove` / `inbox-reorder`](05-command-reference.md#registry-commands)
@@ -1951,7 +1971,7 @@ here as history rather than migrating a [roadmap](10-roadmap.md) row.
 
 Also landing after the forest is the **inbox delivery framing + batching + send cap** (commit `4264575`,
 branch `inbox-stop-hook`), on the C1 inbox. It hardens how
-the durable [inbox](03-data-model.md#the-inbox-store-f3) *reads to the model* on the live-delivery channels
+the durable [inbox](03-data-model.md#the-inbox-store) *reads to the model* on the live-delivery channels
 the two agents distrust. The problem was verified empirically: a queued `send` reaches Claude as the
 Stop-hook `reason` framed "Stop hook feedback:" and Codex as a resume seed — framing an agent can mistake for
 automated hook noise and refuse to act on, treating a real instruction as an untrusted injection. Four
@@ -1971,7 +1991,7 @@ decisions:
   message gets no index.
 - **Whole-messages-to-fit drain.** `StopDrain.fit` packs as many *whole* messages (FIFO) as fit the
   10 000-char budget and reports how many it consumed; `payloadForStop` then `claim`s exactly that many via
-  [`Inbox.claim`](03-data-model.md#the-inbox-store-f3), leasing the fitted prefix and leaving the overflow durable
+  [`Inbox.claim`](03-data-model.md#the-inbox-store), leasing the fitted prefix and leaving the overflow durable
   for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
 - **A shared send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) uses
