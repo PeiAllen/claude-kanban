@@ -75,15 +75,17 @@ actor AgentObservationCoordinator {
                 lastCompletedTurnID = nil
                 return .init(sessionEpoch: signal.sessionEpoch, kind: .observationLost)
             }
-            if activeTurnID == turnID {
-                activeTurnID = nil
+            if let activeTurnID {
+                guard activeTurnID == turnID else { return nil }
+                self.activeTurnID = nil
                 lastCompletedTurnID = turnID
                 return signal
             }
             if lastCompletedTurnID == turnID {
                 return signal
             }
-            return nil
+            lastCompletedTurnID = nil
+            return .init(sessionEpoch: signal.sessionEpoch, kind: .observationLost)
 
         case .humanNeedChanged(let humanNeed):
             guard let turnID = currentTurnID(signal) else { return nil }

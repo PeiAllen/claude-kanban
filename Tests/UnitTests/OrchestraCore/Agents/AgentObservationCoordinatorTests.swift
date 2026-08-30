@@ -70,8 +70,8 @@ struct AgentObservationCoordinatorTests {
         #expect(await state.turnStatus() == .unavailable)
     }
 
-    @Test("a terminal for no current turn cannot manufacture waiting observation")
-    func orphanTerminalIsIgnored() async {
+    @Test("a terminal for no provable current turn fails closed")
+    func orphanTerminalFailsClosed() async {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -79,6 +79,27 @@ struct AgentObservationCoordinatorTests {
         await coordinator.submit(
             scope: scope,
             signals: [.init(sessionEpoch: epoch, turnID: "orphan-prompt", kind: .turnCompleted())]
+        ) { await state.apply($0, epoch: epoch) }
+
+        #expect(await state.turnStatus() == .unavailable)
+    }
+
+    @Test("an identified terminal after an uncorrelated running snapshot fails closed")
+    func terminalAfterUncorrelatedRunningSnapshotLosesObservation() async {
+        let coordinator = AgentObservationCoordinator()
+        let state = AgentStateBox()
+        let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
+
+        await coordinator.submit(
+            scope: scope,
+            signals: [.init(
+                sessionEpoch: epoch,
+                kind: .turnReconciled(.running, humanNeed: nil)
+            )]
+        ) { await state.apply($0, epoch: epoch) }
+        await coordinator.submit(
+            scope: scope,
+            signals: [.init(sessionEpoch: epoch, turnID: "unproven-turn", kind: .turnCompleted())]
         ) { await state.apply($0, epoch: epoch) }
 
         #expect(await state.turnStatus() == .unavailable)
