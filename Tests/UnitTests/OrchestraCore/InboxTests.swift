@@ -49,6 +49,29 @@ struct InboxTests {
         #expect(await inbox.peek(card).map(\.state) == [.queued, .queued])
     }
 
+    @Test("a failed row cannot be reordered behind later queued work")
+    func failedHeadCannotBeMovedBehindQueuedWork() async throws {
+        let path = Self.temporaryPath(); defer { Self.remove(path) }
+        let card = UUID()
+        let inbox = Inbox(path: path)
+        try await inbox.enqueue(card, "failed first")
+        try await inbox.enqueue(card, "queued later")
+
+        let failed = try #require(await inbox.nextDeliverable(card))
+        #expect(try await inbox.markFailed(
+            cardId: card, messageId: failed.id, expectedText: failed.text
+        ))
+        let queued = try #require(await inbox.peek(card).last)
+
+        await #expect(throws: OrchestraError.invalidParams(
+            "failed inbox messages must be retried, edited, or removed before reordering"
+        )) {
+            try await inbox.reorder(card, orderedIds: [queued.id, failed.id])
+        }
+        #expect(await inbox.peek(card).map(\.text) == ["failed first", "queued later"])
+        #expect(await inbox.peek(card).map(\.state) == [.failed, .queued])
+    }
+
     @Test("owner-scoped edits, removals, and reorders cannot affect another card")
     func ownerScopedMutations() async throws {
         let path = Self.temporaryPath(); defer { Self.remove(path) }

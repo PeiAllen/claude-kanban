@@ -144,7 +144,7 @@ extension OrchestraService {
         // AgentState is part of `phase`, so leaving live discards the snapshot in the same transition.
         await reconcileAgentObservation(updated)
         reconcileAgentMessageHandle(updated)
-        if to.kind == .live { armNativeInbox(updated.id) }
+        if from.kind != .live, to.kind == .live { armNativeInbox(updated.id) }
 
         // A card ENTERING `.live` may be the OWNER a pending merge-request has been waiting for: `spawn`
         // creates the card and `reopen` un-archives it, and `derivedCard` counts either the instant it

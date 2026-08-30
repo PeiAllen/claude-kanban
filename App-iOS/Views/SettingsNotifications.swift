@@ -108,7 +108,6 @@ struct NotificationsSettingsSection: View {
         switch t {
         case .humanRequired: return "🙋"
         case .died:          return "💀"
-        case .deliveryStuck: return "📪"
         case .mergeStalled:  return "🚧"
         }
     }
@@ -116,7 +115,6 @@ struct NotificationsSettingsSection: View {
         switch t {
         case .humanRequired: return "Human action needed"
         case .died:          return "Card died"
-        case .deliveryStuck: return "Delivery stuck"
         case .mergeStalled:  return "Merge stalled"
         }
     }

@@ -117,6 +117,20 @@ struct CodexMessageSenderTests {
         #expect(peer.didClose)
     }
 
+    @Test("a matching response already received at the deadline remains provider acceptance")
+    func matchingResponseWinsAfterReceive() throws {
+        let peer = LateMatchingResponseCodexPeer()
+        let client = CodexAppServerClient(peer: peer)
+
+        let result = try client.call(
+            "turn/start",
+            params: .object([:]),
+            deadline: .now() + .milliseconds(100)
+        )
+
+        #expect(result == .object(["turn": .object(["id": .string("turn-1")])]))
+    }
+
     private static func response(id: Int, result: JSONValue) -> JSONValue {
         .object(["jsonrpc": .string("2.0"), "id": .int(id), "result": result])
     }
@@ -217,6 +231,19 @@ private final class NotificationFloodCodexPeer: RecordingCodexPeer, @unchecked S
     }
 
     override func shutdown() { floodLock.withLock { stopped = true } }
+}
+
+private final class LateMatchingResponseCodexPeer: RecordingCodexPeer, @unchecked Sendable {
+    init() { super.init(incoming: []) }
+
+    override func receive() throws -> JSONValue {
+        Thread.sleep(forTimeInterval: 0.15)
+        return .object([
+            "jsonrpc": .string("2.0"),
+            "id": .int(1),
+            "result": .object(["turn": .object(["id": .string("turn-1")])]),
+        ])
+    }
 }
 
 private final class CodexPeerFactory: @unchecked Sendable {

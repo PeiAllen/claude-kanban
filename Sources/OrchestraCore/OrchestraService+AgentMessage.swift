@@ -103,7 +103,6 @@ extension OrchestraService {
         if let current = runtime[card.id]?.agentMessageHandle,
            current.identity == expected, current.endpoint == endpoint {
             runtime[card.id]?.pendingAgentMessageEndpoint = nil
-            armNativeInbox(card)
             return
         }
 

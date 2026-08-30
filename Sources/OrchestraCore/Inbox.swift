@@ -168,6 +168,11 @@ public actor Inbox {
             $0.element.cardId == cardId && $0.element.state != .handedOff
         }
         let current = slots.map(\.element)
+        guard !current.contains(where: { $0.state == .failed }) else {
+            throw OrchestraError.invalidParams(
+                "failed inbox messages must be retried, edited, or removed before reordering"
+            )
+        }
         guard orderedIds.count == current.count, Set(orderedIds) == Set(current.map(\.id)) else {
             throw OrchestraError.invalidParams("orderedIds must be a permutation of the card's unresolved message ids")
         }

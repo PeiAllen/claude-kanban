@@ -296,6 +296,7 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
 
     func receive() throws -> JSONValue {
         while true {
+            _ = try currentIOTimeout()
             let frame = try nextFrame()
             switch frame.opcode {
             case .ping:

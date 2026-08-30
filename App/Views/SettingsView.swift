@@ -100,9 +100,6 @@ struct SettingsView: View {
                     notifyRow(.died, "Card died",
                               "Alert when an agent session crashes or exits and needs recovery.")
                     rowDivider
-                    notifyRow(.deliveryStuck, "Delivery stuck",
-                              "Alert when an agent can't be reached and a queued message is stuck undelivered.")
-                    rowDivider
                     notifyRow(.mergeStalled, "Merge stalled",
                               "Alert when a merge-request goes unanswered and the agent gives up asking.")
                 }

@@ -59,7 +59,6 @@ final class CodexAppServerClient: @unchecked Sendable {
         while true {
             try prepare(deadline)
             let message = try peer.receive()
-            try requireRemaining(deadline)
             if message["id"]?.intValue == id, message["method"] == nil {
                 if let error = message["error"] {
                     throw CodexAppServerError.rpcError(
@@ -72,6 +71,7 @@ final class CodexAppServerClient: @unchecked Sendable {
                 }
                 return result
             }
+            try requireRemaining(deadline)
             handle(message, onNotification: onNotification)
         }
     }

@@ -317,6 +317,102 @@ struct CodexAppServerTransportTests {
         #expect(result.sawEOF)
     }
 
+    @Test("continuous WebSocket control frames cannot outlive a real sender attempt deadline")
+    func controlFrameFloodStopsAtAbsoluteDeadline() async throws {
+        let controlFrameCount = 4_000
+        let path = "/tmp/orch-codex-control-flood-\(UUID().uuidString.prefix(8)).sock"
+        let listener = try UDS.listen(path: path)
+        defer {
+            closeFD(listener)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        let result = CodexTransportServerResult()
+        let finished = DispatchSemaphore(value: 0)
+        let server = Thread {
+            defer { finished.signal() }
+            let client = UDS.accept(listener)
+            guard client >= 0 else {
+                result.fail("accept failed")
+                return
+            }
+            let floodWriterDone = DispatchSemaphore(value: 0)
+            var floodWriterStarted = false
+            defer {
+                closeFD(client)
+                if floodWriterStarted {
+                    _ = floodWriterDone.wait(timeout: .now() + 1)
+                }
+            }
+
+            do {
+                var pending = Data()
+                try Self.upgrade(client, pending: &pending)
+                let initialize = try Self.readJSON(client, pending: &pending)
+                try Self.sendJSON(client, .object([
+                    "jsonrpc": .string("2.0"),
+                    "id": initialize["id"] ?? .int(-1),
+                    "result": .object([:]),
+                ]))
+                _ = try Self.readJSON(client, pending: &pending) // initialized
+                let resume = try Self.readJSON(client, pending: &pending)
+                try Self.sendJSON(client, .object([
+                    "jsonrpc": .string("2.0"),
+                    "id": resume["id"] ?? .int(-1),
+                    "result": .object(["thread": .object(["id": .string("thread-1")])]),
+                ]))
+                _ = try Self.readJSON(client, pending: &pending) // turn/start
+
+                // Deliver one buffered batch. The server drains each pong, so an old peer cannot escape
+                // its read deadline merely because its writes block.
+                let frame = try WebSocketFrameCodec.encode(
+                    .init(fin: true, opcode: .ping, payload: Data("pulse".utf8)),
+                    maskKey: nil
+                )
+                let flood: Data = {
+                    var data = Data()
+                    for _ in 0..<controlFrameCount { data.append(frame) }
+                    return data
+                }()
+                let floodWriter = Thread {
+                    defer { floodWriterDone.signal() }
+                    if !UDS.writeAll(client, flood) { result.setEOF() }
+                }
+                floodWriterStarted = true
+                floodWriter.start()
+                while true {
+                    let response = try Self.readFrame(client, pending: &pending)
+                    guard response.opcode == .pong else {
+                        result.fail("expected pong while draining control-frame flood")
+                        return
+                    }
+                    result.recordPong()
+                }
+            } catch CodexTransportServerError.connectionClosed {
+                result.setEOF()
+            } catch {
+                result.fail(String(describing: error))
+            }
+        }
+        server.stackSize = 1 << 20
+        server.start()
+
+        let sender = try #require(CodexAdapter().makeMessageSender(for: .codexAppServer(
+            socketPath: path,
+            threadId: "thread-1"
+        )))
+        await #expect(throws: (any Error).self) {
+            try await sender.send("deadline", timeout: 0.1)
+        }
+        #expect(await Self.wait(finished) == .success)
+        sender.shutdown()
+
+        #expect(result.error == nil)
+        #expect(result.sawEOF)
+        #expect(result.pongCount > 0)
+        #expect(result.pongCount < controlFrameCount)
+    }
+
     @Test("WebSocket peer holds descriptor ownership while shutdown interrupts the live connection")
     func shutdownHoldsDescriptorOwnership() throws {
         let path = "/tmp/orch-codex-stop-\(UUID().uuidString.prefix(8)).sock"
@@ -475,18 +571,21 @@ private final class CodexTransportServerResult: @unchecked Sendable {
     private let lock = NSLock()
     private var storedMessages: [JSONValue] = []
     private var storedPong: WebSocketFrame?
+    private var storedPongCount = 0
     private var storedClose: WebSocketFrame?
     private var storedSawEOF = false
     private var storedError: String?
 
     var messages: [JSONValue] { lock.withLock { storedMessages } }
     var pong: WebSocketFrame? { lock.withLock { storedPong } }
+    var pongCount: Int { lock.withLock { storedPongCount } }
     var close: WebSocketFrame? { lock.withLock { storedClose } }
     var sawEOF: Bool { lock.withLock { storedSawEOF } }
     var error: String? { lock.withLock { storedError } }
 
     func append(_ message: JSONValue) { lock.withLock { storedMessages.append(message) } }
     func setPong(_ frame: WebSocketFrame) { lock.withLock { storedPong = frame } }
+    func recordPong() { lock.withLock { storedPongCount += 1 } }
     func setClose(_ frame: WebSocketFrame) { lock.withLock { storedClose = frame } }
     func setEOF() { lock.withLock { storedSawEOF = true } }
     func fail(_ message: String) { lock.withLock { storedError = message } }

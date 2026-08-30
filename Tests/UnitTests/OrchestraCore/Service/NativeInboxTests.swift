@@ -156,6 +156,32 @@ struct NativeInboxTests {
         #expect(try await env.svc.inboxPeek(card.id).isEmpty)
     }
 
+    @Test("a live status refresh cannot resend queued work after provider acceptance was not persisted")
+    func liveRefreshDoesNotResendAfterAcceptedPersistenceFailure() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-persist-failure")
+        )
+        let sender = RecordingNativeInboxSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
+
+        // A failed `markHandedOff` rolls its mutation back, leaving this exact queued/no-attempt state
+        // after the provider has already accepted the text. Only an explicit user action or a genuine
+        // sender/lifecycle edge may replay it; a live status refresh must not.
+        try await env.svc.inbox.enqueue(card.id, "accepted before history write")
+        #expect(try await env.svc.inboxPeek(card.id).map(\.state) == [.queued])
+        #expect(await env.svc.runtime[card.id]?.tasks[.nativeInbox] == nil)
+
+        await env.svc.stageMatchingNativeInboxEndpointForTest(card: stored)
+        #expect(await env.svc.transition(card.id, to: .live(.waiting)) == .applied)
+        await yieldBriefly()
+
+        #expect(sender.messages.isEmpty)
+        #expect(await env.svc.runtime[card.id]?.tasks[.nativeInbox] == nil)
+    }
+
     @Test("endpoint replacement cancels, closes, replaces, and rearms the native sender")
     func replacementOwnsTheQueuedMessage() async throws {
         let adapter = ClaudeCodeAdapter(binOverride: "fake-claude")
@@ -292,6 +318,14 @@ private extension OrchestraService {
         previous?.sender.shutdown()
         installNativeInboxSenderForTest(card: card, sender: sender)
         armNativeInbox(card)
+    }
+
+    func stageMatchingNativeInboxEndpointForTest(card: Task) {
+        guard let handle = runtime[card.id]?.agentMessageHandle else { return }
+        runtime[card.id]?.pendingAgentMessageEndpoint = .init(
+            identity: handle.identity,
+            endpoint: handle.endpoint
+        )
     }
 }
 
