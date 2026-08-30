@@ -370,6 +370,7 @@ extension OrchestraService {
                     } else {
                         await invalidateAgentObservation(t)
                     }
+                    reconcileAgentMessageHandle(t)
                     continue                                // adopt — leave `.live`
                 }
                 _ = await transition(t.id, to: .relaunching,

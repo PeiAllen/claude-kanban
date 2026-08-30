@@ -22,93 +22,31 @@ final class CodexAppServerObservationSource: AgentObservationSource, @unchecked 
 /// choreography but emits only raw provider messages; `CodexAdapter.agentSignals` remains the sole place
 /// that interprets them as turn state.
 final class CodexAppServerObserver: @unchecked Sendable {
-    private let peer: any CodexAppServerPeer
-    private var nextID = 1
+    private let client: CodexAppServerClient
 
     convenience init(socketPath: String) {
         self.init(peer: WebSocketCodexAppServerPeer(socketPath: socketPath))
     }
 
-    init(peer: any CodexAppServerPeer) { self.peer = peer }
+    init(peer: any CodexAppServerPeer) { self.client = CodexAppServerClient(peer: peer) }
 
-    func run(threadId: String, onObservation: (RawTelemetry) -> Void) throws {
-        defer { peer.close() }
-        try peer.open()
-
-        _ = try call(
-            "initialize",
-            params: .object([
-                "clientInfo": .object([
-                    "name": .string("orchestra-status"),
-                    "title": .string("Orchestra status observer"),
-                    "version": .string("1"),
-                ]),
-            ]),
-            onObservation: onObservation
-        )
-        try notify("initialized", params: .object([:]))
-        let resumed = try call(
-            "thread/resume",
-            params: .object(["threadId": .string(threadId)]),
-            onObservation: onObservation
+    func run(threadId: String, onObservation: @escaping (RawTelemetry) -> Void) throws {
+        defer { client.close() }
+        let notify: CodexAppServerClient.NotificationHandler = { method, params in
+            onObservation(.rpcNotification(method: method, params: params))
+        }
+        let resumed = try client.openAndResume(
+            threadId: threadId,
+            clientName: "orchestra-status",
+            clientTitle: "Orchestra status observer",
+            onNotification: notify
         )
         onObservation(.rpcResponse(method: "thread/resume", result: resumed))
 
         while true {
-            try handle(peer.receive(), onObservation: onObservation)
+            try client.receive(onNotification: notify)
         }
     }
 
-    func shutdown() { peer.shutdown() }
-
-    private func call(
-        _ method: String,
-        params: JSONValue,
-        onObservation: (RawTelemetry) -> Void
-    ) throws -> JSONValue {
-        let id = nextID
-        nextID += 1
-        try peer.send(.object([
-            "jsonrpc": .string("2.0"),
-            "id": .int(id),
-            "method": .string(method),
-            "params": params,
-        ]))
-
-        while true {
-            let message = try peer.receive()
-            if message["id"]?.intValue == id, message["method"] == nil {
-                if let error = message["error"] {
-                    throw CodexAppServerError.rpcError(
-                        code: error["code"]?.intValue ?? -1,
-                        message: error["message"]?.stringValue ?? "unknown app-server error"
-                    )
-                }
-                guard let result = message["result"] else {
-                    throw CodexAppServerError.protocolViolation("JSON-RPC response missing result")
-                }
-                return result
-            }
-            try handle(message, onObservation: onObservation)
-        }
-    }
-
-    private func notify(_ method: String, params: JSONValue) throws {
-        try peer.send(.object([
-            "jsonrpc": .string("2.0"),
-            "method": .string(method),
-            "params": params,
-        ]))
-    }
-
-    private func handle(_ message: JSONValue, onObservation: (RawTelemetry) -> Void) throws {
-        guard let method = message["method"]?.stringValue else { return }
-        if message["id"] != nil {
-            // App-server fans one approval/input request out to every connection subscribed to the
-            // thread and accepts the first response. This connection is deliberately passive: even an
-            // error response would resolve the shared request before the co-present TUI can answer it.
-            return
-        }
-        onObservation(.rpcNotification(method: method, params: message["params"] ?? .object([:])))
-    }
+    func shutdown() { client.shutdown() }
 }

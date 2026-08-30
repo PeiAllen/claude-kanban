@@ -236,24 +236,42 @@ protocol CodexAppServerPeer: AnyObject, Sendable {
     func close()
 }
 
-/// The narrow WebSocket-over-UDS peer required by the observer: masked JSON text out, JSON text in,
-/// ping/pong, close, and fragmented text assembly. It intentionally exposes no provider RPC methods.
+/// The narrow WebSocket-over-UDS peer required by Codex app-server clients: masked JSON text out, JSON
+/// text in, ping/pong, close, and fragmented text assembly. It intentionally exposes no provider RPC methods.
 final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable {
     private let socketPath: String
-    private let stateLock = NSLock()
+    private let stateLock: NSLock
+    private let shutdownDescriptor: @Sendable (Int32) -> Void
     private let writeLock = NSLock()
+    private var isShutDown = false
     private var fd: Int32 = -1
     private var pending = Data()
     private var fragment = Data()
     private var fragmentOpcode: WebSocketOpcode?
 
-    init(socketPath: String) { self.socketPath = socketPath }
+    init(
+        socketPath: String,
+        stateLock: NSLock = NSLock(),
+        shutdownDescriptor: @escaping @Sendable (Int32) -> Void = shutdownFD
+    ) {
+        self.socketPath = socketPath
+        self.stateLock = stateLock
+        self.shutdownDescriptor = shutdownDescriptor
+    }
 
     func open() throws {
         let connected: Int32
         do { connected = try UDS.connect(path: socketPath) }
         catch { throw CodexAppServerError.connectionFailed(String(describing: error)) }
-        stateLock.withLock { fd = connected }
+        let accepted = stateLock.withLock {
+            guard !isShutDown else { return false }
+            fd = connected
+            return true
+        }
+        guard accepted else {
+            closeFD(connected)
+            throw CodexAppServerError.connectionClosed
+        }
         do { try upgrade() }
         catch { close(); throw error }
     }
@@ -301,8 +319,10 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
     }
 
     func shutdown() {
-        let current = stateLock.withLock { fd }
-        if current >= 0 { shutdownFD(current) }
+        stateLock.withLock {
+            isShutDown = true
+            if fd >= 0 { shutdownDescriptor(fd) }
+        }
     }
 
     func close() {

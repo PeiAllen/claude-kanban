@@ -76,13 +76,25 @@ extension OrchestraService {
         if runtime[card.id]?.agentMessageHandle?.identity != expected {
             stopAgentMessageHandle(card.id)
         }
-        guard let pending = runtime[card.id]?.pendingAgentMessageEndpoint else { return }
-        guard pending.identity == expected else {
-            runtime[card.id]?.pendingAgentMessageEndpoint = nil
-            return
+        guard let adapter = try? registry.get(expected.providerId) else { return }
+        let endpoint: AgentMessageEndpoint
+        if let pending = runtime[card.id]?.pendingAgentMessageEndpoint {
+            guard pending.identity == expected else {
+                runtime[card.id]?.pendingAgentMessageEndpoint = nil
+                return
+            }
+            endpoint = pending.endpoint
+        } else {
+            guard let observationEndpoint = preparedObservationEndpoint(for: card, adapter: adapter),
+                  let derived = adapter.messageEndpoint(
+                    observationEndpoint: observationEndpoint,
+                    harnessSessionId: harnessSessionId
+                  )
+            else { return }
+            endpoint = derived
         }
         if let current = runtime[card.id]?.agentMessageHandle,
-           current.identity == expected, current.endpoint == pending.endpoint {
+           current.identity == expected, current.endpoint == endpoint {
             runtime[card.id]?.pendingAgentMessageEndpoint = nil
             return
         }
@@ -90,8 +102,7 @@ extension OrchestraService {
         let previous = runtime[card.id]?.agentMessageHandle
         runtime[card.id]?.agentMessageHandle = nil
         previous?.sender.shutdown()
-        guard let adapter = try? registry.get(expected.providerId),
-              let sender = adapter.makeMessageSender(for: pending.endpoint)
+        guard let sender = adapter.makeMessageSender(for: endpoint)
         else {
             runtime[card.id]?.pendingAgentMessageEndpoint = nil
             return
@@ -99,7 +110,7 @@ extension OrchestraService {
 
         runtime[card.id]?.agentMessageHandle = CardRuntime.AgentMessageHandle(
             identity: expected,
-            endpoint: pending.endpoint,
+            endpoint: endpoint,
             sender: sender
         )
         runtime[card.id]?.pendingAgentMessageEndpoint = nil

@@ -48,6 +48,25 @@ public struct CodexAdapter: Adapter {
         return CodexAppServerObservationSource(socketPath: socketPath, threadId: harnessSessionId)
     }
 
+    public func messageEndpoint(
+        observationEndpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> AgentMessageEndpoint? {
+        guard let socketPath = observationEndpoint.unixSocketPath,
+              !socketPath.isEmpty,
+              !harnessSessionId.isEmpty
+        else { return nil }
+        return .codexAppServer(socketPath: socketPath, threadId: harnessSessionId)
+    }
+
+    public func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? {
+        guard case let .codexAppServer(socketPath, threadId) = endpoint,
+              !socketPath.isEmpty,
+              !threadId.isEmpty
+        else { return nil }
+        return CodexMessageSender(socketPath: socketPath, threadId: threadId)
+    }
+
     /// Codex's normal default state location, retained only for rollout discovery.
     /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }

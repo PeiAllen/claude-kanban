@@ -5,6 +5,7 @@ import Foundation
 /// Deliberately not `Codable`: credentials may cross the hook RPC, but must never enter durable state.
 public enum AgentMessageEndpoint: Sendable, Equatable {
     case claudeHookRPC(socketPath: String, token: String)
+    case codexAppServer(socketPath: String, threadId: String)
 }
 
 /// One hook-reported endpoint plus the provider session identity it belongs to. Also deliberately
@@ -162,6 +163,13 @@ public protocol Adapter: Sendable {
         endpoint: AgentObservationEndpoint,
         harnessSessionId: String
     ) -> (any AgentObservationSource)?
+    /// Derive a provider-native sender endpoint from the launch-local observation endpoint. This covers
+    /// transports such as Codex's app-server where the same ephemeral socket carries both observations and
+    /// turn submission; hook-provided credentials remain the caller's explicit endpoint instead.
+    func messageEndpoint(
+        observationEndpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> AgentMessageEndpoint?
     /// Build a sender for one ephemeral provider endpoint. Core owns the returned sender through the
     /// exact card/provider/session identity in `CardRuntime` and shuts it down on replacement/teardown.
     func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)?
@@ -205,6 +213,10 @@ public extension Adapter {
         endpoint: AgentObservationEndpoint,
         harnessSessionId: String
     ) -> (any AgentObservationSource)? { nil }
+    func messageEndpoint(
+        observationEndpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> AgentMessageEndpoint? { nil }
     func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? { nil }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
     func launchEnvironment(_ context: AdapterContext) -> [String: String] { env }

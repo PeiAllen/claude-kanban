@@ -65,6 +65,10 @@ public enum HookRPC {
                     "socketPath": .string(socketPath),
                     "token": .string(token),
                 ])
+            case .codexAppServer:
+                // Codex derives this launch-local socket from the runtime observation endpoint. It never
+                // rides a hook payload, so its path cannot become an alternate hook-controlled endpoint.
+                break
             }
         }
         return fields

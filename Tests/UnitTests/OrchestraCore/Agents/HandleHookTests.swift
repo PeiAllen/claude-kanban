@@ -525,6 +525,62 @@ import TestSupport
         #expect(await env.svc.runtime[card.id] == nil)
     }
 
+    @Test("a live adapter-derived endpoint installs an exact sender without a hook report")
+    func derivedMessageEndpointInstallsAtLive() async throws {
+        let senders = MessageSenderRecorder()
+        let adapter = HookSignalTestAdapter(
+            messageSenders: senders,
+            derivedMessageSocketPath: "/tmp/codex-derived.sock"
+        )
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "derived-message-endpoint", agentId: adapter.id)
+        )
+        let live = try #require(await env.svc.store.get(card.id))
+
+        #expect(senders.created.count == 1)
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle?.identity == .init(
+            providerId: adapter.id,
+            sessionEpoch: live.sessionEpoch,
+            harnessSessionId: "hook-session"
+        ))
+        #expect(await env.svc.runtime[card.id]?.agentMessageHandle?.endpoint == .codexAppServer(
+            socketPath: "/tmp/codex-derived.sock",
+            threadId: "hook-session"
+        ))
+    }
+
+    @Test("boot adoption rebuilds an adapter-derived sender for the surviving exact session")
+    func bootAdoptionRebuildsDerivedMessageEndpoint() async throws {
+        let senders = MessageSenderRecorder()
+        let adapter = HookSignalTestAdapter(
+            messageSenders: senders,
+            derivedMessageSocketPath: "/tmp/codex-boot.sock"
+        )
+        let registry = AgentRegistry(adapters: [adapter])
+        let env = TestEnv.make(registry: registry)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "derived-message-boot", agentId: adapter.id)
+        )
+        let persisted = try #require(await env.svc.store.get(card.id))
+        #expect(senders.created.count == 1)
+
+        let restarted = TestEnv.remake(base: env.base, registry: registry)
+        restarted.sessions.setStampedEpoch(card.id, persisted.sessionEpoch)
+        await restarted.svc.reconcilePhasesAtBoot()
+
+        #expect(senders.created.count == 2)
+        #expect(await restarted.svc.runtime[card.id]?.agentMessageHandle?.identity == .init(
+            providerId: adapter.id,
+            sessionEpoch: persisted.sessionEpoch,
+            harnessSessionId: "hook-session"
+        ))
+    }
+
     @Test("unknown ref returns nil, never throws")
     func unknownRef() async {
         let (svc, _, _, _, _, _) = TestEnv.make()
@@ -541,10 +597,13 @@ private struct HookSignalTestAdapter: Adapter {
     let enabled = true
     let capabilities: AgentCapabilities
     let messageSenders: MessageSenderRecorder?
+    let derivedMessageSocketPath: String?
 
-    init(capabilities: AgentCapabilities = .stub, messageSenders: MessageSenderRecorder? = nil) {
+    init(capabilities: AgentCapabilities = .stub, messageSenders: MessageSenderRecorder? = nil,
+         derivedMessageSocketPath: String? = nil) {
         self.capabilities = capabilities
         self.messageSenders = messageSenders
+        self.derivedMessageSocketPath = derivedMessageSocketPath
     }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1")] }
@@ -559,7 +618,17 @@ private struct HookSignalTestAdapter: Adapter {
         ClaudeCodeAdapter().agentSignals(from: raw, context: context)
     }
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
-        ClaudeCodeAdapter().observationEndpoint(setup)
+        if let derivedMessageSocketPath { return .unixSocket(path: derivedMessageSocketPath) }
+        return ClaudeCodeAdapter().observationEndpoint(setup)
+    }
+    func messageEndpoint(
+        observationEndpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> AgentMessageEndpoint? {
+        guard let socketPath = observationEndpoint.unixSocketPath,
+              derivedMessageSocketPath != nil
+        else { return nil }
+        return .codexAppServer(socketPath: socketPath, threadId: harnessSessionId)
     }
     func launchEnvironment(_ context: AdapterContext) -> [String: String] {
         ClaudeCodeAdapter().launchEnvironment(context)
