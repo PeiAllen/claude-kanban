@@ -83,6 +83,16 @@ struct CardRuntime {
         let harnessSessionId: String
     }
 
+    /// The one bounded submission budget for the FIFO head. It follows the durable message snapshot and
+    /// provider incarnation, but deliberately excludes the ephemeral endpoint so a credential refresh cannot
+    /// turn one three-attempt budget into two.
+    struct NativeInboxAttempt: Equatable, Sendable {
+        let messageId: UUID
+        let text: String
+        let identity: AgentMessageIdentity
+        let count: Int
+    }
+
     /// A hook can report its endpoint just before the launch step publishes `.live`; retain that one
     /// current-generation value and install it at the lifecycle landing.
     struct PendingAgentMessageEndpoint: Sendable {
@@ -107,6 +117,10 @@ struct CardRuntime {
 
     var pendingAgentMessageEndpoint: PendingAgentMessageEndpoint?
     var agentMessageHandle: AgentMessageHandle?
+    /// Every producer advances this even while the single sender loop is active. The loop compares the value
+    /// around its empty read so an enqueue cannot land in the clear-slot gap.
+    var nativeInboxWakeGeneration: UInt64 = 0
+    var nativeInboxAttempt: NativeInboxAttempt?
 
     // MARK: - Readiness
 

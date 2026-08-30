@@ -4,7 +4,7 @@ import Testing
 import OrchestraKit
 import TestSupport
 
-@Suite("Native inbox delivery")
+@Suite("Native inbox delivery", .serialized)
 struct NativeInboxTests {
     @Test("a live native sender accepts queued work while the provider reports running")
     func sendsThroughLiveHandleWithoutStatusGate() async throws {
@@ -29,7 +29,8 @@ struct NativeInboxTests {
 
     @Test("three rejected submissions fail the FIFO head until its owner retries it")
     func failsAfterThreeAttemptsThenRetriesInFIFOOrder() async throws {
-        let env = TestEnv.make(grace: 2)
+        let clock = TestClock()
+        let env = TestEnv.make(grace: 2, clock: clock)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc,
             SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-retry")
@@ -40,7 +41,21 @@ struct NativeInboxTests {
 
         try await env.svc.send(card.id, "first")
         try await env.svc.send(card.id, "later")
-        try await pollUntil("three bounded provider attempts") { sender.messages.count == 3 }
+        try await pollUntil("the first provider attempt") { sender.messages.count >= 1 }
+        guard sender.messages == ["first"] else {
+            #expect(sender.messages == ["first"])
+            return
+        }
+        await clock.parked(1, deadlineAtLeast: .milliseconds(500))
+        clock.advance(by: .milliseconds(500))
+        try await pollUntil("the second provider attempt") { sender.messages.count >= 2 }
+        #expect(sender.messages == ["first", "first"])
+        await clock.parked(1, deadlineAtLeast: .seconds(1))
+        clock.advance(by: .seconds(1))
+        try await pollUntil("the third bounded provider attempt to fail its FIFO head") {
+            guard let first = try? await env.svc.inboxPeek(card.id).first else { return false }
+            return first.state == .failed
+        }
 
         let unresolved = try await env.svc.inboxPeek(card.id)
         #expect(unresolved.map(\.text) == ["first", "later"])
@@ -59,6 +74,62 @@ struct NativeInboxTests {
         }
         #expect(sender.messages == ["first", "first", "first", "first", "later"])
         #expect(try await env.svc.inboxPeek(card.id).isEmpty)
+    }
+
+    @Test("an explicit-id replay rearms its still-queued row")
+    func dedupReplayRearmsQueuedMessage() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-dedup")
+        )
+        let sender = RecordingNativeInboxSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
+        let messageID = UUID()
+
+        #expect(try await env.svc.inbox.enqueueIfUnknown(
+            card.id, "replay me", id: messageID, source: .human
+        ))
+        _ = try await env.svc.send(card.id, "replay me", messageId: messageID)
+
+        try await pollUntil("deduplicated replay to rearm native delivery", timeout: .seconds(3)) {
+            sender.messages == ["replay me"]
+        }
+        #expect(await env.svc.inbox.history(card.id).map(\.text) == ["replay me"])
+    }
+
+    @Test("a missing handle and a same-session replacement share one three-attempt budget")
+    func missingHandleAndReplacementShareBudget() async throws {
+        let clock = TestClock()
+        let env = TestEnv.make(grace: 2, clock: clock)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-missing")
+        )
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: RecordingNativeInboxSender())
+        await env.svc.removeNativeInboxSenderForTest(card: stored)
+
+        try await env.svc.send(card.id, "shared budget")
+        await yieldBriefly()
+        guard await env.svc.runtime[card.id]?.tasks[.nativeInbox] != nil else {
+            #expect(await env.svc.runtime[card.id]?.tasks[.nativeInbox] != nil)
+            return
+        }
+        await clock.parked(1, deadlineAtLeast: .milliseconds(500))
+
+        let replacement = ScriptedNativeInboxSender(failuresRemaining: 2)
+        await env.svc.replaceNativeInboxSenderForTest(card: stored, sender: replacement)
+        try await pollUntil("the replacement's second budgeted attempt") { replacement.messages.count == 1 }
+        await clock.parked(1, deadlineAtLeast: .seconds(1))
+        clock.advance(by: .seconds(1))
+        try await pollUntil("the shared budget to fail the queued row") {
+            guard let row = try? await env.svc.inboxPeek(card.id).first else { return false }
+            return row.state == .failed
+        }
+
+        #expect(replacement.messages == ["shared budget", "shared budget"])
     }
 
     @Test("an edit during submission prevents the old text from becoming provider-accepted history")
@@ -137,6 +208,53 @@ struct NativeInboxTests {
         #expect(await Self.wait(serverFinished) == .success)
     }
 
+    @Test("a live session rollover cannot hand off an old sender's held success")
+    func liveSessionRolloverFencesHeldSuccess() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-rollover")
+        )
+        let sender = GatedNativeInboxSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
+
+        try await env.svc.send(card.id, "must remain queued")
+        await sender.waitUntilFirstSendIsParked()
+        try await env.svc.report(
+            card.id,
+            StatusReport(sessionId: "replacement-session", sessionSource: "clear"),
+            observedEpoch: stored.sessionEpoch
+        )
+        #expect(sender.shutdownCount == 1)
+        sender.releaseFirstSend()
+        await yieldBriefly()
+
+        #expect(try await env.svc.inboxPeek(card.id).map(\.state) == [.queued])
+        #expect(await env.svc.store.get(card.id)?.agentSessionId == "replacement-session")
+    }
+
+    @Test("an epoch transition cannot hand off an old sender's held success")
+    func transitionFencesHeldSuccess() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-epoch")
+        )
+        let sender = GatedNativeInboxSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
+
+        try await env.svc.send(card.id, "must remain queued")
+        await sender.waitUntilFirstSendIsParked()
+        #expect(await env.svc.transition(card.id, to: .relaunching) == .applied)
+        #expect(sender.shutdownCount == 1)
+        sender.releaseFirstSend()
+        await yieldBriefly()
+
+        #expect(try await env.svc.inboxPeek(card.id).map(\.state) == [.queued])
+    }
+
     private static func wait(_ semaphore: DispatchSemaphore) async -> DispatchTimeoutResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -158,6 +276,22 @@ private extension OrchestraService {
             endpoint: .claudeHookRPC(socketPath: "/tmp/native-inbox-test.sock", token: "test-token"),
             sender: sender
         )
+    }
+
+    func removeNativeInboxSenderForTest(card: Task) {
+        let previous = runtime[card.id]?.agentMessageHandle
+        runtime[card.id]?.agentMessageHandle = nil
+        previous?.sender.shutdown()
+        armNativeInbox(card)
+    }
+
+    func replaceNativeInboxSenderForTest(card: Task, sender: any AgentMessageSender) {
+        disarm(card.id, .nativeInbox)
+        let previous = runtime[card.id]?.agentMessageHandle
+        runtime[card.id]?.agentMessageHandle = nil
+        previous?.sender.shutdown()
+        installNativeInboxSenderForTest(card: card, sender: sender)
+        armNativeInbox(card)
     }
 }
 

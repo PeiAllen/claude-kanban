@@ -14,6 +14,15 @@ extension OrchestraService {
         // (A1), while a live card's first post-restart report creates it here.
         ensureRuntime(for: task)
         let before = task
+        let reportWillReplaceSession = patch.event.map { event in
+            guard let sessionId = event.sessionId, !sessionId.isEmpty, sessionId != task.agentSessionId else {
+                return false
+            }
+            return !(event.endReason != nil && task.agentSessionId != nil)
+        } ?? false
+        // This must precede every report-side await. `/clear` normally reaches the field-delta write directly,
+        // but a combined event can probe liveness first; neither may leave the previous session's sender live.
+        if reportWillReplaceSession { stopAgentMessageHandle(id) }
         // Set when a re-seat is judged to have been IGNORED by the vendor; emitted after the write below, so
         // the warning rides a card whose `model` already shows what is really running.
         var modelReseatIgnored: (requested: String, actual: String)? = nil

@@ -44,6 +44,11 @@ final class CommandRegistryCatalogTests: XCTestCase {
         XCTAssertTrue(CommandCatalog.mcpExposed.map(\.name).contains("publish-image"))
     }
 
+    func testSendSummaryDoesNotDescribeTheRemovedTurnEndDrain() throws {
+        let send = try XCTUnwrap(CommandCatalog.all.first { $0.name == "send" })
+        XCTAssertFalse(send.summary.contains("next turn-end"))
+    }
+
     // The canonical set is complete (guards an accidental drop during the move).
     func testCatalogHasAllCommands() {
         XCTAssertEqual(Set(CommandCatalog.all.map(\.name)), [

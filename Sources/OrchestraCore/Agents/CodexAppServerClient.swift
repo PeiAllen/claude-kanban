@@ -14,8 +14,10 @@ final class CodexAppServerClient: @unchecked Sendable {
         threadId: String,
         clientName: String,
         clientTitle: String,
-        onNotification: NotificationHandler? = nil
+        onNotification: NotificationHandler? = nil,
+        deadline: DispatchTime? = nil
     ) throws -> JSONValue {
+        try prepare(deadline)
         try peer.open()
         _ = try call(
             "initialize",
@@ -26,23 +28,27 @@ final class CodexAppServerClient: @unchecked Sendable {
                     "version": .string("1"),
                 ]),
             ]),
-            onNotification: onNotification
+            onNotification: onNotification,
+            deadline: deadline
         )
-        try notify("initialized", params: .object([:]))
+        try notify("initialized", params: .object([:]), deadline: deadline)
         return try call(
             "thread/resume",
             params: .object(["threadId": .string(threadId)]),
-            onNotification: onNotification
+            onNotification: onNotification,
+            deadline: deadline
         )
     }
 
     func call(
         _ method: String,
         params: JSONValue,
-        onNotification: NotificationHandler? = nil
+        onNotification: NotificationHandler? = nil,
+        deadline: DispatchTime? = nil
     ) throws -> JSONValue {
         let id = nextID
         nextID += 1
+        try prepare(deadline)
         try peer.send(.object([
             "jsonrpc": .string("2.0"),
             "id": .int(id),
@@ -51,7 +57,9 @@ final class CodexAppServerClient: @unchecked Sendable {
         ]))
 
         while true {
+            try prepare(deadline)
             let message = try peer.receive()
+            try requireRemaining(deadline)
             if message["id"]?.intValue == id, message["method"] == nil {
                 if let error = message["error"] {
                     throw CodexAppServerError.rpcError(
@@ -75,12 +83,25 @@ final class CodexAppServerClient: @unchecked Sendable {
     func shutdown() { peer.shutdown() }
     func close() { peer.close() }
 
-    private func notify(_ method: String, params: JSONValue) throws {
+    private func notify(_ method: String, params: JSONValue, deadline: DispatchTime?) throws {
+        try prepare(deadline)
         try peer.send(.object([
             "jsonrpc": .string("2.0"),
             "method": .string(method),
             "params": params,
         ]))
+    }
+
+    private func prepare(_ deadline: DispatchTime?) throws {
+        try requireRemaining(deadline)
+        peer.setAttemptDeadline(deadline)
+    }
+
+    private func requireRemaining(_ deadline: DispatchTime?) throws {
+        guard let deadline else { return }
+        guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else {
+            throw CodexAppServerError.deadlineExceeded
+        }
     }
 
     private func handle(_ message: JSONValue, onNotification: NotificationHandler?) {

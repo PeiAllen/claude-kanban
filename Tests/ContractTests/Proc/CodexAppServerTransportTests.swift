@@ -241,6 +241,82 @@ struct CodexAppServerTransportTests {
         ]))
     }
 
+    @Test("continuous unrelated notifications cannot outlive a real sender attempt deadline")
+    func notificationFloodStopsAtAbsoluteDeadline() async throws {
+        let path = "/tmp/orch-codex-flood-\(UUID().uuidString.prefix(8)).sock"
+        let listener = try UDS.listen(path: path)
+        defer {
+            closeFD(listener)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        let result = CodexTransportServerResult()
+        let finished = DispatchSemaphore(value: 0)
+        let server = Thread {
+            defer { finished.signal() }
+            let client = UDS.accept(listener)
+            guard client >= 0 else {
+                result.fail("accept failed")
+                return
+            }
+            defer { closeFD(client) }
+
+            do {
+                var pending = Data()
+                try Self.upgrade(client, pending: &pending)
+                let initialize = try Self.readJSON(client, pending: &pending)
+                try Self.sendJSON(client, .object([
+                    "jsonrpc": .string("2.0"),
+                    "id": initialize["id"] ?? .int(-1),
+                    "result": .object([:]),
+                ]))
+                _ = try Self.readJSON(client, pending: &pending) // initialized
+                let resume = try Self.readJSON(client, pending: &pending)
+                try Self.sendJSON(client, .object([
+                    "jsonrpc": .string("2.0"),
+                    "id": resume["id"] ?? .int(-1),
+                    "result": .object(["thread": .object(["id": .string("thread-1")])]),
+                ]))
+                _ = try Self.readJSON(client, pending: &pending) // turn/start
+
+                let notification: JSONValue = .object([
+                    "jsonrpc": .string("2.0"),
+                    "method": .string("thread/status/changed"),
+                    "params": .object(["threadId": .string("thread-1")]),
+                ])
+                let frame = try WebSocketFrameCodec.encode(
+                    .init(fin: true, opcode: .text, payload: notification.rawData()),
+                    maskKey: nil
+                )
+                for _ in 0..<400 {
+                    guard UDS.writeAll(client, frame) else {
+                        result.setEOF()
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.005)
+                }
+                result.fail("sender did not stop at its deadline")
+            } catch {
+                result.fail(String(describing: error))
+            }
+        }
+        server.stackSize = 1 << 20
+        server.start()
+
+        let sender = try #require(CodexAdapter().makeMessageSender(for: .codexAppServer(
+            socketPath: path,
+            threadId: "thread-1"
+        )))
+        await #expect(throws: (any Error).self) {
+            try await sender.send("deadline", timeout: 0.1)
+        }
+        #expect(await Self.wait(finished) == .success)
+        sender.shutdown()
+
+        #expect(result.error == nil)
+        #expect(result.sawEOF)
+    }
+
     @Test("WebSocket peer holds descriptor ownership while shutdown interrupts the live connection")
     func shutdownHoldsDescriptorOwnership() throws {
         let path = "/tmp/orch-codex-stop-\(UUID().uuidString.prefix(8)).sock"

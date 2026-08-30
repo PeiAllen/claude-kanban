@@ -4,6 +4,7 @@ enum CodexAppServerError: Error, Equatable, Sendable {
     case connectionFailed(String)
     case handshakeFailed(String)
     case connectionClosed
+    case deadlineExceeded
     case protocolViolation(String)
     case rpcError(code: Int, message: String)
 }
@@ -232,8 +233,13 @@ protocol CodexAppServerPeer: AnyObject, Sendable {
     func open() throws
     func send(_ message: JSONValue) throws
     func receive() throws -> JSONValue
+    func setAttemptDeadline(_ deadline: DispatchTime?)
     func shutdown()
     func close()
+}
+
+extension CodexAppServerPeer {
+    func setAttemptDeadline(_ deadline: DispatchTime?) {}
 }
 
 /// The narrow WebSocket-over-UDS peer required by Codex app-server clients: masked JSON text out, JSON
@@ -246,6 +252,7 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
     private let writeLock = NSLock()
     private var isShutDown = false
     private var fd: Int32 = -1
+    private var attemptDeadline: DispatchTime?
     private var pending = Data()
     private var fragment = Data()
     private var fragmentOpcode: WebSocketOpcode?
@@ -264,7 +271,7 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
 
     func open() throws {
         let connected: Int32
-        do { connected = try UDS.connect(path: socketPath, ioTimeout: ioTimeout) }
+        do { connected = try UDS.connect(path: socketPath, ioTimeout: try currentIOTimeout()) }
         catch { throw CodexAppServerError.connectionFailed(String(describing: error)) }
         let accepted = stateLock.withLock {
             guard !isShutDown else { return false }
@@ -277,6 +284,10 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
         }
         do { try upgrade() }
         catch { close(); throw error }
+    }
+
+    func setAttemptDeadline(_ deadline: DispatchTime?) {
+        stateLock.withLock { attemptDeadline = deadline }
     }
 
     func send(_ message: JSONValue) throws {
@@ -393,6 +404,7 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
     private func readMore() throws {
         let current = stateLock.withLock { fd }
         guard current >= 0 else { throw CodexAppServerError.connectionClosed }
+        try setCurrentIOTimeout(current)
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             guard let count = UDS.read(current, into: &buffer) else {
@@ -413,10 +425,35 @@ final class WebSocketCodexAppServerPeer: CodexAppServerPeer, @unchecked Sendable
     private func writeRaw(_ data: Data) throws {
         try writeLock.withLock {
             let current = stateLock.withLock { fd }
-            guard current >= 0, UDS.writeAll(current, data) else {
+            guard current >= 0 else {
+                throw CodexAppServerError.connectionClosed
+            }
+            try setCurrentIOTimeout(current)
+            if let deadline = stateLock.withLock({ attemptDeadline }) {
+                guard UDS.writeAll(current, data, deadline: deadline) else {
+                    if DispatchTime.now().uptimeNanoseconds >= deadline.uptimeNanoseconds {
+                        throw CodexAppServerError.deadlineExceeded
+                    }
+                    throw CodexAppServerError.connectionClosed
+                }
+            } else if !UDS.writeAll(current, data) {
                 throw CodexAppServerError.connectionClosed
             }
         }
+    }
+
+    private func currentIOTimeout() throws -> TimeInterval? {
+        guard let deadline = stateLock.withLock({ attemptDeadline }) else { return ioTimeout }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now < deadline.uptimeNanoseconds else { throw CodexAppServerError.deadlineExceeded }
+        let remaining = TimeInterval(deadline.uptimeNanoseconds - now) / 1_000_000_000
+        return min(ioTimeout ?? remaining, remaining)
+    }
+
+    private func setCurrentIOTimeout(_ fd: Int32) throws {
+        guard let timeout = try currentIOTimeout() else { return }
+        do { try UDS.setIOTimeout(fd, seconds: timeout) }
+        catch { throw CodexAppServerError.connectionClosed }
     }
 
     private func decodeJSON(_ payload: Data) throws -> JSONValue {

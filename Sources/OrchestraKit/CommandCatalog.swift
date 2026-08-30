@@ -141,7 +141,7 @@ public enum CommandCatalog {
                       params: schema(["ref": refProp(), "col": colProp()], required: ["ref", "col"]),
                       kind: .mutation, phaseGate: gNonArchived),
 
-        CommandSchema(name: "send", summary: "Queue a message to the agent's inbox (drained at its next turn-end).",
+        CommandSchema(name: "send", summary: "Queue a message to the agent's inbox for native provider delivery.",
                       params: schema(["ref": refProp(), "message": strProp("Text to send"),
                                       "id": strProp("Client-minted message UUID for idempotent retry — reuse the "
                                           + "SAME id when re-issuing after a timeout so the daemon dedups instead "

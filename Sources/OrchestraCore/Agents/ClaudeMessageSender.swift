@@ -71,13 +71,14 @@ final class ClaudeMessageSender: AgentMessageSender, @unchecked Sendable {
 
     private func sendBlocking(_ message: String, timeout: TimeInterval) throws {
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
+        let deadline = DispatchTime.now() + .nanoseconds(Int(max(0, timeout) * 1_000_000_000))
         let frames = try [
             Self.jsonLine(AuthFrame(token: token)),
             Self.jsonLine(UserFrame(message: .init(content: message))),
         ]
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
 
-        let fd = try UDS.connect(path: socketPath, ioTimeout: timeout)
+        let fd = try UDS.connect(path: socketPath, ioTimeout: Self.remainingTime(until: deadline))
         let accepted = stateLock.withLock {
             guard !isShutDown else { return false }
             activeFD = fd
@@ -95,8 +96,14 @@ final class ClaudeMessageSender: AgentMessageSender, @unchecked Sendable {
         }
 
         for frame in frames {
-            guard UDS.writeAll(fd, frame) else { throw Failure.writeFailed }
+            guard UDS.writeAll(fd, frame, deadline: deadline) else { throw Failure.writeFailed }
         }
+    }
+
+    private static func remainingTime(until deadline: DispatchTime) -> TimeInterval {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now < deadline.uptimeNanoseconds else { return 0 }
+        return TimeInterval(deadline.uptimeNanoseconds - now) / 1_000_000_000
     }
 
     private static func jsonLine<T: Encodable>(_ value: T) throws -> Data {

@@ -16,6 +16,13 @@ import Musl
 @inline(__always) private func posixAccept(_ fd: Int32) -> Int32 { accept(fd, nil, nil) }
 @inline(__always) private func posixRead(_ fd: Int32, _ b: UnsafeMutableRawPointer, _ n: Int) -> Int { read(fd, b, n) }
 @inline(__always) @discardableResult private func posixClose(_ fd: Int32) -> Int32 { close(fd) }
+@inline(__always) private func posixFcntl(_ fd: Int32, _ command: Int32, _ value: Int32) -> Int32 {
+    fcntl(fd, command, value)
+}
+@inline(__always) private func posixPoll(_ fds: UnsafeMutablePointer<pollfd>, _ count: nfds_t,
+                                         _ timeout: Int32) -> Int32 {
+    poll(fds, count, timeout)
+}
 #if canImport(Darwin)
 @inline(__always) private func posixSend(_ fd: Int32, _ b: UnsafeRawPointer, _ n: Int) -> Int { write(fd, b, n) }
 #else
@@ -54,8 +61,8 @@ public enum UDS {
         return fd
     }
 
-    /// Connect to a server socket at `path`. When supplied, `ioTimeout` is installed on the descriptor
-    /// before it is handed to a protocol peer, so blocking reads and writes fail at the real socket layer.
+    /// Connect to a server socket at `path`. With `ioTimeout`, the connect itself runs nonblocking and waits
+    /// through `poll(2)` only until its monotonic deadline; `SO_*TIMEO` then bounds peer reads and writes.
     public static func connect(path: String, ioTimeout: TimeInterval? = nil) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw OrchestraError.io("socket() failed: \(errnoString())") }
@@ -67,10 +74,19 @@ public enum UDS {
         addr.sun_family = sa_family_t(AF_UNIX)
         try setPath(&addr, path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let res = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixConnect(fd, $0, len) }
+        do {
+            if let ioTimeout {
+                try connectUntilDeadline(fd, addr: &addr, length: len, timeout: ioTimeout)
+            } else {
+                let res = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixConnect(fd, $0, len) }
+                }
+                guard res == 0 else { throw OrchestraError.io("connect() failed: \(errnoString())") }
+            }
+        } catch {
+            posixClose(fd)
+            throw error
         }
-        guard res == 0 else { posixClose(fd); throw OrchestraError.io("connect() failed: \(errnoString())") }
         suppressSIGPIPE(fd)
         return fd
     }
@@ -128,6 +144,17 @@ public enum UDS {
         }
     }
 
+    /// Write all bytes without allowing partial writes to restart a caller's absolute deadline. This uses
+    /// nonblocking `send(2)` plus `poll(2)` rather than a task race, then restores the descriptor flags for
+    /// the protocol peer that owns it.
+    @discardableResult
+    public static func writeAll(_ fd: Int32, _ data: Data, deadline: DispatchTime) -> Bool {
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            guard let base = raw.baseAddress else { return true }
+            return writeUntilDeadline(fd, base: base, count: raw.count, deadline: deadline)
+        }
+    }
+
     /// Read available bytes into a buffer; returns nil on EOF/error.
     public static func read(_ fd: Int32, into buf: inout [UInt8]) -> Int? {
         let n = buf.withUnsafeMutableBytes { raw -> Int in
@@ -141,6 +168,96 @@ public enum UDS {
     }
 
     // MARK: helpers
+
+    /// `SO_SNDTIMEO`/`SO_RCVTIMEO` do not govern `connect(2)`. Keep the descriptor nonblocking only for
+    /// the connection handshake, then restore its flags so the peer's ordinary reads and writes retain their
+    /// expected blocking semantics and socket-level deadlines.
+    private static func connectUntilDeadline(_ fd: Int32, addr: inout sockaddr_un, length: socklen_t,
+                                             timeout: TimeInterval) throws {
+        guard timeout > 0 else { throw OrchestraError.io("connect() timed out") }
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0 else { throw OrchestraError.io("fcntl(F_GETFL) failed: \(errnoString())") }
+        guard posixFcntl(fd, F_SETFL, flags | Int32(O_NONBLOCK)) == 0 else {
+            throw OrchestraError.io("fcntl(F_SETFL) failed: \(errnoString())")
+        }
+        defer { _ = posixFcntl(fd, F_SETFL, flags) }
+
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
+        let res = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixConnect(fd, $0, length) }
+        }
+        if res == 0 { return }
+        let initialError = errno
+        guard initialError == EINPROGRESS || initialError == EALREADY || initialError == EINTR
+            || initialError == EWOULDBLOCK
+        else { throw OrchestraError.io("connect() failed: \(errnoString())") }
+
+        var pollFD = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { throw OrchestraError.io("connect() timed out") }
+            let remaining = deadline - now
+            let milliseconds = Int32(min(
+                (remaining + 999_999) / 1_000_000,
+                UInt64(Int32.max)
+            ))
+            let ready = posixPoll(&pollFD, 1, max(1, milliseconds))
+            if ready == 0 { throw OrchestraError.io("connect() timed out") }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw OrchestraError.io("poll() failed: \(errnoString())")
+            }
+
+            var socketError: Int32 = 0
+            var errorLength = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorLength) == 0 else {
+                throw OrchestraError.io("getsockopt(SO_ERROR) failed: \(errnoString())")
+            }
+            if socketError == 0 || socketError == EISCONN { return }
+            if socketError == EINPROGRESS || socketError == EALREADY { continue }
+            errno = socketError
+            throw OrchestraError.io("connect() failed: \(errnoString())")
+        }
+    }
+
+    private static func writeUntilDeadline(_ fd: Int32, base: UnsafeRawPointer, count: Int,
+                                           deadline: DispatchTime) -> Bool {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0 else { return false }
+        let changedFlags = flags & Int32(O_NONBLOCK) == 0
+        if changedFlags, posixFcntl(fd, F_SETFL, flags | Int32(O_NONBLOCK)) != 0 { return false }
+        defer {
+            if changedFlags { _ = posixFcntl(fd, F_SETFL, flags) }
+        }
+
+        var offset = 0
+        var pollFD = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        while offset < count {
+            guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { return false }
+            let written = posixSend(fd, base + offset, count - offset)
+            if written > 0 {
+                offset += written
+                continue
+            }
+            if written < 0, errno == EINTR { continue }
+            guard written < 0, errno == EAGAIN || errno == EWOULDBLOCK else { return false }
+
+            while true {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline.uptimeNanoseconds else { return false }
+                let remaining = deadline.uptimeNanoseconds - now
+                let milliseconds = Int32(min(
+                    (remaining + 999_999) / 1_000_000,
+                    UInt64(Int32.max)
+                ))
+                let ready = posixPoll(&pollFD, 1, max(1, milliseconds))
+                if ready > 0 { break }
+                if ready == 0 { return false }
+                if errno != EINTR { return false }
+            }
+        }
+        return true
+    }
 
     private static func setPath(_ addr: inout sockaddr_un, _ path: String) throws {
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path)

@@ -4,114 +4,207 @@ extension OrchestraService {
     static let nativeInboxAttemptLimit = 3
     static let nativeInboxAttemptTimeout: TimeInterval = 5
 
-    /// The one enqueue boundary for human and daemon messages. A sender may be absent while a card is
-    /// launching; reconciliation installs it later and re-arms this same queue without a second path.
+    /// The one enqueue boundary for human and daemon messages. A replayed explicit id still arms: a prior
+    /// provider acceptance may have reached the provider while its durable `handedOff` write failed.
     @discardableResult
     func enqueueAndArm(_ cardId: UUID, _ text: String, messageId: UUID? = nil,
                        source: InboxMessageSource? = .orchestra,
                        dedupKey: String? = nil) async throws -> Bool {
+        let inserted: Bool
         if let messageId {
-            guard try await inbox.enqueueIfUnknown(cardId, text, id: messageId, source: source) else {
-                return false
-            }
+            inserted = try await inbox.enqueueIfUnknown(cardId, text, id: messageId, source: source)
         } else {
             try await inbox.enqueue(cardId, text, source: source, dedupKey: dedupKey)
+            inserted = true
         }
-        if let card = await store.get(cardId) { armNativeInbox(card) }
-        return true
+        if let card = await store.get(cardId) { armNativeInbox(card.id) }
+        return inserted
     }
 
-    /// Arm only one token-fenced sender loop for a card's exact current live session. Sender status is
-    /// intentionally not consulted: the provider endpoint is the acceptance boundary, not a board guess.
-    func armNativeInbox(_ card: Task) {
-        guard card.phase.kind == .live,
-              let harnessSessionId = card.agentSessionId, !harnessSessionId.isEmpty,
-              let handle = runtime[card.id]?.agentMessageHandle,
-              handle.identity == .init(providerId: card.agentId, sessionEpoch: card.sessionEpoch,
-                                       harnessSessionId: harnessSessionId),
-              runtime[card.id]?.tasks[.nativeInbox] == nil
-        else { return }
+    /// Each request advances the wake generation, while at most one token-fenced loop owns FIFO work.
+    /// The loop validates lifecycle and provider identity at its one durable snapshot immediately before it
+    /// submits, so this method intentionally does not consult any provider-status estimate.
+    func armNativeInbox(_ card: Task) { armNativeInbox(card.id) }
 
-        _ = arm(card.id, .nativeInbox) { token in
-            _Concurrency.Task { [weak self] in
-                await self?.drainNativeInbox(card.id, token: token)
-            }
+    func armNativeInbox(_ cardId: UUID) {
+        guard var cardRuntime = runtime[cardId] else { return }
+        cardRuntime.nativeInboxWakeGeneration &+= 1
+        let wakeGeneration = cardRuntime.nativeInboxWakeGeneration
+        guard cardRuntime.tasks[.nativeInbox] == nil else {
+            runtime[cardId] = cardRuntime
+            return
         }
+
+        let token = nextRuntimeToken()
+        cardRuntime.tasks[.nativeInbox] = .init(token: token, task: _Concurrency.Task { [weak self] in
+            await self?.drainNativeInbox(cardId, token: token, wakeGeneration: wakeGeneration)
+        })
+        runtime[cardId] = cardRuntime
     }
 
-    /// Retry is explicitly owner-scoped at the service boundary. A failed head remains FIFO-blocking until
-    /// this operation puts it back in the queue, at which point the normal sender loop resumes it.
+    /// Retry starts a new delivery budget for the explicitly requeued FIFO head.
     func inboxRetry(_ cardId: UUID, messageId: UUID) async throws {
         let card = try await require(cardId)
-        if try await inbox.retry(cardId: card.id, messageId: messageId) { armNativeInbox(card) }
-    }
-
-    private struct NativeInboxAttempt {
-        let messageId: UUID
-        let text: String
-        let identity: CardRuntime.AgentMessageIdentity
-        let handle: CardRuntime.AgentMessageHandle
-    }
-
-    private func drainNativeInbox(_ cardId: UUID, token: UInt64) async {
-        defer { clearSlot(cardId, .nativeInbox, ifToken: token) }
-        while !_Concurrency.Task.isCancelled {
-            guard let message = await inbox.nextDeliverable(cardId),
-                  let attempt = await nativeInboxAttempt(cardId: cardId, message: message, token: token)
-            else { return }
-
-            var accepted = false
-            for _ in 0..<Self.nativeInboxAttemptLimit {
-                guard !_Concurrency.Task.isCancelled, ownsNativeInboxAttempt(attempt, cardId: cardId, token: token)
-                else { return }
-                do {
-                    try await attempt.handle.sender.send(attempt.text, timeout: Self.nativeInboxAttemptTimeout)
-                    accepted = true
-                    break
-                } catch {
-                    guard ownsNativeInboxAttempt(attempt, cardId: cardId, token: token) else { return }
-                }
-            }
-
-            guard !_Concurrency.Task.isCancelled, ownsNativeInboxAttempt(attempt, cardId: cardId, token: token)
-            else { return }
-            do {
-                if accepted {
-                    _ = try await inbox.markHandedOff(
-                        cardId: cardId, messageId: attempt.messageId, expectedText: attempt.text)
-                } else {
-                    _ = try await inbox.markFailed(
-                        cardId: cardId, messageId: attempt.messageId, expectedText: attempt.text)
-                }
-            } catch {
-                // Provider acceptance is already a fact. On a persistence error leave the old queued row
-                // durable and let a later arm retry rather than pretending a receipt exists.
-                return
-            }
+        if try await inbox.retry(cardId: card.id, messageId: messageId) {
+            runtime[card.id]?.nativeInboxAttempt = nil
+            armNativeInbox(card.id)
         }
     }
 
-    /// One durable card snapshot before submission carries every long-lived identity fence. No sender-loop
-    /// decision reads `running`, `waiting`, or any other inferred provider status.
-    private func nativeInboxAttempt(cardId: UUID, message: InboxMessage,
-                                    token: UInt64) async -> NativeInboxAttempt? {
-        guard runtime[cardId]?.tasks[.nativeInbox]?.token == token,
+    private struct NativeInboxSubmission {
+        let message: InboxMessage
+        let identity: CardRuntime.AgentMessageIdentity
+        let handle: CardRuntime.AgentMessageHandle?
+    }
+
+    private func drainNativeInbox(_ cardId: UUID, token: UInt64, wakeGeneration initialWakeGeneration: UInt64) async {
+        var wakeGeneration = initialWakeGeneration
+        defer { clearSlot(cardId, .nativeInbox, ifToken: token) }
+
+        while !_Concurrency.Task.isCancelled {
+            guard armingToken(cardId, .nativeInbox) == token else { return }
+            let message = await inbox.nextDeliverable(cardId)
+            guard armingToken(cardId, .nativeInbox) == token else { return }
+            guard let message else {
+                runtime[cardId]?.nativeInboxAttempt = nil
+                let currentWake = runtime[cardId]?.nativeInboxWakeGeneration ?? wakeGeneration
+                guard currentWake != wakeGeneration else { return }
+                wakeGeneration = currentWake
+                continue
+            }
+
+            guard let submission = await nativeInboxSubmission(cardId, message: message, token: token),
+                  ownsNativeInboxSubmission(submission, cardId: cardId, token: token),
+                  let attempt = nextNativeInboxAttempt(cardId, submission: submission)
+            else { return }
+
+            if attempt == 0 {
+                if await failNativeInboxSubmission(submission, cardId: cardId, token: token) { return }
+                continue
+            }
+
+            let accepted: Bool
+            if let handle = submission.handle {
+                do {
+                    try await handle.sender.send(submission.message.text, timeout: Self.nativeInboxAttemptTimeout)
+                    accepted = true
+                } catch {
+                    accepted = false
+                }
+            } else {
+                accepted = false
+            }
+            guard !_Concurrency.Task.isCancelled,
+                  ownsNativeInboxSubmission(submission, cardId: cardId, token: token)
+            else { return }
+
+            if accepted {
+                // Provider acceptance is the boundary. Clearing before the CAS intentionally leaves a durable
+                // write failure queued for an explicit replay with no invented receipt state.
+                clearNativeInboxAttempt(cardId, submission: submission)
+                do {
+                    _ = try await inbox.markHandedOff(
+                        cardId: cardId, messageId: submission.message.id, expectedText: submission.message.text)
+                } catch {
+                    return
+                }
+                continue
+            }
+
+            if attempt == Self.nativeInboxAttemptLimit {
+                if await failNativeInboxSubmission(submission, cardId: cardId, token: token) { return }
+                continue
+            }
+            do {
+                try await clock.sleep(for: nativeInboxBackoff(after: attempt))
+            } catch {
+                return
+            }
+            guard !_Concurrency.Task.isCancelled,
+                  ownsNativeInboxSubmission(submission, cardId: cardId, token: token)
+            else { return }
+        }
+    }
+
+    /// One durable identity snapshot before each provider submission. A missing current handle is an attempt
+    /// too; a replacement invalidates the exact-reference fence and lets its own loop continue the budget.
+    private func nativeInboxSubmission(_ cardId: UUID, message: InboxMessage,
+                                       token: UInt64) async -> NativeInboxSubmission? {
+        guard armingToken(cardId, .nativeInbox) == token,
               let card = await store.get(cardId),
               card.phase.kind == .live,
               let harnessSessionId = card.agentSessionId, !harnessSessionId.isEmpty,
-              let handle = runtime[cardId]?.agentMessageHandle
+              armingToken(cardId, .nativeInbox) == token
         else { return nil }
         let identity = CardRuntime.AgentMessageIdentity(
             providerId: card.agentId, sessionEpoch: card.sessionEpoch, harnessSessionId: harnessSessionId)
-        guard handle.identity == identity else { return nil }
-        return NativeInboxAttempt(messageId: message.id, text: message.text, identity: identity, handle: handle)
+        let current = runtime[cardId]?.agentMessageHandle
+        let handle = current?.identity == identity ? current : nil
+        return .init(message: message, identity: identity, handle: handle)
     }
 
-    /// The reference check is deliberately stricter than identity equality: a credential refresh can keep
-    /// the same provider/session fields while replacing the endpoint, and its old completion must not win.
-    private func ownsNativeInboxAttempt(_ attempt: NativeInboxAttempt, cardId: UUID, token: UInt64) -> Bool {
-        runtime[cardId]?.tasks[.nativeInbox]?.token == token
-            && runtime[cardId]?.agentMessageHandle === attempt.handle
-            && runtime[cardId]?.agentMessageHandle?.identity == attempt.identity
+    /// A credential refresh can preserve identity, so reference equality remains the post-await authority.
+    private func ownsNativeInboxSubmission(_ submission: NativeInboxSubmission,
+                                           cardId: UUID, token: UInt64) -> Bool {
+        guard armingToken(cardId, .nativeInbox) == token else { return false }
+        if let handle = submission.handle {
+            return runtime[cardId]?.agentMessageHandle === handle
+                && runtime[cardId]?.agentMessageHandle?.identity == submission.identity
+        }
+        return runtime[cardId]?.agentMessageHandle == nil
+    }
+
+    /// Returns 0 only when the exact snapshot already used all three slots; callers mark it failed without a
+    /// fourth send. Changing text, message id, or provider/session identity starts a fresh key.
+    private func nextNativeInboxAttempt(_ cardId: UUID, submission: NativeInboxSubmission) -> Int? {
+        guard let prior = runtime[cardId]?.nativeInboxAttempt else {
+            runtime[cardId]?.nativeInboxAttempt = .init(
+                messageId: submission.message.id, text: submission.message.text,
+                identity: submission.identity, count: 1)
+            return 1
+        }
+        guard prior.messageId == submission.message.id,
+              prior.text == submission.message.text,
+              prior.identity == submission.identity
+        else {
+            runtime[cardId]?.nativeInboxAttempt = .init(
+                messageId: submission.message.id, text: submission.message.text,
+                identity: submission.identity, count: 1)
+            return 1
+        }
+        guard prior.count < Self.nativeInboxAttemptLimit else { return 0 }
+        runtime[cardId]?.nativeInboxAttempt = .init(
+            messageId: prior.messageId, text: prior.text, identity: prior.identity, count: prior.count + 1)
+        return prior.count + 1
+    }
+
+    /// `false` means a text/state CAS lost to an editor, so the same loop must re-read the new FIFO snapshot.
+    private func failNativeInboxSubmission(_ submission: NativeInboxSubmission,
+                                           cardId: UUID, token: UInt64) async -> Bool {
+        guard ownsNativeInboxSubmission(submission, cardId: cardId, token: token) else { return true }
+        do {
+            if try await inbox.markFailed(
+                cardId: cardId, messageId: submission.message.id, expectedText: submission.message.text
+            ) {
+                clearNativeInboxAttempt(cardId, submission: submission)
+                return true
+            }
+            return false
+        } catch {
+            return true
+        }
+    }
+
+    private func clearNativeInboxAttempt(_ cardId: UUID, submission: NativeInboxSubmission) {
+        guard let attempt = runtime[cardId]?.nativeInboxAttempt,
+              attempt.messageId == submission.message.id,
+              attempt.text == submission.message.text,
+              attempt.identity == submission.identity
+        else { return }
+        runtime[cardId]?.nativeInboxAttempt = nil
+    }
+
+    private func nativeInboxBackoff(after attempt: Int) -> Duration {
+        attempt == 1 ? .milliseconds(500) : .seconds(1)
     }
 }

@@ -109,6 +109,51 @@ struct ClaudeMessageSenderTests {
         ]))
     }
 
+    @Test("a saturated listener bounds the sender's connect before shutdown")
+    func socketConnectDeadlineDoesNotRelyOnTaskCancellation() async throws {
+        let path = Self.socketPath()
+        let listener = try UDS.listen(path: path, backlog: 1)
+        defer {
+            closeFD(listener)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        // Never accept. Fill the small listener queue first; later connects must wait at the kernel boundary
+        // until their real deadline, rather than being rescued by cancelling their Swift task.
+        var queued: [Int32] = []
+        defer { for fd in queued { closeFD(fd) } }
+        for _ in 0..<8 {
+            if let fd = try? UDS.connect(path: path, ioTimeout: 0.025) { queued.append(fd) }
+        }
+        #expect(!queued.isEmpty)
+
+        let sender = try #require(ClaudeCodeAdapter().makeMessageSender(for: .claudeHookRPC(
+            socketPath: path,
+            token: "runtime-secret"
+        )))
+        let result = SendResult()
+        let finished = DispatchSemaphore(value: 0)
+        _Concurrency.Task {
+            result.markStarted()
+            do {
+                try await sender.send("connect deadline", timeout: 0.05)
+                result.succeed()
+            } catch {
+                result.fail()
+            }
+            finished.signal()
+        }
+
+        let completed = await Self.wait(finished) == .success
+        sender.shutdown()
+
+        #expect(completed)
+        #expect(result.failed)
+        let startedAt = try #require(result.startedAt)
+        let finishedAt = try #require(result.finishedAt)
+        #expect(finishedAt - startedAt < 500_000_000)
+    }
+
     @Test("a peer that stops reading fails the socket-bound send deadline before shutdown")
     func socketWriteDeadlineDoesNotRelyOnTaskCancellation() async throws {
         let path = Self.socketPath()
@@ -118,6 +163,7 @@ struct ClaudeMessageSenderTests {
             try? FileManager.default.removeItem(atPath: path)
         }
 
+        let result = SendResult()
         let accepted = DispatchSemaphore(value: 0)
         let releasePeer = DispatchSemaphore(value: 0)
         let serverFinished = DispatchSemaphore(value: 0)
@@ -126,6 +172,7 @@ struct ClaudeMessageSenderTests {
             let client = UDS.accept(listener)
             guard client >= 0 else { return }
             defer { closeFD(client) }
+            result.markStarted()
             accepted.signal()
             _ = releasePeer.wait(timeout: .now() + 10)
         }
@@ -136,11 +183,11 @@ struct ClaudeMessageSenderTests {
             socketPath: path,
             token: "runtime-secret"
         )))
-        let result = SendResult()
+        let message = String(repeating: "x", count: 32 * 1024 * 1024)
         let completed = DispatchSemaphore(value: 0)
         _Concurrency.Task {
             do {
-                try await sender.send(String(repeating: "x", count: 32 * 1024 * 1024), timeout: 0.1)
+                try await sender.send(message, timeout: 2)
                 result.succeed()
             } catch {
                 result.fail()
@@ -158,6 +205,9 @@ struct ClaudeMessageSenderTests {
         #expect(deadlineFinished)
         #expect(peerClosed)
         #expect(result.failed)
+        let finishedAt = try #require(result.finishedAt)
+        let startedAt = try #require(result.startedAt)
+        #expect(finishedAt - startedAt < 2_500_000_000)
     }
 
     @Test("shutdown holds descriptor ownership while interrupting an in-flight write, then rejects later sends")
@@ -290,8 +340,13 @@ private final class SocketReadResult: @unchecked Sendable {
 private final class SendResult: @unchecked Sendable {
     private let lock = NSLock()
     private var didFail = false
+    private var startedAtNanos: UInt64?
+    private var finishedAtNanos: UInt64?
 
     var failed: Bool { lock.withLock { didFail } }
-    func succeed() { lock.withLock { didFail = false } }
-    func fail() { lock.withLock { didFail = true } }
+    var startedAt: UInt64? { lock.withLock { startedAtNanos } }
+    var finishedAt: UInt64? { lock.withLock { finishedAtNanos } }
+    func markStarted() { lock.withLock { startedAtNanos = DispatchTime.now().uptimeNanoseconds } }
+    func succeed() { lock.withLock { didFail = false; finishedAtNanos = DispatchTime.now().uptimeNanoseconds } }
+    func fail() { lock.withLock { didFail = true; finishedAtNanos = DispatchTime.now().uptimeNanoseconds } }
 }

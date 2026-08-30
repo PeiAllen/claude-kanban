@@ -76,11 +76,15 @@ extension OrchestraService {
         if runtime[card.id]?.agentMessageHandle?.identity != expected {
             stopAgentMessageHandle(card.id)
         }
-        guard let adapter = try? registry.get(expected.providerId) else { return }
+        guard let adapter = try? registry.get(expected.providerId) else {
+            armNativeInbox(card.id)
+            return
+        }
         let endpoint: AgentMessageEndpoint
         if let pending = runtime[card.id]?.pendingAgentMessageEndpoint {
             guard pending.identity == expected else {
                 runtime[card.id]?.pendingAgentMessageEndpoint = nil
+                armNativeInbox(card.id)
                 return
             }
             endpoint = pending.endpoint
@@ -90,7 +94,10 @@ extension OrchestraService {
                     observationEndpoint: observationEndpoint,
                     harnessSessionId: harnessSessionId
                   )
-            else { return }
+            else {
+                armNativeInbox(card.id)
+                return
+            }
             endpoint = derived
         }
         if let current = runtime[card.id]?.agentMessageHandle,
@@ -109,6 +116,7 @@ extension OrchestraService {
         guard let sender = adapter.makeMessageSender(for: endpoint)
         else {
             runtime[card.id]?.pendingAgentMessageEndpoint = nil
+            armNativeInbox(card.id)
             return
         }
 
@@ -121,7 +129,9 @@ extension OrchestraService {
         armNativeInbox(card)
     }
 
-    private func stopAgentMessageHandle(_ cardId: UUID) {
+    /// The synchronous invalidation half of every lifecycle/session fence. Callers must use this before
+    /// their next await when they replace a durable provider identity.
+    func stopAgentMessageHandle(_ cardId: UUID) {
         disarm(cardId, .nativeInbox)
         guard let current = runtime[cardId]?.agentMessageHandle else { return }
         runtime[cardId]?.agentMessageHandle = nil

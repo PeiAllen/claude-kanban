@@ -73,6 +73,13 @@ extension OrchestraService {
             return .rejected(from: from, to: to)
         }
 
+        // A live handle is a capability for one exact lifecycle incarnation. Drop it before the durable
+        // update yields so a held sender completion cannot survive an epoch roll or a departure from live.
+        if to.kind == .creatingWorktree || to.kind == .relaunching
+            || (from.kind == .live && to.kind != .live) {
+            stopAgentMessageHandle(id)
+        }
+
         // 4 · One field-delta patch: phase + status timestamp + epoch bump + companion writes,
         //     atomically. Live activity and human-need snapshots are detail within the current status, so
         //     they must not reset the user-facing Running/Waiting age.
@@ -137,6 +144,7 @@ extension OrchestraService {
         // AgentState is part of `phase`, so leaving live discards the snapshot in the same transition.
         await reconcileAgentObservation(updated)
         reconcileAgentMessageHandle(updated)
+        if to.kind == .live { armNativeInbox(updated.id) }
 
         // A card ENTERING `.live` may be the OWNER a pending merge-request has been waiting for: `spawn`
         // creates the card and `reopen` un-archives it, and `derivedCard` counts either the instant it

@@ -57,6 +57,7 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
 
     private func sendBlocking(_ message: String, timeout: TimeInterval) throws {
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
+        let deadline = DispatchTime.now() + .nanoseconds(Int(max(0, timeout) * 1_000_000_000))
         let peer = peerFactory(socketPath, timeout)
         let accepted = stateLock.withLock {
             guard !isShutDown else { return false }
@@ -75,7 +76,8 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
         _ = try client.openAndResume(
             threadId: threadId,
             clientName: "orchestra-inbox",
-            clientTitle: "Orchestra inbox sender"
+            clientTitle: "Orchestra inbox sender",
+            deadline: deadline
         )
         guard stateLock.withLock({ !isShutDown }) else { throw Failure.shutDown }
         _ = try client.call(
@@ -86,7 +88,8 @@ final class CodexMessageSender: AgentMessageSender, @unchecked Sendable {
                     "type": .string("text"),
                     "text": .string(message),
                 ])]),
-            ])
+            ]),
+            deadline: deadline
         )
     }
 }
