@@ -164,11 +164,13 @@ struct ClaudeMessageSenderTests {
         }
 
         let result = SendResult()
+        let serverStarted = DispatchSemaphore(value: 0)
         let accepted = DispatchSemaphore(value: 0)
         let releasePeer = DispatchSemaphore(value: 0)
         let serverFinished = DispatchSemaphore(value: 0)
         let server = Thread {
             defer { serverFinished.signal() }
+            serverStarted.signal()
             let client = UDS.accept(listener)
             guard client >= 0 else { return }
             defer { closeFD(client) }
@@ -178,6 +180,7 @@ struct ClaudeMessageSenderTests {
         }
         server.stackSize = 1 << 20
         server.start()
+        #expect(await Self.wait(serverStarted) == .success)
 
         let sender = try #require(ClaudeCodeAdapter().makeMessageSender(for: .claudeHookRPC(
             socketPath: path,
