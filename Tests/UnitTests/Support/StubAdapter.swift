@@ -9,8 +9,7 @@ extension AgentCapabilities {
     /// is `.relaunchLiveness` so a blank spawn/reopen and a resume both land immediately on a successful
     /// `ensure` — no readiness signal to hand-deliver. This keeps the many tests that spawn/resume a card
     /// merely as SETUP green and synchronous under 2.6's capability-gated launch readiness. Tests that
-    /// specifically exercise the awaited signal path opt into `.claudeCode` (`.sessionStartHook`) or
-    /// `.codex` (`.rolloutMeta`) explicitly.
+    /// specifically exercise the awaited signal path opt into `.sessionStartHook` explicitly.
     static let stub = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,

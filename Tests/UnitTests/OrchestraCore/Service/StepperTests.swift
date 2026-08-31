@@ -13,8 +13,8 @@ import TestSupport
 // on-disk store (the stateless-stepper re-derives from disk), `reconcile()` /
 // `reconcilePhasesAtBoot()` drive convergence, `PhaseSteppers.byKind[kind].verify`
 // is the per-cell transitional oracle, and every session/worktree side effect is
-// stub-observable. Both backends run through the capability seam (`.claudeCode`
-// sessionStartHook / codex `.rolloutMeta`) — never an `if agentId ==`.
+// stub-observable. Both backends run through the same SessionStart readiness seam — never an
+// `if agentId ==`.
 // ============================================================================
 
 /// A per-backend env tuple: a genuine `codex` card is a DIFFERENT adapter id (not
@@ -22,9 +22,8 @@ import TestSupport
 private typealias BEnv = (svc: OrchestraService, sessions: StubSessions,
                           worktrees: StubWorktrees, adapter: StubAdapter, base: String)
 
-/// The both-agent matrix parameter — the readiness axis is what differs (Claude
-/// `.sessionStartHook` vs Codex `.rolloutMeta`), which is exactly the launch/relaunch
-/// path the crash tests exercise, so BA is REQUIRED here (not a courtesy).
+/// The both-agent matrix parameter. Both adapters use SessionStart readiness; the separate ids still
+/// prove the crash path is adapter-neutral.
 private let batteryAgents: [(id: String, caps: AgentCapabilities)] =
     [("claude-code", .claudeCode), ("codex", ReadinessSignalTests.codexStubCaps)]
 
@@ -73,7 +72,7 @@ private func batteryRemake(base: String, caps: AgentCapabilities, id: String) ->
 }
 
 /// Spawn a worktree card and drive it to `.live` (materialized tree + up session), delivering
-/// the readiness signal each launching tick so an AWAITING cap (`.sessionStartHook`/`.rolloutMeta`)
+/// the readiness signal each launching tick so an AWAITING cap (`.sessionStartHook`)
 /// confirms deterministically. The common starting point for the crash framings.
 private func batterySpawnLive(_ e: BEnv, branch: String) async throws -> Task {
     let created = try await e.svc.spawn(

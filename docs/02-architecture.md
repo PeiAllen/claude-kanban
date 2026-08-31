@@ -52,12 +52,14 @@ report metadata by **different mechanisms**, captured by `AgentCapabilities.tele
 `hooksPush` (thick arrow — its statusLine and hooks shell out to `orchestra _report`, which sends one
 typed `hook` RPC back over the same socket), while Codex is `fileTail` (dotted arrow — the daemon's
 2-second `pollTelemetry` tick tails its rollout JSONL via `RolloutTailer`). Those paths report context,
-model, session identity, and display detail; they do not decide live turn status.
+model, and display detail; they do not decide Codex session identity or live turn status.
 
 Provider observation is a separate seam. Claude's structured hooks carry the current session and prompt
 identity, with an exactly correlated OTLP terminal span only as the missing-`Stop` fallback. Codex's
-launch-local app-server observer reconciles the current thread once and then consumes pushed turn/thread
-updates. Both adapters emit normalized `AgentSignal`s into the same reducer, so no downstream consumer
+launch-local app-server owns both its thread identity and runtime state. An unbound observer performs one
+exact-cwd, launch-scoped `thread/list` reconciliation and accepts only one root, non-ephemeral candidate;
+otherwise it waits for a matching `thread/started`. Once bound, `thread/resume` reconciles the snapshot and
+pushed turn/thread updates maintain it. Both adapters emit normalized `AgentSignal`s into the same reducer, so no downstream consumer
 branches on the provider. Terminal bytes never cross this plane — SwiftTerm attaches to tmux directly.
 
 ## The daemon (`orchestrad`)

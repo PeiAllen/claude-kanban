@@ -77,17 +77,30 @@ struct CodexAdapterArgvTests {
         ).isEmpty)
     }
 
-    // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
-    // the definitive card ↔ rollout correlation. Do not discard it and fall back to cwd/time discovery.
-    @Test("parse(SessionStart hooksPush) binds Codex's direct session id")
+    @Test("SessionStart is lifecycle-only; app-server thread/started owns Codex identity")
     func parseSessionStartHook() {
         let payload: JSONValue = .object([
-            "session_id": .string("codex-session"),
+            "session_id": .string("hook-invocation-id"),
             "source": .string("startup"),
             "cwd": .string("/same/freeform/cwd"),
         ])
-        #expect(adapter.parse(.hooksPush(kind: "session", payload: payload)) == StatusReport(sessionId: "codex-session"))
+        #expect(adapter.parse(.hooksPush(kind: "session", payload: payload))
+            == StatusReport(sessionSource: "startup"))
         #expect(adapter.parse(.hooksPush(kind: "session", payload: .object([:]))) == nil)
+
+        let started: JSONValue = .object([
+            "thread": .object([
+                "id": .string("thread-1"),
+                "sessionId": .string("thread-1"),
+                "status": .object(["type": .string("idle")]),
+            ]),
+        ])
+        #expect(adapter.parse(.rpcNotification(method: "thread/started", params: started))
+            == StatusReport(sessionId: "thread-1"))
+        #expect(adapter.parse(.rpcResponse(
+            method: "thread/list",
+            result: .object(["data": .array([started["thread"]!])])
+        )) == StatusReport(sessionId: "thread-1"))
     }
 
     @Test("fileTail turn-complete is ignored because app-server owns turn state")
@@ -381,157 +394,43 @@ struct CodexHookTrustProbeTests {
     }
 }
 
-@Suite("CodexAdapter — rollout session-id discovery")
+@Suite("CodexAdapter — bound rollout metadata")
 struct CodexAdapterDiscoveryTests {
-    /// Make an injected rollout-discovery home + adapter.
     private func makeHome() -> (home: String, adapter: CodexAdapter) {
         let home = NSTemporaryDirectory() + "codexhome-\(UUID().uuidString)"
         return (home, CodexAdapter(codexHome: home))
     }
-    private func writeRollout(_ home: String, day: String, sessionId: String,
-                              cwd: String = "/wt", startedAt: String? = nil,
-                              threadSource: String? = nil, parentThreadId: String? = nil,
-                              mtime: Date? = nil) {
+    private func writeRollout(_ home: String, sessionId: String) {
+        let day = "2026/07/01"
         let dir = "\(home)/sessions/\(day)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/rollout-2026-07-01T10-00-00-\(sessionId).jsonl"
-        var fields = ["\"id\":\"\(sessionId)\"", "\"cwd\":\"\(cwd)\""]
-        if let startedAt { fields.append("\"timestamp\":\"\(startedAt)\"") }
-        if let threadSource { fields.append("\"thread_source\":\"\(threadSource)\"") }
-        if let parentThreadId { fields.append("\"parent_thread_id\":\"\(parentThreadId)\"") }
-        let line = "{\"type\":\"session_meta\",\"payload\":{\(fields.joined(separator: ","))}}\n"
+        let line = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(sessionId)\"}}\n"
         try? line.write(toFile: path, atomically: true, encoding: .utf8)
-        if let m = mtime {
-            try? FileManager.default.setAttributes([.modificationDate: m], ofItemAtPath: path)
-        }
     }
 
-    private func date(_ timestamp: String) -> Date {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: timestamp)!
-    }
-
-    @Test("sessionInfo discovers the session id from the newest rollout file")
-    func discoversFromRollout() throws {
+    @Test("a bound app-server id selects its rollout metadata and resume target")
+    func boundIdSelectsMetadata() throws {
         let (home, adapter) = makeHome()
         let sid = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/07/01", sessionId: sid)
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: []))
+        writeRollout(home, sessionId: sid)
+        let info = try #require(adapter.sessionInfo(
+            AdapterContext(cwd: "/wt"), current: sid, prior: ["old"]
+        ))
         #expect(info.sessionId == sid)
         #expect(info.transcriptPath?.hasSuffix("-\(sid).jsonl") == true)
-        #expect(info.resumeCmd?.contains("resume") == true)
         #expect(info.resumeCmd?.contains(sid) == true)
-    }
-
-    @Test("discovery picks the NEWEST rollout by mtime")
-    func discoversNewest() throws {
-        let (home, adapter) = makeHome()
-        let older = UUID().uuidString.lowercased()
-        let newer = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/06/30", sessionId: older, mtime: Date(timeIntervalSince1970: 1000))
-        writeRollout(home, day: "2026/07/01", sessionId: newer, mtime: Date(timeIntervalSince1970: 2000))
-        #expect(adapter.discover() == newer)
-    }
-
-    @Test("sessionInfo discovers newest rollout for the card cwd, not global newest")
-    func sessionInfoDiscoversByCwd() throws {
-        let (home, adapter) = makeHome()
-        let target = UUID().uuidString.lowercased()
-        let other = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/07/01", sessionId: target,
-                     cwd: "/work/target", mtime: Date(timeIntervalSince1970: 1000))
-        writeRollout(home, day: "2026/07/01", sessionId: other,
-                     cwd: "/work/other", mtime: Date(timeIntervalSince1970: 2000))
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/work/target"),
-                                                    current: nil, prior: []))
-        #expect(info.sessionId == target)
-        #expect(info.transcriptPath?.hasSuffix("-\(target).jsonl") == true)
-    }
-
-    @Test("launch discovery uses rollout creation time and ignores same-cwd subagents")
-    func launchDiscoveryUsesCreationTimeAndIgnoresSubagents() throws {
-        let (home, adapter) = makeHome()
-        let stale = UUID().uuidString.lowercased()
-        let launched = UUID().uuidString.lowercased()
-        let subagent = UUID().uuidString.lowercased()
-        let cutoff = date("2026-07-01T10:00:00Z")
-
-        // An older card can still append after a new card starts, so its file mtime is not its launch time.
-        writeRollout(home, day: "2026/07/01", sessionId: stale,
-                     startedAt: "2026-07-01T09:59:00Z", mtime: date("2026-07-01T10:00:03Z"))
-        writeRollout(home, day: "2026/07/01", sessionId: launched,
-                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
-                     mtime: date("2026-07-01T10:00:01Z"))
-        writeRollout(home, day: "2026/07/01", sessionId: subagent,
-                     startedAt: "2026-07-01T10:00:02Z", threadSource: "subagent",
-                     parentThreadId: launched, mtime: date("2026-07-01T10:00:02Z"))
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
-                                                    current: nil, prior: []))
-        #expect(info.sessionId == launched)
-    }
-
-    @Test("launch discovery ignores a parent-linked rollout with a nonstandard thread source")
-    func launchDiscoveryIgnoresParentLinkedRollout() throws {
-        let (home, adapter) = makeHome()
-        let parent = UUID().uuidString.lowercased()
-        let child = UUID().uuidString.lowercased()
-        let cutoff = date("2026-07-01T10:00:00Z")
-
-        writeRollout(home, day: "2026/07/01", sessionId: parent,
-                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user")
-        writeRollout(home, day: "2026/07/01", sessionId: child,
-                     startedAt: "2026-07-01T10:00:02Z", threadSource: "worker",
-                     parentThreadId: parent)
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
-                                                    current: nil, prior: []))
-        #expect(info.sessionId == parent)
-    }
-
-    @Test("unbound discovery refuses multiple primary rollouts in one cwd")
-    func unboundDiscoveryRefusesMultiplePrimaryRollouts() throws {
-        let (home, adapter) = makeHome()
-        let first = UUID().uuidString.lowercased()
-        let second = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/07/01", sessionId: first,
-                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
-                     mtime: date("2026-07-01T10:00:03Z"))
-        writeRollout(home, day: "2026/07/01", sessionId: second,
-                     startedAt: "2026-07-01T10:00:02Z", threadSource: "user",
-                     mtime: date("2026-07-01T10:00:04Z"))
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: []))
-        #expect(info.sessionId == nil)
-    }
-
-    @Test("current id wins over discovery")
-    func currentWins() throws {
-        let (home, adapter) = makeHome()
-        writeRollout(home, day: "2026/07/01", sessionId: UUID().uuidString.lowercased())
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: "explicit-id", prior: ["old"]))
-        #expect(info.sessionId == "explicit-id")
         #expect(info.priorSessionIds == ["old"])
     }
 
-    @Test("no rollouts → nil session id, nil resume")
-    func noRollouts() {
-        let (_, adapter) = makeHome()   // empty home
+    @Test("an unbound card never derives identity from rollout files")
+    func unboundIsIdentitySilent() {
+        let (home, adapter) = makeHome()
+        writeRollout(home, sessionId: UUID().uuidString.lowercased())
         let info = adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: [])
         #expect(info?.sessionId == nil)
+        #expect(info?.transcriptPath == nil)
         #expect(info?.resumeCmd == nil)
-    }
-
-    @Test("a non-UUID rollout tail is rejected (never a fabricated id)")
-    func rejectsNonUuidTail() {
-        let (home, adapter) = makeHome()
-        let dir = "\(home)/sessions/2026/07/01"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try? "{}".write(toFile: "\(dir)/rollout-2026-07-01T10-00-00-not-a-uuid.jsonl",
-                        atomically: true, encoding: .utf8)
-        #expect(adapter.discover() == nil)
     }
 }
 
@@ -599,7 +498,7 @@ struct CodexModelRoutingTests {
 
     /// A registry with a side-effect-free default agent (a Stub keyed "claude-code", so the real
     /// ClaudeTrust write to ~/.claude.json never fires) alongside Codex with a fake bin and injected
-    /// rollout-discovery home under the scratch base. Distinct model catalogs (m1/m2 vs gpt-*) keep routing
+    /// rollout metadata home under the scratch base. Distinct model catalogs (m1/m2 vs gpt-*) keep routing
     /// unambiguous.
     private func isolatedRegistry(_ base: String) -> AgentRegistry {
         let stub = StubAdapter(transcriptDir: base + "/tx", id: "claude-code", name: "Stub")

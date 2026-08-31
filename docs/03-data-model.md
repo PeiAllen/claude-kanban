@@ -41,7 +41,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer and the inspector header (axis 7), measured against the card's default baseline — parent-relative when it has a parent branch, else branch-relative. Nil for a non-git / zero-change / not-yet-computed card. |
 | `humanPaced` | `Bool` | Compatibility bit for the current client stall row: the card is the human's to pace, so per-card quiescence does not amber it. A human prompt sets it; an authored handoff seed clears it. Native inbox delivery does not alter it. The launch's own machine prompt is generation-marked so the prompt report does not misclassify it as human input. This bit is separate from `AgentState`; the proposed root-level stalled watchdog and removal of this compatibility rule are deferred. |
-| `agentSessionId` | `String?` | The agent-native session id (current). |
+| `agentSessionId` | `String?` | The current provider-native conversation identity: Claude's seeded session id or Codex's app-server thread id. A Codex hook invocation id and rollout filename are never alternative authorities. |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |
 | `archived` | `Bool` | `true` once finished — off the board, in the Done popover. |
@@ -340,3 +340,9 @@ output as the new `Phase.live(AgentState)`. Every signal carries the launch `ses
 are additionally bound to the provider thread id, and Claude hooks are checked against the current session
 and top-level turn. The Codex rollout tail and hooks remain metadata/orientation only. There is no status
 field in `StatusReport` and no second Core status reducer.
+
+For a fresh Codex launch, the structured observer may start while `agentSessionId` is nil. It makes one
+`thread/list` call scoped to the exact card cwd and durable launch cutoff, filters out child and ephemeral
+threads, and binds only when exactly one candidate remains; ambiguity stays `unavailable`. A later filtered
+`thread/started` can establish or replace the binding (including `/clear`). Core then persists that id and
+rearms the observer against the exact thread, whose `thread/resume` response establishes running or waiting.

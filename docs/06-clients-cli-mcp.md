@@ -245,8 +245,8 @@ Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 `hooks.<event>` entries in its per-launch profile file, so its stdout `additionalContext` is folded into the
 session and the same orientation (step 5) reaches a Codex card too. This adapter's hook contribution lives in
 the profile file that `prepareToLaunch` writes; it has no Codex-specific *global* persistent setup step.
-Codex's `parse` also binds the provider session id from this hook before returning the same orientation
-brief Claude receives.
+The hook's `session_id` is an invocation identity, not the Codex thread id, so it contributes lifecycle
+readiness and orientation only. The launch-local app server alone binds the provider session.
 
 Both conversions remain adapter-owned. `parse(_:)` handles metadata from hooks or the Codex rollout
 tail; `agentSignals(from:context:)` maps current Claude hook payloads and OTLP spans, or Codex app-server

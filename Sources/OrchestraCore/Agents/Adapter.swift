@@ -81,6 +81,21 @@ public struct AgentObservationSetup: Sendable, Equatable {
     }
 }
 
+/// Durable card facts an adapter may use to attach its structured observation source. A provider with a
+/// seeded session receives the exact id; a provider that creates its identity during launch may use the
+/// cwd + launch cutoff to perform one fail-closed attach reconciliation before pushed events take over.
+public struct AgentObservationBinding: Sendable, Equatable {
+    public let harnessSessionId: String?
+    public let cwd: String
+    public let startedAfter: Date?
+
+    public init(harnessSessionId: String?, cwd: String, startedAfter: Date?) {
+        self.harnessSessionId = harnessSessionId
+        self.cwd = cwd
+        self.startedAfter = startedAfter
+    }
+}
+
 /// One blocking connection to a provider's structured event stream. Core owns its lifetime and treats it
 /// as a passive source: provider RPC choreography and decoding stay behind the adapter boundary, while
 /// cancellation must synchronously unblock `run` so a superseded card session cannot leak a reader.
@@ -108,21 +123,18 @@ public struct AdapterContext: Sendable {
     public let autoInstallMCPGlobally: Bool // opt-in add-only global MCP setup during launch preparation
     public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
                                     // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
-    public let since: Date?         // time-scope for discovered-session binding: bind only a rollout newer
-                                    // than this durable launch cutoff, so an unbound fallback card never
-                                    // adopts a sibling's or its own stale pre-reboot rollout.
     public let observationEndpoint: AgentObservationEndpoint?
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
                 orchestraBin: String = siblingBinary("orchestra"), access: CardAccess = .readWrite,
-                trustCwd: Bool = false, seed: String? = nil, since: Date? = nil,
+                trustCwd: Bool = false, seed: String? = nil,
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
                 autoInstallMCPGlobally: Bool = false,
                 observationEndpoint: AgentObservationEndpoint? = nil) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.orchestraBin = orchestraBin
         self.orchestraMCPBin = orchestraMCPBin; self.access = access; self.trustCwd = trustCwd
-        self.autoInstallMCPGlobally = autoInstallMCPGlobally; self.seed = seed; self.since = since
+        self.autoInstallMCPGlobally = autoInstallMCPGlobally; self.seed = seed
         self.observationEndpoint = observationEndpoint
     }
 }
@@ -165,11 +177,11 @@ public protocol Adapter: Sendable {
     /// The launch-local endpoint this adapter needs for structured observation, if any. Core only
     /// allocates and carries the endpoint; provider-specific launch and connection details stay here.
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint?
-    /// Build one fresh connection attempt for an endpoint + provider session. Core may call this again
+    /// Build one fresh connection attempt for an endpoint + durable card binding. Core may call this again
     /// after a disconnect; returning nil means this adapter has no structured source for that endpoint.
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,
-        harnessSessionId: String
+        binding: AgentObservationBinding
     ) -> (any AgentObservationSource)?
     /// Derive a provider-native sender endpoint from the launch-local observation endpoint. This covers
     /// transports such as Codex's app-server where the same ephemeral socket carries both observations and
@@ -219,7 +231,7 @@ public extension Adapter {
     func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? { nil }
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,
-        harnessSessionId: String
+        binding: AgentObservationBinding
     ) -> (any AgentObservationSource)? { nil }
     func messageEndpoint(
         observationEndpoint: AgentObservationEndpoint,

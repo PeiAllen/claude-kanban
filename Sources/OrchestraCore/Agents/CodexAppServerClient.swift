@@ -17,6 +17,26 @@ final class CodexAppServerClient: @unchecked Sendable {
         onNotification: NotificationHandler? = nil,
         deadline: DispatchTime? = nil
     ) throws -> JSONValue {
+        try openAndInitialize(
+            clientName: clientName,
+            clientTitle: clientTitle,
+            onNotification: onNotification,
+            deadline: deadline
+        )
+        return try call(
+            "thread/resume",
+            params: .object(["threadId": .string(threadId)]),
+            onNotification: onNotification,
+            deadline: deadline
+        )
+    }
+
+    func openAndInitialize(
+        clientName: String,
+        clientTitle: String,
+        onNotification: NotificationHandler? = nil,
+        deadline: DispatchTime? = nil
+    ) throws {
         try prepare(deadline)
         try peer.open()
         _ = try call(
@@ -32,12 +52,6 @@ final class CodexAppServerClient: @unchecked Sendable {
             deadline: deadline
         )
         try notify("initialized", params: .object([:]), deadline: deadline)
-        return try call(
-            "thread/resume",
-            params: .object(["threadId": .string(threadId)]),
-            onNotification: onNotification,
-            deadline: deadline
-        )
     }
 
     func call(

@@ -48,12 +48,11 @@ The decisions that shape it:
   `recovering` set's grace-window role; native inbox submission no longer needs its relaunch-claim role.
 - **Being-born readiness is a capability, not an identity branch (the D1 resolution).** How a `launching`
   **or** `relaunching` card is confirmed alive is one adapter axis — `AgentCapabilities.readinessConfirmation`
-  ∈ `{sessionStartHook, rolloutMeta, relaunchLiveness}` — covering *both* being-born phases (generalizing
-  the spec's launch-only `resumeConfirmation`). Claude confirms via its SessionStart hook (startup for a
-  launch, resume for a relaunch); Codex confirms a fresh launch via its rollout `session_meta` line
-  (time-scoped to the launch), and a `codex resume` — which writes no rollout — is caught by a **universal
-  N=3 liveness-tick fallback** that keeps the relaunch on the readiness gate rather than landing it live
-  immediately. `relaunchLiveness` treats a successful `ensure` as the confirmation for an agent that emits
+  ∈ `{sessionStartHook, relaunchLiveness}` — covering *both* being-born phases (generalizing
+  the spec's launch-only `resumeConfirmation`). Claude and Codex confirm via SessionStart (`startup` for a
+  launch, `resume` for a relaunch); Codex's hook is lifecycle-only and never supplies its thread id.
+  A **universal N=3 liveness-tick fallback** covers a missed hook while keeping the launch on the readiness
+  gate. `relaunchLiveness` treats a successful `ensure` as the confirmation for an agent that emits
   no marker at all. No `if agentId ==` anywhere. This generalizes the spec's launch-only
   `resumeConfirmation` as a deliberate **spec amendment**.
 
@@ -172,7 +171,10 @@ non-persisted OR of its presence and the separate durable `pendingQuestion`. An 
 Needs You reason.
 
 Codex's launch-local app-server observer is the only producer of Codex turn state and provider-human
-need. Its rollout tail supplies metadata only, and its hooks supply orientation, never status. Claude accepts
+need, and it is also the sole authority for Codex's durable thread id. A fresh unbound observer performs
+one exact-cwd, launch-cutoff `thread/list` reconciliation and binds only one root, non-ephemeral candidate;
+otherwise it remains unavailable until a filtered `thread/started`. Its rollout tail supplies metadata
+only, and its hooks supply lifecycle readiness/orientation, never identity or status. Claude accepts
 only session- and current-turn-correlated hook evidence;
 an exact OTLP interaction span is the missing-Stop fallback. A terminal event without required current
 identity fails closed to unavailable, while a positively stale terminal is ignored.

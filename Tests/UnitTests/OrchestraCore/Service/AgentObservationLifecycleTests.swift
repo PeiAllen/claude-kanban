@@ -26,7 +26,10 @@ struct AgentObservationLifecycleTests {
         try await pollUntil("first observation source to start") {
             feed.source(at: 0)?.isStarted == true
         }
-        #expect(feed.requests == [.init(endpoint: .unixSocket(path: endpoint), sessionId: "thread-1")])
+        #expect(feed.requests == [.init(
+            endpoint: .unixSocket(path: endpoint),
+            binding: .init(harnessSessionId: "thread-1", cwd: card.cwd, startedAfter: nil)
+        )])
         #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
         #expect(await env.svc.agentObservationActive(card.id))
 
@@ -100,7 +103,7 @@ struct AgentObservationLifecycleTests {
         try await pollUntil("new session observation source to replace the old one") {
             feed.source(at: 1)?.isStarted == true && old.wasShutdown
         }
-        #expect(feed.requests.last?.sessionId == "thread-2")
+        #expect(feed.requests.last?.binding.harnessSessionId == "thread-2")
         #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
 
         let replacement = try #require(feed.source(at: 1))
@@ -131,8 +134,46 @@ struct AgentObservationLifecycleTests {
         }
         #expect(feed.requests == [.init(
             endpoint: .unixSocket(path: "\(env.base)/state/observed-\(card.shortId).sock"),
-            sessionId: "thread-late"
+            binding: .init(harnessSessionId: "thread-late", cwd: card.cwd, startedAfter: nil)
         )])
+    }
+
+    @Test("a structured source may bind its provider session and rearm on the exact identity")
+    func sourceBindsSession() async throws {
+        let feed = ObservationTestFeed()
+        let adapter = ObservationTestAdapter(
+            feed: feed,
+            initialSessionId: nil,
+            acceptsUnboundObservation: true
+        )
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "work", repo: TestEnv.repo(env.base),
+                       branch: "source-bind", agentId: adapter.id)
+        )
+        try await pollUntil("unbound observation source to start") {
+            feed.source(at: 0)?.isStarted == true
+        }
+        #expect(feed.requests.first?.binding.harnessSessionId == nil)
+        #expect(feed.requests.first?.binding.cwd == card.cwd)
+        #expect(feed.requests.first?.binding.startedAfter != nil)
+
+        let unbound = try #require(feed.source(at: 0))
+        unbound.emit(.rpcNotification(
+            method: "test/session-started",
+            params: .object(["session_id": .string("thread-bound")])
+        ))
+
+        try await pollUntil("source-owned identity to persist and replace the observer") {
+            let bound = await env.svc.store.get(card.id)?.agentSessionId == "thread-bound"
+            return bound && unbound.wasShutdown && feed.source(at: 1)?.isStarted == true
+        }
+        #expect(feed.requests.last?.binding == .init(
+            harnessSessionId: "thread-bound",
+            cwd: card.cwd,
+            startedAfter: nil
+        ))
     }
 
     @Test("an unavailable session rollover replaces its observer without a status transition")
@@ -154,7 +195,7 @@ struct AgentObservationLifecycleTests {
         try await pollUntil("unavailable rollover to replace its observer") {
             feed.source(at: 1)?.isStarted == true && old.wasShutdown
         }
-        #expect(feed.requests.last?.sessionId == "thread-2")
+        #expect(feed.requests.last?.binding.harnessSessionId == "thread-2")
         #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
     }
 
@@ -181,7 +222,7 @@ struct AgentObservationLifecycleTests {
         try await pollUntil("boot-adopted observation source to start") {
             feed.source(at: 0)?.isStarted == true
         }
-        #expect(feed.requests.first?.sessionId == sessionId)
+        #expect(feed.requests.first?.binding.harnessSessionId == sessionId)
         #expect(await state(restarted.svc, card.id)?.turnStatus == .unavailable)
 
         _ = await restarted.svc.transition(card.id, to: .relaunching)
@@ -238,7 +279,7 @@ private final class ObservationTestSource: AgentObservationSource, @unchecked Se
 private final class ObservationTestFeed: @unchecked Sendable {
     struct Request: Equatable {
         var endpoint: AgentObservationEndpoint
-        var sessionId: String
+        var binding: AgentObservationBinding
     }
 
     private let lock = NSLock()
@@ -247,10 +288,10 @@ private final class ObservationTestFeed: @unchecked Sendable {
 
     var requests: [Request] { lock.withLock { storedRequests } }
 
-    func makeSource(endpoint: AgentObservationEndpoint, sessionId: String) -> ObservationTestSource {
+    func makeSource(endpoint: AgentObservationEndpoint, binding: AgentObservationBinding) -> ObservationTestSource {
         lock.withLock {
             let source = ObservationTestSource()
-            storedRequests.append(.init(endpoint: endpoint, sessionId: sessionId))
+            storedRequests.append(.init(endpoint: endpoint, binding: binding))
             sources.append(source)
             return source
         }
@@ -265,16 +306,23 @@ private struct ObservationTestAdapter: Adapter {
     let feed: ObservationTestFeed
     let id: String
     let initialSessionId: String?
+    let acceptsUnboundObservation: Bool
     let name = "Observed"
     let icon = "eye"
     let bin = "fake-observed"
     let enabled = true
     let capabilities = AgentCapabilities.stub
 
-    init(feed: ObservationTestFeed, id: String = "observed", initialSessionId: String? = "thread-1") {
+    init(
+        feed: ObservationTestFeed,
+        id: String = "observed",
+        initialSessionId: String? = "thread-1",
+        acceptsUnboundObservation: Bool = false
+    ) {
         self.feed = feed
         self.id = id
         self.initialSessionId = initialSessionId
+        self.acceptsUnboundObservation = acceptsUnboundObservation
     }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1")] }
@@ -292,9 +340,18 @@ private struct ObservationTestAdapter: Adapter {
     }
     func makeObservationSource(
         endpoint: AgentObservationEndpoint,
-        harnessSessionId: String
+        binding: AgentObservationBinding
     ) -> (any AgentObservationSource)? {
-        feed.makeSource(endpoint: endpoint, sessionId: harnessSessionId)
+        guard binding.harnessSessionId != nil || acceptsUnboundObservation else { return nil }
+        return feed.makeSource(endpoint: endpoint, binding: binding)
+    }
+    func parse(_ raw: RawTelemetry) -> StatusReport? {
+        guard case .rpcNotification(let method, let params) = raw,
+              method == "test/session-started",
+              let sessionId = params["session_id"]?.stringValue,
+              !sessionId.isEmpty
+        else { return nil }
+        return StatusReport(sessionId: sessionId)
     }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
         guard case .rpcNotification(let method, let params) = raw,

@@ -306,7 +306,7 @@ struct StartupAbortTests {
     func agentAgnostic(_ caps: AgentCapabilities) async throws {
         let env = TestEnv.make(grace: 1, capabilities: caps)
         let repo = TestEnv.repo(env.base)
-        // Awaiting caps (`.sessionStartHook`/`.rolloutMeta`): drive to live by hand-delivering the readiness
+        // Awaiting caps (`.sessionStartHook`): drive to live by hand-delivering the readiness
         // signal (arm is already in place — finishLaunch armed regardless of cap). The grace is raised BEFORE
         // the spawn arms it for the same reason as `spawnStartupPending` — this path arms identically, so both
         // the Claude- and the Codex-shaped adapter must be immune to the spawn outliving its own deadline.

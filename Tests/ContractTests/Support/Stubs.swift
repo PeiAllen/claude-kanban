@@ -324,8 +324,7 @@ extension AgentCapabilities {
     /// is `.relaunchLiveness` so a blank spawn/reopen and a resume both land immediately on a successful
     /// `ensure` — no readiness signal to hand-deliver. This keeps the many tests that spawn/resume a card
     /// merely as SETUP green and synchronous under 2.6's capability-gated launch readiness. Tests that
-    /// specifically exercise the awaited signal path opt into `.claudeCode` (`.sessionStartHook`) or
-    /// `.codex` (`.rolloutMeta`) explicitly.
+    /// specifically exercise the awaited signal path opt into `.sessionStartHook` explicitly.
     static let stub = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
@@ -550,7 +549,7 @@ enum TestEnv {
     /// now record the intent (`→ .relaunching` or `→ .creatingWorktree`) and RETURN; the reconciler's steppers
     /// drive the walk to `.live`. This drives `reconcile()` until `id` is `.live`, hand-delivering the agent's
     /// readiness signal each transitional tick when `inject` is set (needed for AWAITING caps —
-    /// `.sessionStartHook`/`.rolloutMeta`; harmless for the immediate `.relaunchLiveness` stub). Returns the
+    /// `.sessionStartHook`; harmless for the immediate `.relaunchLiveness` stub). Returns the
     /// live card.
     @discardableResult
     /// A `ControlClient` pointed at an IN-PROCESS test daemon, with deadlines sized for the test machine.
@@ -637,7 +636,7 @@ enum TestEnv {
     ///
     /// Readiness-cap contract: the DEFAULT stub adapter is `.relaunchLiveness` (readiness = a successful
     /// `ensure`, immediate — the reconcile ticks alone suffice). For an AWAITING cap
-    /// (`.sessionStartHook`/`.rolloutMeta`) the N=3 `launchReadyTicks` fallback (now `inFlightSteps`-
+    /// (`.sessionStartHook`) the N=3 `launchReadyTicks` fallback (now `inFlightSteps`-
     /// independent, per Task 2 finding 2) resolves the launch waiter within three ticks, so this STILL
     /// converges with no hand-delivered signal. Use `spawnAwaited` when a test must exercise the agent's
     /// OWN readiness signal deterministically (it injects `report(sessionSource:)`).
@@ -665,7 +664,7 @@ enum TestEnv {
     /// Spawn through the AWAITING launch path and reach `.live` by hand-delivering the agent's readiness
     /// signal. `spawn` persists the card at `.creatingWorktree`; this drives `reconcile()` (Materialize →
     /// Launch), and each tick the card is `.launching` with a pending waiter it delivers
-    /// SessionStart(startup) so an awaiting cap (`.sessionStartHook`/`.rolloutMeta`) confirms on its OWN
+    /// SessionStart(startup) so an awaiting cap (`.sessionStartHook`) confirms on its OWN
     /// signal (not the N=3 fallback). Returns the live card. Use for resume/relaunch-mechanics tests that
     /// need `.claudeCode`/`.codex` but still want a deterministically-live card first.
     @discardableResult
@@ -689,9 +688,7 @@ enum TestEnv {
     }
 
     /// Drive being-born cards to `.live` via the reconciler: repeatedly run `reconcile()` (steps
-    /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live. Used by Codex
-    /// (`.rolloutMeta`) spawn setups whose fixture rollout cannot bind during launch. A fallback card keeps
-    /// its durable launch cutoff until discovery binds one unambiguous, post-cutoff rollout for telemetry.
+    /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live.
     static func reconcileUntilLive(_ svc: OrchestraService, count: Int) async throws {
         try await pollUntil {
             await svc.reconcile()

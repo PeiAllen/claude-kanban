@@ -99,7 +99,9 @@ struct CodexAppServerTransportTests {
         let observer = CodexAppServerObserver(socketPath: path)
         var observations: [RawTelemetry] = []
         #expect(throws: CodexAppServerError.connectionClosed) {
-            try observer.run(threadId: "thread-1") { observations.append($0) }
+            try observer.run(
+                binding: .init(harnessSessionId: "thread-1", cwd: "/work", startedAfter: nil)
+            ) { observations.append($0) }
         }
         #expect(finished.wait(timeout: .now() + 10) == .success)
 

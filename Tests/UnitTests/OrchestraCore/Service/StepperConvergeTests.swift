@@ -241,7 +241,7 @@ struct LaunchStepperTests {
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)
     }
 
-    @Test("test_launchStepReachesLiveOnReady_codex")   // .rolloutMeta awaits; the ready signal resolves it
+    @Test("test_launchStepReachesLiveOnReady_codex")
     func test_launchStepReachesLiveOnReady_codex() async throws {
         let env = TestEnv.make(grace: 10, capabilities: ReadinessSignalTests.codexStubCaps, proc: cfgFake())
         let card = try await seedLaunchingAwaited(env, branch: "b")

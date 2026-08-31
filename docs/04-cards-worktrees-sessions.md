@@ -157,7 +157,7 @@ this backs.
 inherit Claude's shape). The axes cover session-id acquisition, metadata transport, context usage, read-only
 enforcement, authentication, terminal image paste, and launch readiness. Core reads that descriptor rather
 than branching on `agentId`: a `.seeded` agent such as Claude mints its id pre-launch; a `.discovered` agent
-such as Codex reports it after launch; and `isResumable` asks the adapter for its own state path rather than
+such as Codex exposes it through a provider-native observation source after launch; and `isResumable` asks the adapter for its own state path rather than
 assuming a Claude transcript exists.
 
 Runtime status and ordinary message submission are separate provider facilities. A live card owns a
@@ -263,12 +263,13 @@ core handles the difference purely through the descriptor:
   read-only` selects Codex's own OS-sandboxed read-only mode; `-a never` disables approvals. `resume`
   (`codex resume <sid> [-s read-only -a never] [-m <model>] [<seed>]`) accepts an explicit authored
   handoff seed as its trailing positional turn. Normal inbox delivery does not use resume or the Stop hook.
-- **Discovered session id + native rollout path.** Codex can't be handed a session id, so `newSessionId()`
-  returns `nil` (`.discovered`, not Claude's `.seeded --session-id`); `sessionInfo`/`discover()` instead
-  read the id back from Codex's normal state location, normally
-  `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is the filename tail). Orchestra does **not**
+- **App-server thread id + native rollout path.** Codex can't be handed a session id, so `newSessionId()`
+  returns `nil` (`.discovered`, not Claude's `.seeded --session-id`). Its launch-local app server is the
+  sole authority for the durable thread id; only after that id binds does `sessionInfo` locate the matching
+  `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` for metadata and resume information. Orchestra does **not**
   export `CODEX_HOME`: Codex keeps its native authentication, plugins, configuration, and session state.
-  The adapter retains an injectable home resolver only for hermetic rollout-discovery tests.
+  The adapter retains an injectable home resolver only for hermetic metadata tests. SessionStart's hook
+  `session_id` and rollout `session_meta` are deliberately identity-silent.
 - **Launch-scoped hooks, trust, and guidance — via a per-launch profile file.** `prepareToLaunch` writes a
   per-cwd Codex profile (`$CODEX_HOME/orch-<hash>.config.toml`), and `start`/`resume` select it with a tiny
   `-p <name>`. The profile carries the same three things the first cut inlined as `-c` overrides: the
@@ -297,8 +298,8 @@ core handles the difference purely through the descriptor:
   (tokens ÷ window), because the Codex TUI reports no percentage of its own.
 
 **Metadata tail plus structured agent state.** Codex has two deliberately separate observation paths.
-The rollout tail remains the source for session discovery, context usage, model, and coarse description;
-the launch-local app server is the sole source for turn state and provider human need.
+The rollout tail supplies context usage, model, and coarse description after binding; the launch-local app
+server is the sole source for thread identity, turn state, and provider human need.
 
 - **Transport — `RolloutTailer`** (`RolloutTailer.swift`, a `public actor`): tracks a **per-card byte
   offset** into the rollout file and, on each poll, returns only the **newline-terminated** lines appended
@@ -313,9 +314,12 @@ the launch-local app server is the sole source for turn state and provider human
   in microseconds since epoch, so a duplicate or out-of-order metadata line loses at
   [`report`'s seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel).
 - **Structured observer — `CodexAppServerObserver`**: every Codex launch runs the stock remote TUI and a
-  launch-local `codex app-server` in one tmux-owned process tree. Core connects a passive WebSocket client
-  over the per-card Unix socket, calls `thread/resume` once to reconcile current state, then consumes
-  `turn/started`, `turn/completed`, and `thread/status/changed` notifications. The adapter maps them into
+  launch-local `codex app-server` in one tmux-owned process tree. For a known thread, Core connects over the
+  per-card Unix socket and calls `thread/resume`. For an unbound fresh launch, it calls `thread/list` once
+  with the exact cwd and filters by the durable launch cutoff, root ownership, and non-ephemeral lifetime;
+  exactly one candidate binds, while zero or several remain unavailable and listen for a filtered
+  `thread/started`. After binding it consumes `turn/started`, `turn/completed`, and
+  `thread/status/changed` notifications. The adapter maps them into
   provider-neutral `AgentSignal`s. It never answers app-server approval/input requests, because those are
   shared first-response-wins requests also owned by the TUI.
 - **Availability and restart:** the observer is fenced by Card epoch and exact Codex thread id. A socket
@@ -480,15 +484,10 @@ A card being *born* — `launching` (blank spawn/reopen) or `relaunching` (resum
 alive by the adapter's `AgentCapabilities.readinessConfirmation`, never by agent identity (the **D1**
 resolution — one axis covers *both* being-born phases). `confirmReadiness` dispatches on it:
 
-- **`.sessionStartHook`** (Claude) — inline-await the agent's own SessionStart telemetry reaching
+- **`.sessionStartHook`** (Claude and Codex) — inline-await the agent's own SessionStart telemetry reaching
   `report()`: `startup` confirms a fresh launch, `resume` confirms a relaunch. One hook capability covers
-  both being-born phases.
-- **`.rolloutMeta`** (Codex, `.discovered` id) — also await: a fresh launch writes a rollout `session_meta`
-  line that the daemon-side tail observer resolves the waiter on (binding a discovered id mid-`launching`
-  *is* the ready signal). A `codex resume` writes **no** rollout, so nothing arrives — the **universal N=3
-  liveness-tick fallback** (`tickLaunchReady`, ~6 s, well under the 30 s launch timeout) resolves the still-
-  pending waiter within the grace, keeping the relaunch **on** the readiness gate rather than landing live
-  immediately and bypassing it.
+  both being-born phases. For Codex this hook proves lifecycle readiness and carries orientation only; its
+  `session_id` does not bind the app-server thread.
 - **`.relaunchLiveness`** — the successful tmux `ensure` *is* the confirmation (the agent emits no marker at
   all), so it must **not** wait for a signal that never comes (which would time out and fail-dangerously
   `markDead` a live card).

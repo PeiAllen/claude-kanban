@@ -56,7 +56,7 @@ struct CardRuntime {
     struct AgentObservationIdentity: Equatable, Sendable {
         let endpoint: AgentObservationEndpoint
         let sessionEpoch: Int
-        let harnessSessionId: String
+        let binding: AgentObservationBinding
     }
 
     /// One ordered ingress for every provider observation affecting this card. The coordinator is

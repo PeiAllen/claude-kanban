@@ -18,7 +18,7 @@ struct CapabilitiesTests {
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
         #expect(AgentCapabilities.TerminalImagePaste.allCases.map(\.rawValue) == ["direct", "controlV"])
         #expect(AgentCapabilities.ReadinessConfirmation.allCases.map(\.rawValue)
-                == ["sessionStartHook", "rolloutMeta", "relaunchLiveness"])
+                == ["sessionStartHook", "relaunchLiveness"])
     }
 
     @Test("Claude advertises its frozen shipped tuple")
@@ -38,13 +38,10 @@ struct CapabilitiesTests {
         #expect(ClaudeCodeAdapter().capabilities == .claudeCode)
     }
 
-    // Codex is `.discovered` + `fileTail`: a fresh launch writes a rollout whose first line is a
-    // `session_meta` record, so the daemon's rollout tail confirms a LAUNCH via `.rolloutMeta`. A
-    // `codex resume` writes no rollout, so a relaunch has no marker and rides the universal N=3 fallback —
-    // still on the readiness gate, never an immediate ensure-is-confirmation.
-    @Test("Codex advertises rolloutMeta readiness confirmation (fileTail agent, session_meta launch marker)")
+    @Test("Codex uses SessionStart for readiness while app-server owns its discovered thread id")
     func codexReadinessConfirmation() {
-        #expect(AgentCapabilities.codex.readinessConfirmation == .rolloutMeta)
+        #expect(AgentCapabilities.codex.readinessConfirmation == .sessionStartHook)
+        #expect(AgentCapabilities.codex.sessionId == .discovered)
         #expect(AgentCapabilities.codex.telemetry == .fileTail)
         #expect(CodexAdapter().capabilities == .codex)
     }

@@ -67,12 +67,6 @@ extension OrchestraService {
                 if let old = task.agentSessionId, !old.isEmpty { task.priorSessionIds.append(old) }
                 task.agentSessionId = newId
                 task.sessionDiscoverySince = nil
-                // Codex `.rolloutMeta` readiness: binding a discovered id while the card is still LAUNCHING
-                // means the rollout tail just observed the fresh session's `session_meta` line — that IS the
-                // launch's readiness signal, so resolve the spawn/reopen's inline waiter. Capability-neutral:
-                // only a `.discovered` agent binds a new id mid-launch (a `.seeded` agent's id never rolls
-                // while launching), so this never fires for Claude.
-                if before.phase.kind == .launching { resolveReadiness(id, true, observedEpoch: observedEpoch) }
             }
 
             // SessionStart source semantics.

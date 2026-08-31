@@ -252,16 +252,13 @@ extension OrchestraService {
     }
 
     /// Confirm a being-born card (launch OR relaunch) is alive — HOW depends on the agent (capability, never
-    /// identity). `.sessionStartHook` waits for the agent's own SessionStart telemetry (Claude), or times
-    /// out. `.rolloutMeta` ALSO waits (Codex): a fresh launch's rollout `session_meta` line resolves the
-    /// waiter via the tail observer; a `codex resume` writes no rollout, so the N=3 `launchReadyTicks`
-    /// fallback resolves it within the grace — either way it stays ON the readiness gate (never immediate,
-    /// which would leave no waiter and bypass the gate). `.relaunchLiveness` takes the successful `ensure`
+    /// identity). `.sessionStartHook` waits for the agent's own SessionStart telemetry, or times out.
+    /// `.relaunchLiveness` takes the successful `ensure`
     /// as the confirmation because the agent emits no marker at all, so it must NOT wait for one.
     func confirmReadiness(_ id: UUID, adapter: any Adapter, graceSeconds: Int,
                           expectedEpoch: Int) async -> ReadinessOutcome {
         switch adapter.capabilities.readinessConfirmation {
-        case .sessionStartHook, .rolloutMeta:
+        case .sessionStartHook:
             return await awaitReadiness(id, graceSeconds: graceSeconds, expectedEpoch: expectedEpoch)
         case .relaunchLiveness:
             // No marker at all — a successful `ensure` is the liveness confirmation.

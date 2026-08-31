@@ -105,11 +105,11 @@ struct CodexRolloutParseTests {
         #expect((t2.snapshot?.seq ?? 0) > (t1.snapshot?.seq ?? 0))
     }
 
-    @Test("session_meta binds id; unhandled + junk lines drop to nil")
+    @Test("session_meta is identity-silent; unhandled + junk lines drop to nil")
     func junkDropsNil() {
         #expect(tail("not json at all") == nil)
         #expect(tail("") == nil)
-        #expect(tail(#"{"type":"session_meta","payload":{"id":"x"}}"#)?.event?.sessionId == "x")
+        #expect(tail(#"{"type":"session_meta","payload":{"id":"x"}}"#) == nil)
         #expect(tail(#"{"type":"unhandled","payload":{}}"#) == nil)
     }
 
@@ -199,7 +199,7 @@ struct RolloutTailerTests {
 @Suite("Codex telemetry e2e — tail → parse → report → board")
 struct CodexTelemetryE2ETests {
 
-    /// Spawn a Codex card with an injected rollout-discovery home + StubSessions, and return the pieces.
+    /// Spawn a Codex card, bind the id as its app-server would, then expose its matching rollout metadata.
     private func makeEnv() async throws -> (svc: OrchestraService, card: Task, rollout: String) {
         let base = NSTemporaryDirectory() + "codex-tel-\(UUID().uuidString)"
         let work = base + "/work"
@@ -223,8 +223,6 @@ struct CodexTelemetryE2ETests {
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"),
                                    proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
-        // A Codex spawn awaits rollout metadata. Let the N=3 fallback land first, then write the fresh
-        // metadata as the real agent would when it becomes available after the fallback.
         async let spawned = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.5",
                                                  agentId: "codex",
                                                  cwd: PathResolver.canonical(work)))
@@ -235,7 +233,8 @@ struct CodexTelemetryE2ETests {
         let timestamp = formatter.string(from: Date())
         FileManager.default.createFile(atPath: rollout, contents: nil)
         append(rollout, #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(PathResolver.canonical(work))","timestamp":"\#(timestamp)"}}"#)
-        return (svc, card, rollout)
+        try await svc.report(card.id, StatusReport(sessionId: sid))
+        return (svc, try #require(await svc.store.get(card.id)), rollout)
     }
 
     private func makeMultiEnv(sameCwd: Bool = false) async throws -> (svc: OrchestraService, cardA: Task, rolloutA: String,
@@ -282,7 +281,13 @@ struct CodexTelemetryE2ETests {
         FileManager.default.createFile(atPath: rolloutB, contents: nil)
         append(rolloutA, #"{"timestamp":"\#(timestampA)","type":"session_meta","payload":{"id":"\#(sidA)","cwd":"\#(workA)","timestamp":"\#(timestampA)","thread_source":"user"}}"#)
         append(rolloutB, #"{"timestamp":"\#(timestampB)","type":"session_meta","payload":{"id":"\#(sidB)","cwd":"\#(workB)","timestamp":"\#(timestampB)","thread_source":"user"}}"#)
-        return (svc, cardA, rolloutA, cardB, rolloutB)
+        try await svc.report(cardA.id, StatusReport(sessionId: sidA))
+        try await svc.report(cardB.id, StatusReport(sessionId: sidB))
+        return (
+            svc,
+            try #require(await svc.store.get(cardA.id)), rolloutA,
+            try #require(await svc.store.get(cardB.id)), rolloutB
+        )
     }
 
     private func append(_ path: String, _ line: String) {
@@ -290,16 +295,10 @@ struct CodexTelemetryE2ETests {
         fh.seekToEndOfFile(); fh.write(Data((line + "\n").utf8)); try? fh.close()
     }
 
-    private func rolloutSessionId(_ path: String) throws -> String {
-        let contents = try String(contentsOfFile: path, encoding: .utf8)
-        let firstLine = try #require(contents.split(whereSeparator: \.isNewline).first.map(String.init))
-        return try #require(CodexAdapter().parse(.fileTail(line: firstLine))?.event?.sessionId)
-    }
-
     @Test("pollTelemetry updates ctxPct without changing app-server turn status")
     func tailUpdatesBoard() async throws {
         let (svc, card, rollout) = try await makeEnv()
-        await svc.pollTelemetry()   // bind session_meta, which starts this fixture's missing app-server observer
+        await svc.pollTelemetry()
         try await pollUntil("missing app-server to make turn observation unavailable") {
             await svc.store.get(card.id)?.turnStatus == .unavailable
         }
@@ -326,7 +325,7 @@ struct CodexTelemetryE2ETests {
     @Test("legacy rollout TurnComplete no longer changes authoritative turn status")
     func legacyIdleIsIgnored() async throws {
         let (svc, card, rollout) = try await makeEnv()
-        await svc.pollTelemetry()   // bind session_meta, which starts this fixture's missing app-server observer
+        await svc.pollTelemetry()
         try await pollUntil("missing app-server to make turn observation unavailable") {
             await svc.store.get(card.id)?.turnStatus == .unavailable
         }
@@ -352,7 +351,7 @@ struct CodexTelemetryE2ETests {
 
     @Test("multiple Codex cards keep independent rollout status and description")
     func multipleCardsDoNotShareNewestRolloutStatus() async throws {
-        let (svc, cardA, rolloutA, cardB, rolloutB) = try await makeMultiEnv()
+        let (svc, cardA, rolloutA, cardB, rolloutB) = try await makeMultiEnv(sameCwd: true)
         append(rolloutA, #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"older_tool"}}"#)
         append(rolloutB, #"{"timestamp":"2026-07-01T10:01:03.000Z","type":"response_item","payload":{"type":"function_call","name":"newer_tool"}}"#)
 
@@ -363,45 +362,6 @@ struct CodexTelemetryE2ETests {
         #expect(afterA.agentSessionId != afterB.agentSessionId)
         #expect(afterA.desc == "Running older_tool")
         #expect(afterB.desc == "Running newer_tool")
-    }
-
-    @Test("two same-cwd Codex fallbacks stay unbound with two fresh primary rollouts")
-    func sameCwdFallbackDoesNotCrossBind() async throws {
-        let (svc, cardA, _, cardB, _) = try await makeMultiEnv(sameCwd: true)
-        await svc.pollTelemetry()
-
-        let after = await svc.list()
-        #expect(after.first { $0.id == cardA.id }?.agentSessionId == nil)
-        #expect(after.first { $0.id == cardB.id }?.agentSessionId == nil)
-    }
-
-    @Test("same-cwd Codex SessionStart hooks bind their owning cards without discovery")
-    func sameCwdSessionStartHooksBindDirectly() async throws {
-        let (svc, cardA, rolloutA, cardB, rolloutB) = try await makeMultiEnv(sameCwd: true)
-        let adapter = CodexAdapter()
-        let sidA = try rolloutSessionId(rolloutA)
-        let sidB = try rolloutSessionId(rolloutB)
-        let reportA = try #require(adapter.parse(.hooksPush(kind: "session", payload: .object([
-            "session_id": .string(sidA), "source": .string("startup"),
-        ]))))
-        let reportB = try #require(adapter.parse(.hooksPush(kind: "session", payload: .object([
-            "session_id": .string(sidB), "source": .string("startup"),
-        ]))))
-
-        _ = await svc.handleHook(cardA.id.uuidString, event: .sessionStart, report: reportA, source: .startup)
-        _ = await svc.handleHook(cardB.id.uuidString, event: .sessionStart, report: reportB, source: .startup)
-
-        let bound = await svc.list()
-        #expect(bound.first { $0.id == cardA.id }?.agentSessionId == sidA)
-        #expect(bound.first { $0.id == cardB.id }?.agentSessionId == sidB)
-
-        append(rolloutA, #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"card_a"}}"#)
-        append(rolloutB, #"{"timestamp":"2026-07-01T10:01:03.000Z","type":"response_item","payload":{"type":"function_call","name":"card_b"}}"#)
-        await svc.pollTelemetry()
-
-        let after = await svc.list()
-        #expect(after.first { $0.id == cardA.id }?.desc == "Running card_a")
-        #expect(after.first { $0.id == cardB.id }?.desc == "Running card_b")
     }
 
     @Test("a Claude (hooksPush) card is NOT tailed by pollTelemetry")

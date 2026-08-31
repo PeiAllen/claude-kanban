@@ -22,7 +22,9 @@ struct CodexAppServerObserverTests {
         var observations: [RawTelemetry] = []
 
         #expect(throws: CodexAppServerError.connectionClosed) {
-            try observer.run(threadId: "thread-1") { observations.append($0) }
+            try observer.run(
+                binding: .init(harnessSessionId: "thread-1", cwd: "/work", startedAfter: nil)
+            ) { observations.append($0) }
         }
 
         #expect(peer.didOpen)
@@ -61,11 +63,67 @@ struct CodexAppServerObserverTests {
         let observer = CodexAppServerObserver(peer: peer)
 
         #expect(throws: CodexAppServerError.connectionClosed) {
-            try observer.run(threadId: "thread-1") { _ in }
+            try observer.run(
+                binding: .init(harnessSessionId: "thread-1", cwd: "/work", startedAfter: nil)
+            ) { _ in }
         }
 
         #expect(peer.sent.count == 3)
         #expect(!peer.sent.contains { $0["id"]?.intValue == 91 })
+    }
+
+    @Test("unbound observer binds only one launch-scoped root thread, then follows exact starts")
+    func discoverUnboundThread() throws {
+        let eligible = Self.thread(id: "thread-1", cwd: "/work", createdAt: 101)
+        let peer = FakeCodexAppServerPeer(incoming: [
+            Self.response(id: 1, result: .object([:])),
+            Self.response(id: 2, result: .object(["data": .array([
+                Self.thread(id: "stale", cwd: "/work", createdAt: 99),
+                Self.thread(id: "child", cwd: "/work", createdAt: 101, parent: "thread-1"),
+                Self.thread(id: "ephemeral", cwd: "/work", createdAt: 101, ephemeral: true),
+                Self.thread(id: "other-cwd", cwd: "/other", createdAt: 101),
+                eligible,
+            ])])),
+        ])
+        let observer = CodexAppServerObserver(peer: peer)
+        var observations: [RawTelemetry] = []
+
+        #expect(throws: CodexAppServerError.connectionClosed) {
+            try observer.run(binding: .init(
+                harnessSessionId: nil,
+                cwd: "/work",
+                startedAfter: Date(timeIntervalSince1970: 100.9)
+            )) { observations.append($0) }
+        }
+
+        #expect(peer.sent[2]["method"]?.stringValue == "thread/list")
+        #expect(peer.sent[2]["params"]?["cwd"]?.stringValue == "/work")
+        #expect(observations == [
+            .rpcResponse(method: "thread/list", result: .object(["data": .array([eligible])])),
+        ])
+
+        let replacement = Self.thread(id: "thread-3", cwd: "/work", createdAt: 102)
+        let ambiguousPeer = FakeCodexAppServerPeer(incoming: [
+            Self.response(id: 1, result: .object([:])),
+            Self.response(id: 2, result: .object(["data": .array([
+                eligible,
+                Self.thread(id: "thread-2", cwd: "/work", createdAt: 101),
+            ])])),
+            Self.notification("thread/started", ["thread": replacement]),
+        ])
+        let ambiguousObserver = CodexAppServerObserver(peer: ambiguousPeer)
+        observations.removeAll()
+
+        #expect(throws: CodexAppServerError.connectionClosed) {
+            try ambiguousObserver.run(binding: .init(
+                harnessSessionId: nil,
+                cwd: "/work",
+                startedAfter: Date(timeIntervalSince1970: 100.9)
+            )) { observations.append($0) }
+        }
+        #expect(observations == [
+            .rpcNotification(method: "thread/started", params: .object(["thread": replacement])),
+        ])
     }
 
     private static func response(id: Int, result: JSONValue) -> JSONValue {
@@ -74,6 +132,23 @@ struct CodexAppServerObserverTests {
 
     private static func notification(_ method: String, _ params: [String: JSONValue]) -> JSONValue {
         .object(["jsonrpc": .string("2.0"), "method": .string(method), "params": .object(params)])
+    }
+
+    private static func thread(
+        id: String,
+        cwd: String,
+        createdAt: Int,
+        parent: String? = nil,
+        ephemeral: Bool = false
+    ) -> JSONValue {
+        .object([
+            "id": .string(id),
+            "cwd": .string(cwd),
+            "createdAt": .int(createdAt),
+            "parentThreadId": parent.map(JSONValue.string) ?? .null,
+            "ephemeral": .bool(ephemeral),
+            "status": .object(["type": .string("idle")]),
+        ])
     }
 }
 

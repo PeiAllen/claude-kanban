@@ -11,7 +11,7 @@ import Foundation
 public struct AgentCapabilities: Sendable, Equatable, Codable {
 
     /// How the agent's session id is obtained. `seeded` = Orchestra mints it pre-launch (Claude
-    /// `--session-id`); `discovered` = read back from the agent's own output post-launch (Codex rollout).
+    /// `--session-id`); `discovered` = learned from the provider after launch (Codex app-server thread).
     public enum SessionId: String, Sendable, Equatable, Codable, CaseIterable {
         case seeded, discovered
     }
@@ -31,17 +31,13 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
 
     /// How a card being BORN — `launching` (blank spawn/reopen) OR `relaunching` (resume/restart) — is
     /// confirmed alive (D1: one axis covers both being-born phases). `sessionStartHook` = wait for the
-    /// agent's own SessionStart telemetry to reach `report()` (Claude `hooksPush`: `startup` confirms a
-    /// launch, `resume` confirms a relaunch — precise + fast). `rolloutMeta` = wait for the agent's rollout
-    /// `session_meta` line, tailed post-launch (Codex `.discovered`): a fresh launch writes one so the tail
-    /// observer resolves readiness on it; a `codex resume` writes NO rollout, so the universal N=3
-    /// liveness-tick fallback (`launchReadyTicks`) resolves the still-pending waiter within the grace —
-    /// keeping the relaunch ON the readiness gate rather than off it. `relaunchLiveness` = the successful
+    /// agent's own SessionStart telemetry to reach `report()` (`startup` confirms a launch, `resume`
+    /// confirms a relaunch — precise + fast). `relaunchLiveness` = the successful
     /// relaunch (tmux `ensure`) IS the confirmation because the agent emits no marker at all; waiting for a
     /// signal that never comes would time out at the grace and fail-DANGEROUSLY `markDead` a live card. The
     /// continuous liveness reconcile (folded into the 2s `reconcile()` tick) is the safety net for every variant.
     public enum ReadinessConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
-        case sessionStartHook, rolloutMeta, relaunchLiveness
+        case sessionStartHook, relaunchLiveness
     }
 
     /// The strength of the read-only guarantee. `sandboxed` = an OS sandbox is the boundary (true RO);

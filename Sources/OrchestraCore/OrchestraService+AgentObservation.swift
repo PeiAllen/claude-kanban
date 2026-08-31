@@ -91,9 +91,19 @@ extension OrchestraService {
         }
 
         guard let adapter = try? registry.get(card.agentId),
-              let endpoint = preparedObservationEndpoint(for: card, adapter: adapter),
-              let sessionId = card.agentSessionId, !sessionId.isEmpty
+              let endpoint = preparedObservationEndpoint(for: card, adapter: adapter)
         else {
+            stopAgentObservation(card.id)
+            return
+        }
+
+        let binding = AgentObservationBinding(
+            harnessSessionId: card.agentSessionId,
+            cwd: card.cwd,
+            startedAfter: card.agentSessionId == nil ? card.sessionDiscoverySince : nil
+        )
+        if endpoint.isPushOnly,
+           binding.harnessSessionId?.isEmpty != false {
             stopAgentObservation(card.id)
             return
         }
@@ -101,7 +111,7 @@ extension OrchestraService {
         let identity = CardRuntime.AgentObservationIdentity(
             endpoint: endpoint,
             sessionEpoch: card.sessionEpoch,
-            harnessSessionId: sessionId
+            binding: binding
         )
         if runtime[card.id]?.agentObservationIdentity == identity,
            (endpoint.isPushOnly || runtime[card.id]?.tasks[.agentObservation] != nil) {
@@ -113,7 +123,7 @@ extension OrchestraService {
             runtime[card.id]?.agentObservationIdentity = identity
             let context = AgentSignalContext(
                 sessionEpoch: card.sessionEpoch,
-                harnessSessionId: sessionId
+                harnessSessionId: binding.harnessSessionId
             )
             if let pending, pending.context == context {
                 await submitAgentSignals(pending.signals, cardId: card.id, context: context)
@@ -130,7 +140,7 @@ extension OrchestraService {
         }
         guard let firstSource = adapter.makeObservationSource(
             endpoint: endpoint,
-            harnessSessionId: sessionId
+            binding: binding
         ) else {
             stopAgentObservation(card.id)
             return
@@ -180,7 +190,7 @@ extension OrchestraService {
                     guard !_Concurrency.Task.isCancelled else { break }
                     source = adapter.makeObservationSource(
                         endpoint: identity.endpoint,
-                        harnessSessionId: identity.harnessSessionId
+                        binding: identity.binding
                     )
                 }
                 await self?.clearSlot(card.id, .agentObservation, ifToken: token)
@@ -201,14 +211,24 @@ extension OrchestraService {
               let card = await store.get(cardId),
               card.phase.kind == .live,
               card.sessionEpoch == identity.sessionEpoch,
-              card.agentSessionId == identity.harnessSessionId,
+              card.agentSessionId == identity.binding.harnessSessionId,
               observationStillOwns(cardId, identity: identity, token: token),
               let adapter = try? registry.get(card.agentId)
         else { return }
 
+        // A structured provider may create or replace its durable session identity after launch. The
+        // source has already fenced and provider-filtered this raw event; persist the adapter-normalized
+        // identity first, which synchronously retires this source and rearms against the exact session.
+        if let patch = adapter.parse(raw),
+           let sessionId = patch.event?.sessionId,
+           !sessionId.isEmpty {
+            try? await report(card.id, patch, observedEpoch: identity.sessionEpoch)
+            return
+        }
+
         let context = AgentSignalContext(
             sessionEpoch: identity.sessionEpoch,
-            harnessSessionId: identity.harnessSessionId
+            harnessSessionId: identity.binding.harnessSessionId
         )
         await submitAgentSignals(
             adapter.agentSignals(from: raw, context: context),
@@ -231,7 +251,7 @@ extension OrchestraService {
             cardId: card.id,
             context: .init(
                 sessionEpoch: identity.sessionEpoch,
-                harnessSessionId: identity.harnessSessionId
+                harnessSessionId: identity.binding.harnessSessionId
             )
         )
     }

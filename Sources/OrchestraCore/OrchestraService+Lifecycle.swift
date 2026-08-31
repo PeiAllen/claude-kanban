@@ -102,9 +102,9 @@ extension OrchestraService {
                 // `creatingWorktree`); revisit this predicate if a direct-entry-to-`launching` edge is added.
                 if to.kind == .creatingWorktree || to.kind == .relaunching { t.sessionEpoch += 1 }
                 mutate(&t)
-                // A discovered agent can reach `.live` through N=3 before its rollout metadata appears.
-                // Keep the launch boundary until an id binds so a later telemetry tick can reject stale cwd
-                // history while still accepting its own delayed rollout.
+                // A discovered provider can reach `.live` through the readiness fallback before its
+                // structured source binds an id. Keep the launch boundary so attach reconciliation can
+                // reject stale provider sessions.
                 if to.kind == .creatingWorktree {
                     t.sessionDiscoverySince = nil
                 } else if to.kind == .launching || to.kind == .relaunching {

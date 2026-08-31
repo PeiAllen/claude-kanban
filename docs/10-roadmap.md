@@ -16,7 +16,9 @@ describe work to pick up, although the non-git card substrate and the connection
 
 The provider seam now has Claude and Codex adapters. Claude supplies strictly correlated hook observations
 with an OTLP fallback; Codex uses rollout data for metadata and the app server alone for turn state and
-provider human need. Their normalized observations reduce into one provider-neutral live state.
+provider human need. The app server also owns Codex's thread identity: one fail-closed attach reconciliation
+binds a fresh card, and rollout/hook metadata cannot race it. Their normalized observations reduce into one
+provider-neutral live state.
 
 The native inbox is deliberately smaller than the retired delivery design. `send` durably queues a local
 row. A per-live-session native sender in `CardRuntime` later makes a bounded best-effort request, and
@@ -198,8 +200,8 @@ Sequencing guidance from the design gates:
    (SSH-tunnel blips need it either way); see [chapter 9](09-design-decisions.md#shipped-feature-history).
 3. **First multi-provider consumer:** build a **`CodexAdapter`** (axis 2) once the adapter report-
    mapping seam lands. Studying Codex CLI forced three design points now baked into the model-providers
-   design: session ids are **two-mode** (Claude seeds an id; Codex can't, so it's discovered from the
-   report), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
+   design: session ids are **two-mode** (Claude seeds an id; Codex can't, so its app server exposes the
+   thread after launch), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
    new `AgentModel.contextWindow`, from a per-adapter **offline model table**), and report wiring is
    `{files, env, argv}` + trust, not one `--settings` file. The L3 design refines report handling further:
    the daemon owns only the **metadata transport** (push / rollout-tail / pty-scrape, keyed by the
