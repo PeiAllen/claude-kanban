@@ -105,7 +105,9 @@ public final class OTLPHTTPTraceReceiver: @unchecked Sendable {
     private var serverFD: Int32
     private var started = false
     private var callback: (@Sendable (OTLPTraceObservation) -> Void)?
+    private var activeClients: Set<Int32> = []
     private let acceptQueue = DispatchQueue(label: "orchestra.otlp.accept")
+    private let clientGroup = DispatchGroup()
 
     public init(runtimeStateDir: String) throws {
         try FileManager.default.createDirectory(
@@ -155,41 +157,59 @@ public final class OTLPHTTPTraceReceiver: @unchecked Sendable {
             return (fd, wasStarted)
         }
         guard state.fd >= 0 else { return }
+        var listenerClosed = false
         if state.wasStarted {
             // A listening TCP socket does not reliably wake `accept` through shutdown alone on macOS.
-            // Connect once over loopback, then wait for the accept queue to observe the stopped identity
-            // before closing the listener and allowing an immediate restart to rebind the persisted port.
+            // Connect once over loopback, then join admission before draining every accepted client.
             if !Self.wakeAccept(port: port) {
                 shutdownFD(state.fd)
                 closeFD(state.fd)
-                acceptQueue.sync {}
-                return
+                listenerClosed = true
             }
             acceptQueue.sync {}
         }
-        closeFD(state.fd)
+        lock.withLock {
+            // Serve jobs remain the sole closers. Holding their ownership lock across shutdown prevents
+            // a finished job from closing and reusing an fd while stop is still interrupting it.
+            for client in activeClients { shutdownFD(client) }
+        }
+        clientGroup.wait()
+        if !listenerClosed { closeFD(state.fd) }
     }
 
     private func acceptLoop(_ listener: Int32) {
         while true {
-            guard lock.withLock({ serverFD == listener }) else { return }
             let client = accept(listener, nil, nil)
             if client < 0 {
                 if errno == EINTR { continue }
                 if !lock.withLock({ serverFD == listener }) { return }
                 continue
             }
-            guard lock.withLock({ serverFD == listener }) else {
+            let registered = lock.withLock { () -> Bool in
+                guard serverFD == listener else { return false }
+                _ = activeClients.insert(client)
+                clientGroup.enter()
+                return true
+            }
+            guard registered else {
                 closeFD(client)
                 return
             }
             Self.suppressSIGPIPE(client)
-            DispatchQueue.global().async { [weak self] in self?.serve(client) }
+            DispatchQueue.global().async { [self] in
+                defer {
+                    lock.withLock {
+                        _ = activeClients.remove(client)
+                        closeFD(client)
+                    }
+                    clientGroup.leave()
+                }
+                serve(client)
+            }
         }
     }
 
     private func serve(_ client: Int32) {
-        defer { closeFD(client) }
         do {
             let request = try Self.readRequest(client)
             let identity = try route(request.path)
