@@ -295,6 +295,7 @@ struct NativeInboxTests {
 
 private extension OrchestraService {
     func installNativeInboxSenderForTest(card: Task, sender: any AgentMessageSender) {
+        disarm(card.id, .nativeInbox)
         ensureRuntime(for: card)
         runtime[card.id]?.agentMessageHandle = .init(
             identity: .init(
