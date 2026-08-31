@@ -76,6 +76,13 @@ extension OrchestraService {
         if runtime[card.id]?.agentMessageHandle?.identity != expected {
             stopAgentMessageHandle(card.id)
         }
+        // Status reconciliation is not a delivery producer. If the exact session already owns a sender
+        // and no provider supplied refreshed credentials, preserve it without re-arming queued work.
+        // Enqueue/retry and genuine handle installation or replacement own the send arms.
+        if runtime[card.id]?.agentMessageHandle?.identity == expected,
+           runtime[card.id]?.pendingAgentMessageEndpoint == nil {
+            return
+        }
         guard let adapter = try? registry.get(expected.providerId) else {
             armNativeInbox(card.id)
             return

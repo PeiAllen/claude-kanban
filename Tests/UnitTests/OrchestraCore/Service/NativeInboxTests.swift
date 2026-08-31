@@ -176,6 +176,9 @@ struct NativeInboxTests {
 
         await env.svc.stageMatchingNativeInboxEndpointForTest(card: stored)
         #expect(await env.svc.transition(card.id, to: .live(.waiting)) == .applied)
+        // The first refresh consumes the matching hook endpoint. A later status-only refresh has no new
+        // endpoint, but it must still preserve the current sender without turning status into a send arm.
+        #expect(await env.svc.transition(card.id, to: .live(.running)) == .applied)
         await yieldBriefly()
 
         #expect(sender.messages.isEmpty)
