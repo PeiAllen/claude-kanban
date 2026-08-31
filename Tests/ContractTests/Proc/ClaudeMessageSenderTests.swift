@@ -3,6 +3,14 @@ import Testing
 @testable import OrchestraCore
 import OrchestraKit
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
+
 @Suite("Claude native message sender — real UDS contract", .serialized)
 struct ClaudeMessageSenderTests {
     @Test("writes exact JSON auth and user frames, then closes the connection")
@@ -165,7 +173,6 @@ struct ClaudeMessageSenderTests {
 
         let result = SendResult()
         let serverStarted = DispatchSemaphore(value: 0)
-        let accepted = DispatchSemaphore(value: 0)
         let releasePeer = DispatchSemaphore(value: 0)
         let serverFinished = DispatchSemaphore(value: 0)
         let server = Thread {
@@ -174,8 +181,12 @@ struct ClaudeMessageSenderTests {
             let client = UDS.accept(listener)
             guard client >= 0 else { return }
             defer { closeFD(client) }
+            var receiveBuffer: Int32 = 64 * 1024
+            guard setsockopt(
+                client, SOL_SOCKET, SO_RCVBUF, &receiveBuffer,
+                socklen_t(MemoryLayout<Int32>.size)
+            ) == 0 else { return }
             result.markStarted()
-            accepted.signal()
             _ = releasePeer.wait(timeout: .now() + 10)
         }
         server.stackSize = 1 << 20
@@ -186,26 +197,20 @@ struct ClaudeMessageSenderTests {
             socketPath: path,
             token: "runtime-secret"
         )))
-        let message = String(repeating: "x", count: 32 * 1024 * 1024)
-        let completed = DispatchSemaphore(value: 0)
-        _Concurrency.Task {
-            do {
-                try await sender.send(message, timeout: 2)
-                result.succeed()
-            } catch {
-                result.fail()
-            }
-            completed.signal()
+        // Keep encoding well below the attempt deadline even under full-suite load. The peer's small
+        // receive buffer makes this payload ample to force the real socket write into backpressure.
+        let message = String(repeating: "x", count: 4 * 1024 * 1024)
+        do {
+            try await sender.send(message, timeout: 2)
+            result.succeed()
+        } catch {
+            result.fail()
         }
 
-        let peerAccepted = await Self.wait(accepted) == .success
-        let deadlineFinished = await Self.wait(completed) == .success
         sender.shutdown()
         releasePeer.signal()
         let peerClosed = await Self.wait(serverFinished) == .success
 
-        #expect(peerAccepted)
-        #expect(deadlineFinished)
         #expect(peerClosed)
         #expect(result.failed)
         let finishedAt = try #require(result.finishedAt)
