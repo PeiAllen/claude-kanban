@@ -86,9 +86,12 @@ struct ClaudeOTLPObservationTests {
         #expect(recorder.values.first?.sessionEpoch == 11)
         receiver.stop()
 
-        let restarted = try OTLPHTTPTraceReceiver(runtimeStateDir: root)
-        #expect(restarted.baseURL == firstBaseURL)
-        restarted.stop()
+        for _ in 0..<5 {
+            let restarted = try OTLPHTTPTraceReceiver(runtimeStateDir: root)
+            #expect(restarted.baseURL == firstBaseURL)
+            restarted.start { _ in }
+            restarted.stop()
+        }
     }
 
     private func exportPayload(sessionId: String) -> Data {

@@ -99,6 +99,7 @@ public final class OTLPHTTPTraceReceiver: @unchecked Sendable {
     private static let maximumBodyBytes = 2 * 1024 * 1024
 
     public let baseURL: String
+    private let port: UInt16
     private let token: String
     private let lock = NSLock()
     private var serverFD: Int32
@@ -126,6 +127,7 @@ public final class OTLPHTTPTraceReceiver: @unchecked Sendable {
             catch { closeFD(listener.fd); throw error }
         }
         self.serverFD = listener.fd
+        self.port = listener.port
         self.token = endpoint.token
         self.baseURL = "http://127.0.0.1:\(listener.port)/\(endpoint.token)"
     }
@@ -133,39 +135,53 @@ public final class OTLPHTTPTraceReceiver: @unchecked Sendable {
     deinit { stop() }
 
     public func start(onObservation: @escaping @Sendable (OTLPTraceObservation) -> Void) {
-        let shouldStart = lock.withLock { () -> Bool in
-            guard !started, serverFD >= 0 else { return false }
+        let listener = lock.withLock { () -> Int32? in
+            guard !started, serverFD >= 0 else { return nil }
             callback = onObservation
             started = true
-            return true
+            return serverFD
         }
-        guard shouldStart else { return }
-        acceptQueue.async { [weak self] in self?.acceptLoop() }
+        guard let listener else { return }
+        acceptQueue.async { [weak self] in self?.acceptLoop(listener) }
     }
 
     public func stop() {
-        let fd = lock.withLock { () -> Int32 in
+        let state = lock.withLock { () -> (fd: Int32, wasStarted: Bool) in
             let fd = serverFD
+            let wasStarted = started
             serverFD = -1
             callback = nil
             started = false
-            return fd
+            return (fd, wasStarted)
         }
-        if fd >= 0 {
-            shutdownFD(fd)
-            closeFD(fd)
+        guard state.fd >= 0 else { return }
+        if state.wasStarted {
+            // A listening TCP socket does not reliably wake `accept` through shutdown alone on macOS.
+            // Connect once over loopback, then wait for the accept queue to observe the stopped identity
+            // before closing the listener and allowing an immediate restart to rebind the persisted port.
+            if !Self.wakeAccept(port: port) {
+                shutdownFD(state.fd)
+                closeFD(state.fd)
+                acceptQueue.sync {}
+                return
+            }
+            acceptQueue.sync {}
         }
+        closeFD(state.fd)
     }
 
-    private func acceptLoop() {
+    private func acceptLoop(_ listener: Int32) {
         while true {
-            let listener = lock.withLock { serverFD }
-            guard listener >= 0 else { return }
+            guard lock.withLock({ serverFD == listener }) else { return }
             let client = accept(listener, nil, nil)
             if client < 0 {
                 if errno == EINTR { continue }
-                if lock.withLock({ serverFD }) < 0 { return }
+                if !lock.withLock({ serverFD == listener }) { return }
                 continue
+            }
+            guard lock.withLock({ serverFD == listener }) else {
+                closeFD(client)
+                return
             }
             Self.suppressSIGPIPE(client)
             DispatchQueue.global().async { [weak self] in self?.serve(client) }
@@ -299,6 +315,24 @@ public final class OTLPHTTPTraceReceiver: @unchecked Sendable {
         return (fd, UInt16(bigEndian: actual.sin_port))
     }
 
+    private static func wakeAccept(port: UInt16) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { closeFD(fd) }
+        var address = sockaddr_in()
+        #if canImport(Darwin)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1 else { return false }
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                DarwinOrGlibc.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
+    }
+
     private static func readEndpoint(at path: String) -> PersistedEndpoint? {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let endpoint = try? JSONDecoder().decode(PersistedEndpoint.self, from: data),
@@ -351,6 +385,16 @@ private enum DarwinOrGlibc {
         Glibc.bind(fd, address, length)
         #else
         Musl.bind(fd, address, length)
+        #endif
+    }
+
+    static func connect(_ fd: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
+        #if canImport(Darwin)
+        Darwin.connect(fd, address, length)
+        #elseif canImport(Glibc)
+        Glibc.connect(fd, address, length)
+        #else
+        Musl.connect(fd, address, length)
         #endif
     }
 }
