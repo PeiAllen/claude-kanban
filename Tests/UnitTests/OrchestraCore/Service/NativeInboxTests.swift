@@ -33,7 +33,7 @@ struct NativeInboxTests {
         let env = TestEnv.make(grace: 2, clock: clock)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc,
-            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-retry")
+            SpawnInput(id: UUID(), prompt: "x", scratch: true)
         )
         let sender = ScriptedNativeInboxSender(failuresRemaining: 3)
         let stored = try #require(await env.svc.store.get(card.id))
@@ -105,7 +105,7 @@ struct NativeInboxTests {
         let env = TestEnv.make(grace: 2, clock: clock)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc,
-            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-missing")
+            SpawnInput(id: UUID(), prompt: "x", scratch: true)
         )
         let stored = try #require(await env.svc.store.get(card.id))
         await env.svc.installNativeInboxSenderForTest(card: stored, sender: RecordingNativeInboxSender())
