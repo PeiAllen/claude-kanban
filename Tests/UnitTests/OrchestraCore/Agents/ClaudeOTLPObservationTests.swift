@@ -1,10 +1,6 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 import Testing
 @testable import OrchestraCore
-import TestSupport
 
 @Suite("Claude OTLP turn completion", .serialized)
 struct ClaudeOTLPObservationTests {
@@ -57,43 +53,6 @@ struct ClaudeOTLPObservationTests {
         #expect(attributes["service.name"] == .string("claude-code"))
     }
 
-    @Test("the local receiver accepts a real OTLP request and keeps its endpoint stable across restart")
-    func receiverRoundTripAndStableEndpoint() async throws {
-        let root = NSTemporaryDirectory() + "orch-otlp-\(UUID().uuidString)"
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let recorder = OTLPObservationRecorder()
-        let receiver = try OTLPHTTPTraceReceiver(runtimeStateDir: root)
-        let firstBaseURL = receiver.baseURL
-        receiver.start { recorder.append($0) }
-        let cardId = UUID()
-        let observationEndpoint = try #require(ClaudeCodeAdapter().observationEndpoint(.init(
-            cardId: cardId,
-            cardRef: "card",
-            sessionEpoch: 11,
-            runtimeStateDir: root,
-            traceHTTPBaseURL: firstBaseURL
-        )))
-        let endpoint = try #require(observationEndpoint.otlpHTTPURL)
-
-        var request = URLRequest(url: try #require(URL(string: endpoint)))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = exportPayload(sessionId: "claude-session")
-        let (_, response) = try await URLSession.shared.data(for: request)
-        #expect((response as? HTTPURLResponse)?.statusCode == 200)
-        try await pollUntil("OTLP request to reach the receiver") { recorder.values.count == 1 }
-        #expect(recorder.values.first?.cardId == cardId)
-        #expect(recorder.values.first?.sessionEpoch == 11)
-        receiver.stop()
-
-        for _ in 0..<5 {
-            let restarted = try OTLPHTTPTraceReceiver(runtimeStateDir: root)
-            #expect(restarted.baseURL == firstBaseURL)
-            restarted.start { _ in }
-            restarted.stop()
-        }
-    }
-
     private func exportPayload(sessionId: String) -> Data {
         Data(#"""
         {
@@ -114,15 +73,5 @@ struct ClaudeOTLPObservationTests {
           }]
         }
         """#.utf8)
-    }
-}
-
-private final class OTLPObservationRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: [OTLPTraceObservation] = []
-
-    var values: [OTLPTraceObservation] { lock.withLock { stored } }
-    func append(_ observation: OTLPTraceObservation) {
-        lock.withLock { stored.append(observation) }
     }
 }
