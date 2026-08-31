@@ -84,7 +84,7 @@ struct AgentTab: View {
     }
 }
 
-// MARK: - Wait banner (status → Needs You)
+// MARK: - Agent banner (status + human need)
 
 /// A compact banner surfacing why the card needs attention or is waiting. Gates live in the Needs-You
 /// queue (M3); this only points there and does not answer provider prompts directly.
@@ -126,7 +126,7 @@ private struct WaitBanner: View {
         case .permission: return "Needs your approval"
         case .input: return "Needs your input"
         case .humanRequired: return "Needs your attention"
-        case .waiting: return "Waiting on you"
+        case .waiting: return "Waiting"
         }
     }
     private var detail: String {

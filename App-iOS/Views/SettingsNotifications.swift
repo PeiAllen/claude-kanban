@@ -2,8 +2,8 @@ import SwiftUI
 import OrchestraKit
 import OrchestraUI
 
-/// Notifications settings: one row per attention trigger (🔐 Permission needed · 🙋 Needs you · 💀 Card
-/// died), each with a **scope dial** (Off / Background only / Always) and a **sound dial**. Prefs persist
+/// Notifications settings: one row per attention trigger (🙋 Human action needed · 💀 Card died ·
+/// 🚧 Merge stalled), each with a **scope dial** (Off / Background only / Always) and a **sound dial**. Prefs persist
 /// client-side through the shared `NotificationPrefs` (same UserDefaults keys the macOS notifier reads).
 /// Push delivery is wired in N1 (device registration → daemon → APNs); the scope/sound dials here gate it.
 struct NotificationsSettingsSection: View {

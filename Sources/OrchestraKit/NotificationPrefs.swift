@@ -1,7 +1,7 @@
 import Foundation
 
 /// Client-local notification preferences, shared across every client (the macOS notifier and the iOS
-/// Settings screen). Five attention triggers, each with a focus **scope** (off / background / always)
+/// Settings screen). Each attention trigger has a focus **scope** (off / background / always)
 /// and a **sound** (default / none / a named system sound). Persisted per-client in `UserDefaults` under
 /// the SAME keys the macOS `AgentNotifier` reads (`orch_notify_<trigger>_scope` / `_sound`) so choosing
 /// how notifications fire is one model, not two that drift.
