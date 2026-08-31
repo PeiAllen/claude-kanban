@@ -79,7 +79,7 @@ extension OrchestraService {
                     $0.treeStat = carryChildProgress(TreeStat(state: .restackNeeded), from: $0.treeStat)
                 }
                 emit(.taskUpserted(updated), rev: rev)
-                try? await enqueueAndArm(t.id,
+                _ = try? await enqueueAndArm(t.id,
                     "parent moved to \(p) — commit WIP, then `git rebase --onto \(p) \(anchor)`, "
                     + "then `orchestra synced \(updated.shortId)`")
                 emitActivity(.command, updated, source, "moved parent → \(p)")
@@ -287,7 +287,7 @@ extension OrchestraService {
                 // S1-3: skip the self-echo when the caller IS the parent — it just performed the merge,
                 // so a "child merged into you" wake would only make it read about its own action.
                 if parentCard.id != byCardId {
-                    try? await enqueueAndArm(parentCard.id,
+                    _ = try? await enqueueAndArm(parentCard.id,
                         "child \(child.branch) (\(child.shortId)) merged into you — it's in your branch now; "
                         + "archive the child card with `orchestra archive \(child.shortId)`")
                 }
@@ -346,12 +346,12 @@ extension OrchestraService {
                     // S3-7: route the rebase target through the resolvable ref, and skip the command text
                     // entirely when the anchor is empty (an empty `--onto X ` is malformed).
                     if gcLink.base.isEmpty {
-                        try? await enqueueAndArm(card.id,
+                        _ = try? await enqueueAndArm(card.id,
                             "parent \(child.branch) shipped — your recorded base is missing; re-establish it "
                             + "with `orchestra set-parent \(card.shortId) \(grandparent) --mode move`, then "
                             + "`orchestra synced \(card.shortId)`")
                     } else {
-                        try? await enqueueAndArm(card.id,
+                        _ = try? await enqueueAndArm(card.id,
                             "parent \(child.branch) shipped — commit WIP, then `git rebase --onto "
                             + "\(gpResolvable) \(gcLink.base)`, then `orchestra synced \(card.shortId)`")
                     }
@@ -367,7 +367,7 @@ extension OrchestraService {
         // Skip when the caller IS the child (a self-ship: root/bare/borrow — the card ships itself, then
         // archives; it doesn't need to read that it landed).
         if hadParentLink, byCardId != child.id, let parent = link?.parent {
-            try? await enqueueAndArm(child.id,
+            _ = try? await enqueueAndArm(child.id,
                 "your branch landed in \(parent) — verify, then `orchestra archive \(child.shortId)`")
         }
 
@@ -503,7 +503,7 @@ extension OrchestraService {
         emit(.taskUpserted(saved), rev: rev)
         // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale).
         if staleEdge, let link {
-            try? await enqueueAndArm(id, "parent \(link.parent) moved ahead — run "
+            _ = try? await enqueueAndArm(id, "parent \(link.parent) moved ahead — run "
                 + "`git merge \(resolvableRef(link, repo: t.repo))` in your worktree, then "
                 + "`orchestra synced \(saved.shortId)`")
         }
@@ -513,7 +513,7 @@ extension OrchestraService {
         // DIRECTLY so a later recompute sees restackNeeded→restackNeeded, no double nudge). Fire once on
         // the transition INTO restackNeeded from a non-restack state.
         if restackEdge, let link {
-            try? await enqueueAndArm(id,
+            _ = try? await enqueueAndArm(id,
                 "parent \(link.parent) changed history (rebased/amended) — restack: commit WIP, then "
                 + "`git rebase --onto \(resolvableRef(link, repo: t.repo)) \(link.base)`, then "
                 + "`orchestra synced \(saved.shortId)`")

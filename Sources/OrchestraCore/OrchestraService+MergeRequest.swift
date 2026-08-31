@@ -76,7 +76,7 @@ extension OrchestraService {
             ensureRuntime(for: child)   // post-restart, this verb can be the child's first touch
             startMergeRequestNudge(childId: child.id)
             if !resuming {
-                try? await enqueueAndArm(parentCard.id, Self.handoverText(child: child, parent: target),
+                _ = try? await enqueueAndArm(parentCard.id, Self.handoverText(child: child, parent: target),
                                          dedupKey: Self.handoverDedupKey(child.id))
             }
             emitActivity(.command, child, source, "merge-request → \(target)")
@@ -143,7 +143,7 @@ extension OrchestraService {
         // enqueue; arming after the awaits below left exactly that window.
         ensureRuntime(for: child)   // post-restart, the handover can be the child's first touch
         startMergeRequestNudge(childId: childId)
-        try? await enqueueAndArm(owner.id, Self.handoverText(child: child, parent: link.parent),
+        _ = try? await enqueueAndArm(owner.id, Self.handoverText(child: child, parent: link.parent),
                                  dedupKey: Self.handoverDedupKey(childId))
         emitActivity(.command, child, .daemon,
                      "merge-request → \(link.parent) (an owner appeared — request handed over)")
@@ -215,7 +215,7 @@ extension OrchestraService {
         }
 
         let sent = prior + 1
-        try? await enqueueAndArm(parentCard.id,
+        _ = try? await enqueueAndArm(parentCard.id,
             "reminder \(sent)/\(cap) — merge-request still pending: squash-merge \(child.branch) "
             + "(\(child.shortId)) into \(link.parent), then `orchestra shipped \(child.shortId)`")
 
@@ -295,7 +295,7 @@ extension OrchestraService {
         // a live card DOES own the parent here — which is precisely when `borrow` refuses ("parent … has a
         // live card — merge-request instead", +Borrow). The old text sent the child to run a command that
         // could not succeed, and re-taught at runtime the four-way fork the guidance deleted.
-        try? await enqueueAndArm(childId,
+        _ = try? await enqueueAndArm(childId,
             "merge-request stalled — \(link.parent) ignored \(sent) reminder\(sent == 1 ? "" : "s") and never "
             + "merged \(child.branch); the daemon has stopped re-asking. Re-send "
             + "`orchestra merge-request \(child.shortId)` to re-arm the reminders, or stop and report it — "
@@ -305,7 +305,7 @@ extension OrchestraService {
         // pending, and writing the true `.stale` state directly crosses no inSync→stale edge, so the funnel
         // will never fire it later either. Without this the child ends up stalled AND behind, never told.
         if fresh?.state == .stale {
-            try? await enqueueAndArm(childId, "parent \(link.parent) moved ahead — run "
+            _ = try? await enqueueAndArm(childId, "parent \(link.parent) moved ahead — run "
                 + "`git merge \(resolvableRef(link, repo: child.repo))` in your worktree, then "
                 + "`orchestra synced \(child.shortId)`")
         }

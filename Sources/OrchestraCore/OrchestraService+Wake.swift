@@ -99,7 +99,7 @@ extension OrchestraService {
         for (watcher, children) in watchRegistry where children.contains(id) {
             if (runtime[watcher]?.activeWaitProcesses ?? 0) == 0 {
                 let detail = deadReason.map { " — \($0.rawValue)" } ?? ""
-                try? await enqueueAndArm(
+                _ = try? await enqueueAndArm(
                     watcher,
                     "Card \(task.shortId) concluded (\(kind.rawValue)\(detail)).",
                     source: .orchestra
