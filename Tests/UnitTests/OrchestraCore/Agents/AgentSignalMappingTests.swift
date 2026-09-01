@@ -127,23 +127,15 @@ struct AgentSignalMappingTests {
         }
     }
 
-    @Test("Claude interaction-span completion closes an interrupted turn")
-    func claudeInteractionSpanCompletion() {
+    @Test("Claude rejects an interaction-span completion without prompt identity")
+    func claudeInteractionSpanWithoutPromptIdentity() {
         let adapter = ClaudeCodeAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
 
         #expect(adapter.agentSignals(
             from: .traceSpanEnded(name: "claude_code.interaction", attributes: .object([
                 "session.id": .string("claude-session"),
-                "prompt.id": .string("prompt-1"),
             ])),
-            context: context
-        ) == [
-            .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnCompleted()),
-            .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(nil)),
-        ])
-        #expect(adapter.agentSignals(
-            from: .traceSpanEnded(name: "claude_code.tool", attributes: .object([:])),
             context: context
         ).isEmpty)
     }

@@ -213,6 +213,7 @@ public struct ClaudeCodeAdapter: Adapter {
             else { return [] }
             // Claude emits this terminal root span on the Ctrl-C path where no Stop hook fires.
             let turnID = promptID(in: attributes)
+            guard validTurnID(turnID) else { return [] }
             return [
                 signal(.turnCompleted(), context: context, turnID: turnID),
                 signal(.humanNeedChanged(nil), context: context, turnID: turnID),
