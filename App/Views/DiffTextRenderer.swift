@@ -86,11 +86,14 @@ final class DiffTextView: NSTextView {
 
         let originY = textContainerOrigin.y
         let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
-        lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, fragGlyphRange, _ in
+        // `fragment` is the FULL line fragment (including leading); `used` is only the glyph-tight
+        // rect. Banding by `used` leaves an unpainted gap between consecutive tinted rows, so the
+        // band — and the gutter row it shares a baseline with — must use the fragment.
+        lm.enumerateLineFragments(forGlyphRange: glyphRange) { fragment, _, _, fragGlyphRange, _ in
             let charIndex = lm.characterIndexForGlyph(at: fragGlyphRange.location)
             guard let idx = self.lineIndex(forCharacter: charIndex) else { return }
             let line = self.lines[idx]
-            let y = used.origin.y + originY
+            let y = fragment.origin.y + originY
 
             // Full-bleed band: the whole view width, not just the glyphs.
             let band: NSColor? = if line.filler { palette.fillerTint } else {
@@ -103,11 +106,11 @@ final class DiffTextView: NSTextView {
             }
             if let band {
                 band.setFill()
-                NSRect(x: 0, y: y, width: self.bounds.width, height: used.height).fill()
+                NSRect(x: 0, y: y, width: self.bounds.width, height: fragment.height).fill()
             }
 
             guard self.gutterWidth > 0, line.kind != .hunk else { return }
-            self.drawNumbers(line, y: y, height: used.height, palette: palette)
+            self.drawNumbers(line, y: y, height: fragment.height, palette: palette)
         }
     }
 
