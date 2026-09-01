@@ -138,9 +138,10 @@ when the current turn cannot be identified. `humanNeed` is an optional provider 
 state; `.permission`, `.input`, and `.unspecified` only refine display copy. A `SessionEnd` is lifecycle
 evidence and can take the Card to `dead`.
 
-Claude's main-session hooks supply those turn edges. If a blocking Stop hook continues the same prompt,
-exact-prompt `MessageDisplay` or `PreToolUse` activity reopens that same turn without pretending a new
-turn started. Claude emits no terminal hook for Ctrl-C, so one global ten-second `claude agents --json`
+Claude's main-session hooks supply those turn edges. Exact-prompt `MessageDisplay` or `PreToolUse`
+activity reopens a prompt after a blocking Stop; when no turn is active, activity carrying a different
+prompt id establishes the distinct turn whose queued `UserPromptSubmit` edge was not observable. Claude
+emits no terminal hook for Ctrl-C, so one global ten-second `claude agents --json`
 snapshot may repair only an unchanged, human-unblocked `running` session to `waiting`; missing, busy,
 failed, or superseded observations do nothing. Codex uses only its app-server thread/turn stream.
 

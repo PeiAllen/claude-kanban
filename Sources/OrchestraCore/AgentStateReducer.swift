@@ -18,8 +18,9 @@ public struct AgentSignalContext: Equatable, Sendable {
 public struct AgentSignal: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case turnStarted
-        /// Provider activity proved that the just-completed prompt continued without a new turn.
-        case turnReactivated
+        /// Provider activity carrying an exact turn identity. The coordinator classifies it as
+        /// current-turn noise, a same-turn continuation, or a distinct turn start.
+        case turnActivity
         case turnCompleted(resume: AutomaticResume? = nil)
         case turnReconciled(TurnStatus, humanNeed: ProviderHumanNeed?)
         case activity(ActivitySummary?)
@@ -58,9 +59,10 @@ public enum AgentStateReducer {
             // boundary even when the visible status was already running.
             state = AgentState(turnStatus: .running)
 
-        case .turnReactivated:
-            // This is the same provider turn, so preserve its detail and human-needed facts. In
-            // particular, it is not the semantic boundary that retires a durable pendingQuestion.
+        case .turnActivity:
+            // The coordinator only leaves this kind intact for a same-turn continuation, so preserve
+            // its detail and human-needed facts. It is not the semantic boundary that retires a
+            // durable pendingQuestion.
             state.turnStatus = .running
 
         case .turnCompleted(let resume):

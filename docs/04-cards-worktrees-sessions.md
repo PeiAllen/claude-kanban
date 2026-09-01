@@ -245,9 +245,10 @@ only lifecycle/display metadata into `StatusReport`, while `hookObservationPaylo
 provider fields needed for `agentSignals(from:context:)` without forwarding large tool bodies. Prompt and
 Stop become top-level turn edges; a known permission or input prompt updates the optional provider
 `humanNeed` only when it belongs to the current session. A current-turn resolution clears that aggregate
-need. Subagent activity cannot change the main turn, but its human-needed hook still rolls up. After a
-Stop, exact same-prompt main `MessageDisplay` or `PreToolUse` activity can reactivate the same turn without
-creating a distinct-turn boundary. A non-`hooksPush` metadata input (for example a
+need. Subagent activity cannot change the main turn, but its human-needed hook still rolls up. Exact main
+`MessageDisplay` or `PreToolUse` activity reactivates the same prompt after a blocked Stop; when no turn is
+active, a different prompt identity establishes the distinct queued turn whose submit edge was not
+observable. A non-`hooksPush` metadata input (for example a
 `fileTail` line) returns `nil` — Claude has no tail transport. See
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
 
@@ -338,9 +339,10 @@ server is the sole source for thread identity, turn state, and provider human ne
   restores running or waiting without periodic status polling. The existing two-second rollout tick may
   still refresh metadata, but it cannot change `AgentState`.
 
-Claude uses the same normalized contract from live hooks: `UserPromptSubmit` starts a distinct turn,
-`Stop` tentatively ends the exact current turn, and exact same-prompt main activity reopens it when a Stop
-hook blocked completion. Known permission/input prompts update the aggregate `humanNeed`, including those
+Claude uses the same normalized contract from live hooks: a distinct `UserPromptSubmit` starts a turn,
+`Stop` tentatively ends the exact current turn, and exact main activity either reopens the same prompt after
+a blocked Stop or establishes a different queued prompt when no turn is active. Known permission/input
+prompts update the aggregate `humanNeed`, including those
 from a subagent, without letting subagent activity mutate the main turn. Claude hook observations are not
 read from transcripts or replayed after daemon restart; the state is unavailable until the next
 current-session hook, while the narrow global idle snapshot repairs only hook-silent Ctrl-C.

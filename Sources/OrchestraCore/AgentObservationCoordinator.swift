@@ -69,15 +69,19 @@ actor AgentObservationCoordinator {
             lastCompletedTurnID = nil
             return signal
 
-        case .turnReactivated:
+        case .turnActivity:
             guard let turnID = currentTurnID(signal) else { return nil }
-            // Activity is evidence of a blocked Stop continuation only after the exact prompt was
-            // observed completing. Repeated activity while it is already active is state-silent,
-            // and activity from a superseded prompt cannot reopen it.
-            guard activeTurnID == nil, lastCompletedTurnID == turnID else { return nil }
+            // Activity for the active prompt is state-silent, while activity from another prompt is
+            // stale until the active prompt completes.
+            guard activeTurnID == nil else { return nil }
+
+            // Exact activity after completion proves a blocked Stop continuation. A different valid
+            // identity proves a distinct turn whose UserPromptSubmit edge was not observable.
+            let isSameTurnContinuation = lastCompletedTurnID == turnID
             activeTurnID = turnID
             lastCompletedTurnID = nil
-            return signal
+            if isSameTurnContinuation { return signal }
+            return .init(sessionEpoch: signal.sessionEpoch, turnID: turnID, kind: .turnStarted)
 
         case .turnCompleted:
             guard let turnID = currentTurnID(signal) else {

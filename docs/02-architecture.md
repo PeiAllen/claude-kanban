@@ -429,9 +429,9 @@ reducer. Hook responses carry SessionStart orientation only:
 |--------------|-------------------|------------------------------|
 | statusLine refresh | `statusline` | `ctxPct`, model id + display, session id, session name |
 | `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact); also injects the card's live column/mode/self-id **orientation** as `additionalContext` |
-| `UserPromptSubmit` | `prompt` | prompt text → auto-title; normalized, identified top-level turn start |
-| `MessageDisplay` | `messagedisplay` | exact same-prompt main activity; reactivates a turn only after a blocking Stop continuation |
-| `Pre/PostToolUse` | `pretool` / `posttool` | activity detail; main `PreToolUse` can also prove exact same-prompt reactivation |
+| `UserPromptSubmit` | `prompt` | prompt text → auto-title; identified top-level turn start when its id is distinct |
+| `MessageDisplay` | `messagedisplay` | exact main-turn activity; reactivates the same prompt or establishes a distinct queued turn when no turn is active |
+| `Pre/PostToolUse` | `pretool` / `posttool` | activity detail; main `PreToolUse` carries the same turn-activity evidence |
 | `PermissionRequest` / known input tool | `permission` / `pretool` | current provider `humanNeed`, tagged `.permission`, `.input`, or `.unspecified` |
 | resolution event | tool hook | clears provider human need only within the current correlated turn |
 | `Stop` | `stop` | exact current top-level turn completion |

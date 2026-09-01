@@ -159,7 +159,7 @@ public struct ClaudeCodeAdapter: Adapter {
                 return [signal(.turnStarted, context: context, turnID: turnID)]
             case "messagedisplay":
                 guard isMainAgent(payload), validTurnID(turnID) else { return [] }
-                return [signal(.turnReactivated, context: context, turnID: turnID)]
+                return [signal(.turnActivity, context: context, turnID: turnID)]
             case "stop":
                 guard isMainAgent(payload) else { return [] }
                 return [
@@ -183,7 +183,7 @@ public struct ClaudeCodeAdapter: Adapter {
             case "pretool":
                 var signals: [AgentSignal] = []
                 if isMainAgent(payload), validTurnID(turnID) {
-                    signals.append(signal(.turnReactivated, context: context, turnID: turnID))
+                    signals.append(signal(.turnActivity, context: context, turnID: turnID))
                 }
                 if humanNeed(for: payload["tool_name"]?.stringValue) == .input {
                     signals.append(signal(.humanNeedChanged(.input), context: context, turnID: turnID))

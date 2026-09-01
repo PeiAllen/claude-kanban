@@ -146,6 +146,54 @@ import TestSupport
         #expect(await env.svc.store.get(card.id)?.pendingQuestion?.text == "same prompt question?")
     }
 
+    @Test("main activity with a new prompt identity establishes a distinct turn")
+    func newPromptActivityStartsDistinctTurn() async throws {
+        let adapter = HookSignalTestAdapter()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "hook-activity-start", agentId: adapter.id)
+        )
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        let firstPrompt: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-a"),
+        ])
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "prompt", payload: firstPrompt)
+        )
+        _ = try await env.svc.needsInput(ref: card.shortId, question: "old turn question?")
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "stop", payload: firstPrompt)
+        )
+
+        let nextPrompt: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-b"),
+        ])
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "messagedisplay", payload: nextPrompt)
+        )
+
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+        #expect(await env.svc.store.get(card.id)?.pendingQuestion == nil)
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "stop", payload: nextPrompt)
+        )
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
+    }
+
     @Test("a provider SessionStart observed before the live landing survives the readiness handoff")
     func sessionStartBeforeLiveLanding() async throws {
         let adapter = HookSignalTestAdapter(capabilities: .claudeCode)

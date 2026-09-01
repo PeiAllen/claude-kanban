@@ -341,8 +341,10 @@ are additionally bound to the provider thread id, and Claude hooks are checked a
 and top-level turn. The Codex rollout tail and hooks remain metadata/orientation only. There is no status
 field in `StatusReport` and no second Core status reducer.
 
-Claude same-prompt continuation activity is normalized as `turnReactivated`, which restores `running`
-without becoming a distinct-turn boundary or clearing `pendingQuestion`. A global provider snapshot may
+Claude main-prompt `MessageDisplay` and `PreToolUse` observations are normalized as `turnActivity`. The
+coordinator keeps exact same-prompt continuation activity within the existing turn, but converts a different
+identity observed while no turn is active into `turnStarted`, which retires prior detail and
+`pendingQuestion`. A global provider snapshot may
 submit a waiting reconciliation only for an exact Claude session that stayed running with the same
 in-memory observation generation throughout the subprocess call; the generation is a correlation fence,
 not a second status copy.

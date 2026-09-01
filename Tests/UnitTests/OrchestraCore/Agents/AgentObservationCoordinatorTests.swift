@@ -42,7 +42,7 @@ struct AgentObservationCoordinatorTests {
         for signal in [
             AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnStarted),
             AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnCompleted()),
-            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnReactivated),
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnActivity),
         ] {
             await coordinator.submit(scope: scope, signals: [signal]) {
                 await state.apply($0, epoch: epoch)
@@ -61,7 +61,7 @@ struct AgentObservationCoordinatorTests {
         let stale = SubmissionRecorder()
         await coordinator.submit(
             scope: scope,
-            signals: [.init(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnReactivated)]
+            signals: [.init(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnActivity)]
         ) { _ in await stale.append("accepted") }
         #expect(await state.turnStatus() == .running)
         #expect(await stale.values().isEmpty)

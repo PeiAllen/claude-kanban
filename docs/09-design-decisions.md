@@ -178,8 +178,9 @@ snapshot-plus-notification pair closes the launch race without polling or a pers
 A bound resume snapshot seeds the in-progress turn fence,
 and the coordinator preserves that fence across Codex's idle-before-completed ordering. Its rollout tail
 supplies metadata only, and its hooks supply lifecycle readiness/orientation, never identity or status. Claude accepts
-only session- and current-turn-correlated hook evidence. Exact same-prompt main activity can reactivate a
-turn after a blocking Stop continuation without becoming a distinct turn. A terminal event without
+only session- and turn-correlated hook evidence. Exact main activity reactivates the same prompt after a
+blocking Stop, or establishes a different prompt as a distinct turn when no turn is active. This covers
+queued input whose early `UserPromptSubmit` retained the prior prompt id. A terminal event without
 required current identity fails closed to unavailable, while a positively stale terminal is ignored.
 Because Ctrl-C emits no terminal hook, one global ten-second `claude agents --json` snapshot may only move
 an exact, unchanged, human-unblocked Claude session from running to waiting; every other result is silent.

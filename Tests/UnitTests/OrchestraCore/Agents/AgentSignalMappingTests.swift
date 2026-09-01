@@ -59,7 +59,7 @@ struct AgentSignalMappingTests {
 
         #expect(adapter.agentSignals(
             from: .hooksPush(kind: "messagedisplay", payload: prompt), context: context
-        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnReactivated)])
+        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnActivity)])
 
         let stop: JSONValue = .object([
             "session_id": .string("claude-session"),
@@ -74,7 +74,7 @@ struct AgentSignalMappingTests {
             ])
 
         #expect(adapter.agentSignals(from: .hooksPush(kind: "pretool", payload: stop), context: context)
-            == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnReactivated)])
+            == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnActivity)])
         // A completed or failed tool can clear a resolved human need, but never changes the top-level turn.
         for kind in ["posttool", "posttoolfailure"] {
             #expect(adapter.agentSignals(from: .hooksPush(kind: kind, payload: stop), context: context)
@@ -108,7 +108,7 @@ struct AgentSignalMappingTests {
                 ])
                 let expected: [AgentSignal] = hook == "pretool"
                     ? [
-                        .init(sessionEpoch: epoch, turnID: "prompt-2", kind: .turnReactivated),
+                        .init(sessionEpoch: epoch, turnID: "prompt-2", kind: .turnActivity),
                         .init(sessionEpoch: epoch, turnID: "prompt-2", kind: .humanNeedChanged(.input)),
                     ]
                     : [.init(sessionEpoch: epoch, turnID: "prompt-2", kind: .humanNeedChanged(.input))]
