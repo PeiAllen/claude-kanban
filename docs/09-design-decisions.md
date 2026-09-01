@@ -1667,6 +1667,39 @@ flight, which is the whole double-send guard.
 An accepted gap: a question comment has nowhere for its answer to go except the agent's terminal.
 Durable agent-to-human messages close it, and that work is tracked separately.
 
+### Render the diff as text, not as views
+
+The diff view renders one `NSTextView` per file. It does not build a view per diff line.
+
+A view per line is the obvious SwiftUI shape, and it is what the inspector's other scrollable surfaces
+deliberately avoid: the agent terminal is one `LocalProcessTerminalView` drawing with Core Graphics, and
+the document reader is one `WKWebView`. Neither grows a view tree with its content, which is why neither
+lags on a long transcript or a long document. The diff view was the exception, and it paid for it twice
+over. SwiftUI charges per view for layout, hit-testing and attribute-graph nodes, so a 300-row file cost
+about 8.5 ms per hit test and a 2000-row file about 50 ms — and roughly 0.2 MB per row, so a large branch
+diff reached hundreds of megabytes to well over a gigabyte simply by being open.
+
+Both costs scaled with the diff. Neither scales now: the same content measures ~0.05 ms and stays flat,
+and a 2000-row diff adds about 5 MB in the running app. The content is an attributed string rather than
+thousands of live view objects.
+
+Two things the row views provided are drawn by hand instead, and both are bounded to the line fragments
+intersecting the dirty rect, which is what keeps the cost flat:
+
+- **the full-bleed row band.** An attributed `.backgroundColor` paints only behind glyphs, so the
+  add/remove tint would stop at the end of each line. The band is filled at the view's full width.
+- **the line-number gutter.** The numbers are *drawn*, never inserted into the text storage. Folding
+  them into the string is simpler, but then copying a diff pastes line numbers into the copied code.
+  Drawing them also keeps them out of the selection.
+
+Text selection improves as a side effect: it is per file rather than per line, because the rows are no
+longer separate selectable `Text` views. Find and accessibility come with `NSTextView`.
+
+One consequence is worth knowing. `ImageRenderer`, which backs the headless `ORCH_SNAPSHOT_DIFF` path,
+cannot lay out an `NSViewRepresentable` — it draws a placeholder. The snapshot therefore renders the real
+text view offscreen and shows the bitmap, so the screenshot is the shipping renderer rather than a
+parallel preview implementation that could drift from it.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
