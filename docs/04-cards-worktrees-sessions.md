@@ -322,11 +322,15 @@ server is the sole source for thread identity, turn state, and provider human ne
   [`report`'s seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel).
 - **Structured observer — `CodexAppServerObserver`**: every Codex launch runs the stock remote TUI and a
   launch-local `codex app-server` in one tmux-owned process tree. For a known thread, Core connects over the
-  per-card Unix socket and calls `thread/resume`. For an unbound fresh launch, it calls `thread/list` once
-  with the exact cwd and filters by the durable launch cutoff, root ownership, and non-ephemeral lifetime;
-  exactly one candidate binds, while zero or several remain unavailable and listen for a filtered
-  `thread/started`. After binding it consumes `turn/started`, `turn/completed`, and
-  `thread/status/changed` notifications. The adapter maps them into
+  per-card Unix socket and calls `thread/resume`. For an unbound fresh launch, it reads the app-server's
+  in-memory thread ids and their `thread/read` snapshots, filtered by exact cwd, launch cutoff, root
+  ownership, and non-ephemeral lifetime. Exactly one candidate binds, while zero or several remain
+  unavailable and listen for a filtered
+  `thread/started`. The bound `thread/resume` snapshot also identifies its sole in-progress turn, so an
+  observer attached mid-turn can correlate the later completion. After binding it consumes `turn/started`,
+  `turn/completed`, and `thread/status/changed` notifications. Codex reports idle before the matching
+  completion; the coordinator retains the just-closed turn id across that snapshot so the completion is a
+  harmless duplicate rather than observation loss. The adapter maps these messages into
   provider-neutral `AgentSignal`s. It never answers app-server approval/input requests, because those are
   shared first-response-wins requests also owned by the TUI.
 - **Availability and restart:** the observer is fenced by Card epoch and exact Codex thread id. A socket

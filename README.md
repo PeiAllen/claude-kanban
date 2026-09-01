@@ -56,7 +56,7 @@ intercepts keys meant for the live agent terminal:
   **Read-only** access mode that lets an agent read/search/`git` but physically cannot write.
 - **Live state, provider-owned.** A card's lifecycle stays separate from its current provider state:
   `running`, `waiting`, or `unavailable`. Claude supplies strictly correlated hook observations (with a
-  narrow OTLP fallback), Codex supplies app-server thread/turn state, and a newly live card remains
+  narrow provider-native idle repair), Codex supplies app-server thread/turn state, and a newly live card remains
   unavailable until current evidence arrives. The Codex rollout tail is metadata only; neither it nor
   inbox delivery manufactures status.
 - **See the diff on the board.** Each git card shows a live `+N −M / k files` diffstat in its footer,
@@ -147,7 +147,7 @@ same user-only socket, so what the three can do can never drift — the CLI's ve
 list are generated from one `CommandRegistry`. The agents report metadata by different mechanisms:
 Claude Code **pushes** through `orchestra _report`, while the daemon **tails** Codex rollout JSONL.
 Live turn and provider-human state follow a separate normalized path: Claude's current-session hooks and
-exactly correlated OTLP fallback feed it, while Codex's app-server observer feeds it. The generic reducer
+generation-fenced idle repair feed it, while Codex's app-server observer feeds it. The generic reducer
 then owns the live snapshot, so no downstream consumer branches on the provider. Terminals never cross
 this plane — SwiftTerm attaches to tmux directly.
 

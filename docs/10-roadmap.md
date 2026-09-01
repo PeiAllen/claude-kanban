@@ -17,9 +17,10 @@ describe work to pick up, although the non-git card substrate and the connection
 The provider seam now has Claude and Codex adapters. Claude supplies strictly correlated hook observations,
 exact same-prompt continuation reactivation, and a narrow provider-native idle repair for hook-silent
 Ctrl-C; Codex uses rollout data for metadata and the app server alone for turn state and
-provider human need. The app server also owns Codex's thread identity: one fail-closed attach reconciliation
-binds a fresh card, and rollout/hook metadata cannot race it. Their normalized observations reduce into one
-provider-neutral live state.
+provider human need. The app server also owns Codex's thread identity: one fail-closed loaded-thread
+snapshot binds a fresh card while the same observer listens for later starts, so rollout/hook metadata
+cannot race it. Their normalized
+observations reduce into one provider-neutral live state.
 
 The native inbox is deliberately smaller than the retired delivery design. `send` durably queues a local
 row. A per-live-session native sender in `CardRuntime` later makes a bounded best-effort request, and

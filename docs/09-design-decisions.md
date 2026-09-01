@@ -172,9 +172,12 @@ Needs You reason.
 
 Codex's launch-local app-server observer is the only producer of Codex turn state and provider-human
 need, and it is also the sole authority for Codex's durable thread id. A fresh unbound observer performs
-one exact-cwd, launch-cutoff `thread/list` reconciliation and binds only one root, non-ephemeral candidate;
-otherwise it remains unavailable until a filtered `thread/started`. Its rollout tail supplies metadata
-only, and its hooks supply lifecycle readiness/orientation, never identity or status. Claude accepts
+one exact-cwd, launch-cutoff reconciliation over loaded thread snapshots and binds only one root,
+non-ephemeral candidate; otherwise it remains unavailable until a filtered `thread/started`. This
+snapshot-plus-notification pair closes the launch race without polling or a persisted-history fallback.
+A bound resume snapshot seeds the in-progress turn fence,
+and the coordinator preserves that fence across Codex's idle-before-completed ordering. Its rollout tail
+supplies metadata only, and its hooks supply lifecycle readiness/orientation, never identity or status. Claude accepts
 only session- and current-turn-correlated hook evidence. Exact same-prompt main activity can reactivate a
 turn after a blocking Stop continuation without becoming a distinct turn. A terminal event without
 required current identity fails closed to unavailable, while a positively stale terminal is ignored.

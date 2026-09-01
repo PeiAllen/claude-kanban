@@ -57,11 +57,13 @@ model, and display detail; they do not decide Codex session identity or live tur
 Provider observation is a separate seam. Claude's structured hooks carry the current session and prompt
 identity; a narrow global `claude agents --json` snapshot repairs only a hook-silent Ctrl-C left locally
 running. Codex's launch-local app-server owns both its thread identity and runtime state. An unbound
-observer performs one
-exact-cwd, launch-scoped `thread/list` reconciliation and accepts only one root, non-ephemeral candidate;
-otherwise it waits for a matching `thread/started`. Once bound, `thread/resume` reconciles the snapshot and
-pushed turn/thread updates maintain it. Both adapters emit normalized `AgentSignal`s into the same reducer, so no downstream consumer
-branches on the provider. Terminal bytes never cross this plane — SwiftTerm attaches to tmux directly.
+observer reads the app-server's loaded threads and accepts only one exact-cwd, launch-scoped root,
+non-ephemeral candidate; otherwise it waits for a matching `thread/started`. Once bound,
+`thread/resume` reconciles the snapshot and
+seeds the current turn fence when its snapshot is active; pushed turn/thread updates maintain it. The
+coordinator also retains that fence across Codex's idle-before-completed notification order. Both adapters
+emit normalized `AgentSignal`s into the same reducer, so no downstream consumer branches on the provider.
+Terminal bytes never cross this plane — SwiftTerm attaches to tmux directly.
 
 ## The daemon (`orchestrad`)
 

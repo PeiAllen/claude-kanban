@@ -348,7 +348,10 @@ in-memory observation generation throughout the subprocess call; the generation 
 not a second status copy.
 
 For a fresh Codex launch, the structured observer may start while `agentSessionId` is nil. It makes one
-`thread/list` call scoped to the exact card cwd and durable launch cutoff, filters out child and ephemeral
-threads, and binds only when exactly one candidate remains; ambiguity stays `unavailable`. A later filtered
+read-only pass over the app-server's loaded thread ids and `thread/read` snapshots, scoped by exact cwd and
+the durable launch cutoff. It filters out child and ephemeral threads and binds only when exactly one
+candidate remains; ambiguity stays `unavailable`. Because notifications are already active during that
+snapshot, a later filtered
 `thread/started` can establish or replace the binding (including `/clear`). Core then persists that id and
-rearms the observer against the exact thread, whose `thread/resume` response establishes running or waiting.
+rearms the observer against the exact thread. Its `thread/resume` response establishes running or waiting
+and, when active, supplies the in-progress turn id used by the same correlation fence as `turn/started`.
