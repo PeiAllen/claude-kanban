@@ -19,29 +19,8 @@ do {
     log("warning: unable to reload terminal configuration: \(error)")
 }
 
-// Claude omits its Stop hook when the user interrupts a turn. Bind the local OTLP/HTTP trace receiver
-// before the service can launch or adopt any agent, and keep its persisted endpoint stable across daemon
-// restarts so surviving sessions continue to report. This is status infrastructure: if it cannot bind,
-// fail the daemon startup instead of silently launching Claude cards with a permanently stale interrupt.
-let traceReceiver: OTLPHTTPTraceReceiver
-do {
-    traceReceiver = try OTLPHTTPTraceReceiver(runtimeStateDir: config.runtimeStateDir)
-} catch {
-    log("fatal: could not start Claude trace receiver: \(error)")
-    exit(1)
-}
 let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath), sessions: terminalSessions,
-                               traceHTTPBaseURL: traceReceiver.baseURL,
                                proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
-traceReceiver.start { observation in
-    _Concurrency.Task {
-        await service.receivePushedAgentObservation(
-            cardId: observation.cardId,
-            observedEpoch: observation.sessionEpoch,
-            raw: observation.raw
-        )
-    }
-}
 
 // The daemon renders NO hook files — each adapter renders its own in `prepareToLaunch`, per launch,
 // so new launches always reflect the current binary path + statusLine config (see [[HooksRenderer]]).

@@ -37,10 +37,7 @@ import TestSupport
     @Test("fresh hook payloads update the authoritative provider-neutral state")
     func hookPayloadUpdatesAgentState() async throws {
         let adapter = HookSignalTestAdapter()
-        let env = TestEnv.make(
-            registry: AgentRegistry(adapters: [adapter]),
-            traceHTTPBaseURL: "http://127.0.0.1:43181/test-token"
-        )
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc,
             SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
@@ -48,9 +45,6 @@ import TestSupport
         )
         let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
         #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
-        let launchEnv = try #require(env.sessions.ensureEnv[env.sessions.sessionName(card.id)])
-        #expect(launchEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] ==
-                "http://127.0.0.1:43181/test-token/v1/traces/\(card.id.uuidString.lowercased())/\(epoch)")
 
         let prompt: JSONValue = .object([
             "session_id": .string("hook-session"),
@@ -86,16 +80,9 @@ import TestSupport
         )
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
-        await env.svc.receivePushedAgentObservation(
-            cardId: card.id,
-            observedEpoch: epoch,
-            raw: .traceSpanEnded(
-                name: "claude_code.interaction",
-                attributes: .object([
-                    "session.id": .string("hook-session"),
-                    "prompt.id": .string("prompt-a"),
-                ])
-            )
+        _ = await env.svc.handleHook(
+            card.shortId, event: .stop, report: nil, source: nil,
+            observedEpoch: epoch, observationPayload: prompt
         )
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
 
@@ -187,54 +174,6 @@ import TestSupport
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch + 1, observationPayload: prompt
         )
-        #expect(await state(env.svc, card.id)?.turnStatus == .running)
-    }
-
-    @Test("a delayed Claude OTLP completion cannot close the next prompt")
-    func delayedClaudeCompletionCannotCloseNextPrompt() async throws {
-        let adapter = HookSignalTestAdapter()
-        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
-        let card = try await TestEnv.spawnAndAwaitLive(
-            env.svc,
-            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
-                       branch: "hook-turn-fence", agentId: adapter.id)
-        )
-        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-
-        func prompt(_ id: String) async {
-            _ = await env.svc.handleHook(
-                card.shortId, event: .userPrompt, report: nil, source: nil,
-                observedEpoch: epoch,
-                observationPayload: .object([
-                    "session_id": .string("hook-session"),
-                    "prompt_id": .string(id),
-                ])
-            )
-        }
-
-        await prompt("prompt-a")
-        _ = await env.svc.handleHook(
-            card.shortId, event: .stop, report: nil, source: nil,
-            observedEpoch: epoch,
-            observationPayload: .object([
-                "session_id": .string("hook-session"),
-                "prompt_id": .string("prompt-a"),
-            ])
-        )
-        await prompt("prompt-b")
-
-        await env.svc.receivePushedAgentObservation(
-            cardId: card.id,
-            observedEpoch: epoch,
-            raw: .traceSpanEnded(
-                name: "claude_code.interaction",
-                attributes: .object([
-                    "session.id": .string("hook-session"),
-                    "prompt.id": .string("prompt-a"),
-                ])
-            )
-        )
-
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
     }
 

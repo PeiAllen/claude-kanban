@@ -207,7 +207,7 @@ public struct CodexAdapter: Adapter {
             kinds = reconciliations(from: thread["status"])
             turnID = nil
 
-        case .hooksPush, .fileTail, .traceSpanEnded:
+        case .hooksPush, .fileTail:
             kinds = []
             turnID = nil
         }

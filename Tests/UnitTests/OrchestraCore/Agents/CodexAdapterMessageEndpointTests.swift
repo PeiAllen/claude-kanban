@@ -13,7 +13,7 @@ struct CodexAdapterMessageEndpointTests {
             harnessSessionId: "thread-1"
         ) == .codexAppServer(socketPath: "/runtime/codex-card.sock", threadId: "thread-1"))
         #expect(adapter.messageEndpoint(
-            observationEndpoint: .pushed(otlpHTTPURL: nil),
+            observationEndpoint: .pushed,
             harnessSessionId: "thread-1"
         ) == nil)
         #expect(ClaudeCodeAdapter().messageEndpoint(

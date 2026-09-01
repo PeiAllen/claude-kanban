@@ -127,19 +127,6 @@ struct AgentSignalMappingTests {
         }
     }
 
-    @Test("Claude rejects an interaction-span completion without prompt identity")
-    func claudeInteractionSpanWithoutPromptIdentity() {
-        let adapter = ClaudeCodeAdapter()
-        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
-
-        #expect(adapter.agentSignals(
-            from: .traceSpanEnded(name: "claude_code.interaction", attributes: .object([
-                "session.id": .string("claude-session"),
-            ])),
-            context: context
-        ).isEmpty)
-    }
-
     @Test("Claude drops hook observations from another harness session")
     func claudeSessionIdentityFence() {
         let adapter = ClaudeCodeAdapter()

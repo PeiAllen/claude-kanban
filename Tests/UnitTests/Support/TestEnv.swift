@@ -45,8 +45,7 @@ enum TestEnv {
                      extraAgents: [(id: String, models: [String])] = [],
                      clock: any Clock<Duration> = ContinuousClock(),
                      now: (@Sendable () -> Date)? = nil,
-                     proc: (any ProcRunning)? = nil,
-                     traceHTTPBaseURL: String? = nil)
+                     proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
@@ -89,7 +88,6 @@ enum TestEnv {
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   traceHTTPBaseURL: traceHTTPBaseURL,
                                    clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),
                                    gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))

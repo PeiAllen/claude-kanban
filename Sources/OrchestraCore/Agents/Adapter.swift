@@ -42,18 +42,12 @@ public extension AgentMessageSender {
 /// provider-neutral even though the first source (Codex app-server) uses a Unix domain socket.
 public enum AgentObservationEndpoint: Sendable, Equatable {
     case unixSocket(path: String)
-    /// Provider observations pushed into Orchestra. Hooks use the existing control socket; the optional
-    /// URL is the daemon's local OTLP trace receiver for providers with a missing terminal hook.
-    case pushed(otlpHTTPURL: String?)
+    /// Provider observations pushed into Orchestra through the existing control socket.
+    case pushed
 
     public var unixSocketPath: String? {
         guard case .unixSocket(let path) = self else { return nil }
         return path
-    }
-
-    public var otlpHTTPURL: String? {
-        guard case .pushed(let url) = self else { return nil }
-        return url
     }
 
     var isPushOnly: Bool {
@@ -69,15 +63,12 @@ public struct AgentObservationSetup: Sendable, Equatable {
     public let cardRef: String
     public let sessionEpoch: Int
     public let runtimeStateDir: String
-    public let traceHTTPBaseURL: String?
 
-    public init(cardId: UUID, cardRef: String, sessionEpoch: Int, runtimeStateDir: String,
-                traceHTTPBaseURL: String? = nil) {
+    public init(cardId: UUID, cardRef: String, sessionEpoch: Int, runtimeStateDir: String) {
         self.cardId = cardId
         self.cardRef = cardRef
         self.sessionEpoch = sessionEpoch
         self.runtimeStateDir = runtimeStateDir
-        self.traceHTTPBaseURL = traceHTTPBaseURL
     }
 }
 

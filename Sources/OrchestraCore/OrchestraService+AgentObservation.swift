@@ -39,12 +39,11 @@ extension OrchestraService {
             cardId: card.id,
             cardRef: card.shortId,
             sessionEpoch: card.sessionEpoch,
-            runtimeStateDir: config.runtimeStateDir,
-            traceHTTPBaseURL: traceHTTPBaseURL
+            runtimeStateDir: config.runtimeStateDir
         ))
     }
 
-    /// Apply one ephemeral push (hook or local OTLP receiver) against the card identity that exists now.
+    /// Apply one ephemeral hook push against the card identity that exists now.
     /// Unlike a held observation source, a push has no source token to fence, so the launch epoch is
     /// mandatory and the adapter checks the provider-native session carried inside the raw event.
     public func receivePushedAgentObservation(

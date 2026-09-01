@@ -28,9 +28,6 @@ public actor OrchestraService {
     /// Absolute path of the bundled MCP server, injected alongside the hook binary for deterministic
     /// launch configuration and tests.
     let orchestraMCPBin: String
-    /// Loopback-only daemon receiver offered to adapters that need pushed trace completion. The receiver
-    /// itself is process infrastructure owned by `orchestrad`; Core only carries its unguessable base URL.
-    let traceHTTPBaseURL: String?
     var worktrees: WorktreeRegistry
     var sessions: any SessionManaging
     let launcher: Launcher
@@ -194,7 +191,6 @@ public actor OrchestraService {
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra"),
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
-                traceHTTPBaseURL: String? = nil,
                 clock: any Clock<Duration> = ContinuousClock(),
                 now: @escaping @Sendable () -> Date = { Date() },
                 // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
@@ -211,7 +207,6 @@ public actor OrchestraService {
         self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin
         self.orchestraMCPBin = orchestraMCPBin
-        self.traceHTTPBaseURL = traceHTTPBaseURL
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
