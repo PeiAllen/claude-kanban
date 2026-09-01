@@ -334,7 +334,10 @@ always agree. It is also bound to the bare
 were removed in favor of it plus the natural-language → MCP delegation path:
 
 - **Inbox** — opens an advisory editor over the card's durable [inbox](03-data-model.md#the-inbox-store).
-  It lists **Unresolved** rows (`queued` or `failed`) and bounded **Handed off** history. Appending calls
+  It lists **Unresolved** rows (`queued` or `failed`) and bounded **Handed off** history. A queued
+  message is a prompt, not a label, so the panel is a reading surface: it is as wide as the Done
+  popover, an unresolved row wraps to six lines before it truncates (history wraps to three), and the
+  list scrolls under a fixed cap. Appending calls
   `send`, whose success means the row was queued locally. A `handedOff` row means the native harness
   accepted its request, never that the model read or acted on it. Queued rows can be edited, removed, and
   reordered; a failed head must be retried, edited, or removed before reordering. Failed rows expose
