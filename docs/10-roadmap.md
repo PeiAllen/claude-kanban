@@ -29,7 +29,7 @@ wake or relaunch a session, does not clear `pendingQuestion`, and does not turn 
 protocol. Handoff and fork seeds remain authored session context, separate from ordinary inbox rows.
 
 **Deferred:** provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog,
-and possible deprecations of `wait` and `needs-input`.
+and a possible deprecation of `wait`.
 
 Separately, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam, the persisted
 `Connection` model + a Connections settings pane, the Linux daemon port, and the app-managed SSH tunnel
