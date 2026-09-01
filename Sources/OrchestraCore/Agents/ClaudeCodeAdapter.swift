@@ -108,11 +108,13 @@ public struct ClaudeCodeAdapter: Adapter {
         case .sessionStart:
             keys = ["session_id", "source"]
         case .userPrompt:
-            keys = ["session_id", "prompt_id"]
+            keys = ["session_id", "prompt_id", "agent_id"]
+        case .messageDisplay:
+            keys = ["session_id", "prompt_id", "agent_id"]
         case .preToolUse, .postToolUse, .postToolUseFailure, .permission:
-            keys = ["session_id", "prompt_id", "tool_name"]
+            keys = ["session_id", "prompt_id", "agent_id", "tool_name"]
         case .stop:
-            keys = ["session_id", "prompt_id", "background_tasks", "session_crons"]
+            keys = ["session_id", "prompt_id", "agent_id", "background_tasks", "session_crons"]
         case .statusLine, .notification, .taskCompleted, .sessionEnd:
             return nil
         }
@@ -153,9 +155,13 @@ public struct ClaudeCodeAdapter: Adapter {
             let turnID = promptID(in: payload)
             switch hook {
             case "prompt":
-                guard validTurnID(turnID) else { return [] }
+                guard isMainAgent(payload), validTurnID(turnID) else { return [] }
                 return [signal(.turnStarted, context: context, turnID: turnID)]
+            case "messagedisplay":
+                guard isMainAgent(payload), validTurnID(turnID) else { return [] }
+                return [signal(.turnReactivated, context: context, turnID: turnID)]
             case "stop":
+                guard isMainAgent(payload) else { return [] }
                 return [
                     signal(
                         .turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil),
@@ -175,12 +181,14 @@ public struct ClaudeCodeAdapter: Adapter {
                     turnID: turnID
                 )]
             case "pretool":
-                guard humanNeed(for: payload["tool_name"]?.stringValue) == .input else { return [] }
-                return [signal(
-                    .humanNeedChanged(.input),
-                    context: context,
-                    turnID: turnID
-                )]
+                var signals: [AgentSignal] = []
+                if isMainAgent(payload), validTurnID(turnID) {
+                    signals.append(signal(.turnReactivated, context: context, turnID: turnID))
+                }
+                if humanNeed(for: payload["tool_name"]?.stringValue) == .input {
+                    signals.append(signal(.humanNeedChanged(.input), context: context, turnID: turnID))
+                }
+                return signals
             case "posttool", "posttoolfailure":
                 return [signal(.humanNeedChanged(nil), context: context, turnID: turnID)]
             default:
@@ -223,6 +231,11 @@ public struct ClaudeCodeAdapter: Adapter {
     private func validTurnID(_ turnID: String?) -> Bool {
         guard let turnID else { return false }
         return !turnID.isEmpty
+    }
+
+    private func isMainAgent(_ payload: JSONValue) -> Bool {
+        guard let agentID = payload["agent_id"]?.stringValue else { return true }
+        return agentID.isEmpty
     }
 
     /// Receive-direction format: wrap core's neutral `HookResponse` in Claude's hook stdout envelope.

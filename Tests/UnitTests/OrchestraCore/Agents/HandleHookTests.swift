@@ -108,6 +108,44 @@ import TestSupport
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting(.init(resume: .init())))
     }
 
+    @Test("same-prompt main activity reopens a turn after a blocked Stop hook")
+    func samePromptActivityReopensCompletedTurn() async throws {
+        let adapter = HookSignalTestAdapter()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
+                       branch: "hook-reactivation", agentId: adapter.id)
+        )
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        let prompt: JSONValue = .object([
+            "session_id": .string("hook-session"),
+            "prompt_id": .string("prompt-a"),
+        ])
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "prompt", payload: prompt)
+        )
+        _ = try await env.svc.needsInput(ref: card.shortId, question: "same prompt question?")
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "stop", payload: prompt)
+        )
+        #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
+
+        await env.svc.receivePushedAgentObservation(
+            cardId: card.id,
+            observedEpoch: epoch,
+            raw: .hooksPush(kind: "messagedisplay", payload: prompt)
+        )
+
+        #expect(await state(env.svc, card.id)?.turnStatus == .running)
+        #expect(await env.svc.store.get(card.id)?.pendingQuestion?.text == "same prompt question?")
+    }
+
     @Test("a provider SessionStart observed before the live landing survives the readiness handoff")
     func sessionStartBeforeLiveLanding() async throws {
         let adapter = HookSignalTestAdapter(capabilities: .claudeCode)

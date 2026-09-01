@@ -7,6 +7,7 @@ public enum HookEvent: String, Sendable, Codable, CaseIterable {
     case statusLine   = "statusline"
     case sessionStart = "session"      // Claude "session" + Codex "orient" collapse here
     case userPrompt   = "prompt"
+    case messageDisplay = "messagedisplay"
     case preToolUse   = "pretool"
     case postToolUse  = "posttool"
     case postToolUseFailure = "posttoolfailure"

@@ -1,6 +1,6 @@
 /// Serializes all normalized observations for one card and rejects positively identified events
-/// from a turn that has already been superseded. Claude hooks and OTLP share this path, so a delayed
-/// terminal span for prompt A cannot close prompt B after B has started.
+/// from a turn that has already been superseded, so delayed activity for prompt A cannot mutate
+/// prompt B after B has started.
 actor AgentObservationCoordinator {
     private struct Submission: Sendable {
         let scope: AgentSignalContext
@@ -65,6 +65,16 @@ actor AgentObservationCoordinator {
         case .turnStarted:
             guard let turnID = currentTurnID(signal) else { return nil }
             guard activeTurnID != turnID else { return nil }
+            activeTurnID = turnID
+            lastCompletedTurnID = nil
+            return signal
+
+        case .turnReactivated:
+            guard let turnID = currentTurnID(signal) else { return nil }
+            // Activity is evidence of a blocked Stop continuation only after the exact prompt was
+            // observed completing. Repeated activity while it is already active is state-silent,
+            // and activity from a superseded prompt cannot reopen it.
+            guard activeTurnID == nil, lastCompletedTurnID == turnID else { return nil }
             activeTurnID = turnID
             lastCompletedTurnID = nil
             return signal

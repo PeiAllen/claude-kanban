@@ -12,6 +12,9 @@
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt --agent __AGENT_ID__" } ] }
     ],
+    "MessageDisplay": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event messagedisplay --agent __AGENT_ID__" } ] }
+    ],
     "PreToolUse": [
       { "matcher": "*", "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event pretool --agent __AGENT_ID__" } ] }
     ],

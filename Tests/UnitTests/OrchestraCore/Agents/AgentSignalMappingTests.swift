@@ -57,6 +57,10 @@ struct AgentSignalMappingTests {
         #expect(adapter.agentSignals(from: .hooksPush(kind: "prompt", payload: prompt), context: context)
             == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnStarted)])
 
+        #expect(adapter.agentSignals(
+            from: .hooksPush(kind: "messagedisplay", payload: prompt), context: context
+        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnReactivated)])
+
         let stop: JSONValue = .object([
             "session_id": .string("claude-session"),
             "prompt_id": .string("prompt-1"),
@@ -69,7 +73,8 @@ struct AgentSignalMappingTests {
                 .init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(nil)),
             ])
 
-        #expect(adapter.agentSignals(from: .hooksPush(kind: "pretool", payload: stop), context: context).isEmpty)
+        #expect(adapter.agentSignals(from: .hooksPush(kind: "pretool", payload: stop), context: context)
+            == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .turnReactivated)])
         // A completed or failed tool can clear a resolved human need, but never changes the top-level turn.
         for kind in ["posttool", "posttoolfailure"] {
             #expect(adapter.agentSignals(from: .hooksPush(kind: kind, payload: stop), context: context)
@@ -101,11 +106,41 @@ struct AgentSignalMappingTests {
                     "prompt_id": .string("prompt-2"),
                     "tool_name": .string(tool),
                 ])
+                let expected: [AgentSignal] = hook == "pretool"
+                    ? [
+                        .init(sessionEpoch: epoch, turnID: "prompt-2", kind: .turnReactivated),
+                        .init(sessionEpoch: epoch, turnID: "prompt-2", kind: .humanNeedChanged(.input)),
+                    ]
+                    : [.init(sessionEpoch: epoch, turnID: "prompt-2", kind: .humanNeedChanged(.input))]
                 #expect(adapter.agentSignals(
                     from: .hooksPush(kind: hook, payload: payload), context: context
-                ) == [.init(sessionEpoch: epoch, turnID: "prompt-2", kind: .humanNeedChanged(.input))])
+                ) == expected)
             }
         }
+    }
+
+    @Test("Claude subagent activity is status-silent while its human need rolls up")
+    func claudeSubagentFiltering() {
+        let adapter = ClaudeCodeAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "claude-session")
+        let payload: JSONValue = .object([
+            "session_id": .string("claude-session"),
+            "prompt_id": .string("prompt-1"),
+            "agent_id": .string("child-agent"),
+            "tool_name": .string("AskUserQuestion"),
+        ])
+
+        for kind in ["prompt", "messagedisplay", "stop"] {
+            #expect(adapter.agentSignals(
+                from: .hooksPush(kind: kind, payload: payload), context: context
+            ).isEmpty)
+        }
+        #expect(adapter.agentSignals(
+            from: .hooksPush(kind: "pretool", payload: payload), context: context
+        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(.input))])
+        #expect(adapter.agentSignals(
+            from: .hooksPush(kind: "permission", payload: payload), context: context
+        ) == [.init(sessionEpoch: epoch, turnID: "prompt-1", kind: .humanNeedChanged(.input))])
     }
 
     @Test("Claude Stop aggregates every currently-known automatic-resume source")

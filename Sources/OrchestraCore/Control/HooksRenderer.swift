@@ -94,6 +94,7 @@ public enum HooksRenderer {
       "hooks": {
         "SessionStart": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" }] }],
         "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt --agent __AGENT_ID__" }] }],
+        "MessageDisplay": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event messagedisplay --agent __AGENT_ID__" }] }],
         "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event pretool --agent __AGENT_ID__" }] }],
         "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttool --agent __AGENT_ID__" }] }],
         "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttoolfailure --agent __AGENT_ID__" }] }],

@@ -6,6 +6,7 @@ import Foundation
     @Test("HookEvent raw values map the --event strings")
     func events() {
         #expect(HookEvent(rawValue: "session") == .sessionStart)
+        #expect(HookEvent(rawValue: "messagedisplay") == .messageDisplay)
         #expect(HookEvent(rawValue: "pretool") == .preToolUse)
         #expect(HookEvent(rawValue: "posttool") == .postToolUse)
         #expect(HookEvent(rawValue: "posttoolfailure") == .postToolUseFailure)

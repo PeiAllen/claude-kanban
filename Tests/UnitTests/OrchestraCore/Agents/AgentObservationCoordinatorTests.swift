@@ -33,6 +33,40 @@ struct AgentObservationCoordinatorTests {
         #expect(await state.turnStatus() == .running)
     }
 
+    @Test("only exact activity can reactivate the just-completed prompt")
+    func samePromptReactivationIsFenced() async {
+        let coordinator = AgentObservationCoordinator()
+        let state = AgentStateBox()
+        let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
+
+        for signal in [
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnStarted),
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnCompleted()),
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnReactivated),
+        ] {
+            await coordinator.submit(scope: scope, signals: [signal]) {
+                await state.apply($0, epoch: epoch)
+            }
+        }
+        #expect(await state.turnStatus() == .running)
+
+        for signal in [
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnCompleted()),
+            AgentSignal(sessionEpoch: epoch, turnID: "prompt-b", kind: .turnStarted),
+        ] {
+            await coordinator.submit(scope: scope, signals: [signal]) {
+                await state.apply($0, epoch: epoch)
+            }
+        }
+        let stale = SubmissionRecorder()
+        await coordinator.submit(
+            scope: scope,
+            signals: [.init(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnReactivated)]
+        ) { _ in await stale.append("accepted") }
+        #expect(await state.turnStatus() == .running)
+        #expect(await stale.values().isEmpty)
+    }
+
     @Test("the matching duplicate terminal source can enrich automatic resume")
     func matchingDuplicateCompletionEnrichesResume() async {
         let coordinator = AgentObservationCoordinator()

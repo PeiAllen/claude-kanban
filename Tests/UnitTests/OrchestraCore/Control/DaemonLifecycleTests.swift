@@ -78,6 +78,7 @@ struct DaemonLifecycleTests {
         #expect(s.contains("--event stop --agent claude-code"))
         #expect(s.contains("--event notification --agent claude-code"))
         #expect(s.contains("--event taskcompleted --agent claude-code"))
+        #expect(s.contains("--event messagedisplay --agent claude-code"))
         #expect(s.contains("--event pretool --agent claude-code"))
         #expect(s.contains("--event posttool --agent claude-code"))
         #expect(s.contains("--event posttoolfailure --agent claude-code"))

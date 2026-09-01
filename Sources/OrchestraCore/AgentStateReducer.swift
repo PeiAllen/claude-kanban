@@ -18,6 +18,8 @@ public struct AgentSignalContext: Equatable, Sendable {
 public struct AgentSignal: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case turnStarted
+        /// Provider activity proved that the just-completed prompt continued without a new turn.
+        case turnReactivated
         case turnCompleted(resume: AutomaticResume? = nil)
         case turnReconciled(TurnStatus, humanNeed: ProviderHumanNeed?)
         case activity(ActivitySummary?)
@@ -56,11 +58,16 @@ public enum AgentStateReducer {
             // boundary even when the visible status was already running.
             state = AgentState(turnStatus: .running)
 
+        case .turnReactivated:
+            // This is the same provider turn, so preserve its detail and human-needed facts. In
+            // particular, it is not the semantic boundary that retires a durable pendingQuestion.
+            state.turnStatus = .running
+
         case .turnCompleted(let resume):
             // Providers can emit terminal spans for built-in commands that had no normalized turn start
             // (for example Claude `/exit`). A nil duplicate is therefore a no-op. A second source may,
-            // however, know that the just-closed turn will resume automatically (Claude Stop vs its root
-            // interaction span), so allow that one monotonic enrichment regardless of arrival order.
+            // however, know that the just-closed turn will resume automatically, so allow that one
+            // monotonic enrichment regardless of arrival order.
             if case .waiting(let waiting) = state.turnStatus {
                 if waiting.resume == nil, let resume {
                     state.turnStatus = .waiting(.init(resume: resume))
