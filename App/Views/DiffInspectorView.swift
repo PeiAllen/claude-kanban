@@ -178,145 +178,66 @@ struct DiffInspectorView: View {
     private func unifiedDiff(_ file: DiffFileSection) -> some View {
         let rows = DiffRows.make(file.lines)
         let numW = numberWidth(digits: maxDigits(rows.map { max($0.oldNum ?? 0, $0.newNum ?? 0) }))
-        let body = VStack(alignment: .leading, spacing: 0) {
-            ForEach(rows) { unifiedRow($0, numW: numW) }
-        }
-        .fixedSize(horizontal: true, vertical: false)   // width = widest line; guards the horizontal scroll
-        return scrollableBody(body)
+        return rendered(DiffTextRenderer(rows: rows.map(DiffTextRow.init),
+                                         palette: DiffTextPalette(theme: theme),
+                                         gutterWidth: numW * 2,
+                                         showsBothNumbers: true,
+                                         scrollsHorizontally: preview == nil),
+                        snapshotWidth: 364)
     }
 
-    @ViewBuilder private func unifiedRow(_ row: DiffRow, numW: CGFloat) -> some View {
-        if row.kind == .hunk {
-            hunkDivider(row.text)
+    /// Live, the renderer is hosted as an AppKit view. The headless snapshot renderer can't lay one
+    /// out, so it gets a bitmap of the same text view — see `snapshotImage(width:)`. The width tracks
+    /// the 384pt snapshot frame in `snapshotDiff` minus the file-card insets.
+    @ViewBuilder
+    private func rendered(_ renderer: DiffTextRenderer, snapshotWidth: CGFloat) -> some View {
+        if preview == nil {
+            renderer
         } else {
-            HStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    lineNumber(row.oldNum, width: numW)
-                    lineNumber(row.newNum, width: numW)
-                }
-                .background(theme.dark ? Color.white.opacity(0.03) : Color.black.opacity(0.025))
-                HStack(spacing: 0) {
-                    Text(marker(row.kind))
-                        .font(codeFont(.medium))
-                        .foregroundStyle(markerColor(row.kind))
-                        .frame(width: 16)
-                    codeText(row.text)
-                        .padding(.trailing, 16)
-                }
+            Image(nsImage: renderer.snapshotImage(width: snapshotWidth))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(rowTint(row.kind))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     // MARK: - Split layout
 
+    /// Two text views sharing one divider. Each side clips long lines to its own column, so a line can
+    /// never bleed across the divider — unlike unified there is no horizontal scroll here, and "Open in
+    /// Zed" / the unified view cover reading full long lines.
     private func splitDiff(_ file: DiffFileSection) -> some View {
         let rows = DiffSplitRows.make(file.lines)
         let numW = numberWidth(digits: maxDigits(rows.flatMap { [$0.oldNum ?? 0, $0.newNum ?? 0] }))
-        let body = VStack(alignment: .leading, spacing: 0) {
-            ForEach(rows) { splitRow($0, numW: numW) }
+        let palette = DiffTextPalette(theme: theme)
+        return HStack(spacing: 0) {
+            splitSide(rows, numW: numW, palette: palette, side: .remove)
+            Rectangle().fill(theme.hair).frame(width: splitDividerWidth)
+            splitSide(rows, numW: numW, palette: palette, side: .add)
         }
-        // The two columns each fill half the pane and clip long lines to their own side (see `splitCell`),
-        // so a line can never overflow across the divider into the other column. Unlike the unified layout
-        // there is no horizontal scroll — "Open in Zed" / the unified view cover reading full long lines.
-        // The headless snapshot proposes an unbounded width, so pin the body to the snapshot frame.
-        return Group {
-            if preview == nil { body }
-            else { body.frame(width: 364, alignment: .leading).clipped() }
+    }
+
+    /// One column of the split layout. A `nil` cell on a `change` row means that side has no
+    /// counterpart (a pure add or pure remove), and renders as a blank context line.
+    private func splitSide(_ rows: [DiffSplitRow], numW: CGFloat,
+                           palette: DiffTextPalette, side: DiffRow.Kind) -> some View {
+        let cells = rows.map { row -> DiffTextRow in
+            if row.kind == .hunk { return DiffTextRow(kind: .hunk, oldNum: nil, newNum: nil, text: row.heading) }
+            let text = side == .remove ? row.oldText : row.newText
+            let num = side == .remove ? row.oldNum : row.newNum
+            let kind: DiffRow.Kind = (row.kind == .change && text != nil) ? side : .context
+            return DiffTextRow(kind: kind, oldNum: num, newNum: nil, text: text ?? "",
+                               filler: row.kind == .change && text == nil)
         }
+        return rendered(DiffTextRenderer(rows: cells, palette: palette, gutterWidth: numW,
+                                         showsBothNumbers: false, scrollsHorizontally: false),
+                        snapshotWidth: 182)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
     }
 
     /// Long lines scroll horizontally in the live view. The headless snapshot renderer (`ImageRenderer`)
     /// can't lay out a `ScrollView` and proposes an unbounded width, so it instead clips the body to a
     /// fixed width, left-aligned — matching the scroll's resting position. The width tracks the 384pt
     /// snapshot frame in `snapshotDiff` minus the file-card insets.
-    @ViewBuilder private func scrollableBody(_ body: some View) -> some View {
-        if preview == nil {
-            ScrollView(.horizontal, showsIndicators: false) { body }
-        } else {
-            body.frame(width: 364, alignment: .leading).clipped()
-        }
-    }
-
-    @ViewBuilder private func splitRow(_ row: DiffSplitRow, numW: CGFloat) -> some View {
-        if row.kind == .hunk {
-            hunkDivider(row.heading)
-        } else {
-            HStack(spacing: 0) {
-                splitCell(num: row.oldNum, text: row.oldText, side: .remove, changed: row.kind == .change, numW: numW)
-                Rectangle().fill(theme.hair).frame(width: splitDividerWidth)
-                splitCell(num: row.newNum, text: row.newText, side: .add, changed: row.kind == .change, numW: numW)
-            }
-        }
-    }
-
-    /// One side of a split row. `text == nil` renders an empty (no-counterpart) cell.
-    private func splitCell(num: Int?, text: String?, side: DiffRow.Kind, changed: Bool, numW: CGFloat) -> some View {
-        let kind: DiffRow.Kind = (changed && text != nil) ? side : .context
-        return HStack(spacing: 0) {
-            lineNumber(num, width: numW)
-                .background(theme.dark ? Color.white.opacity(0.03) : Color.black.opacity(0.025))
-            HStack(spacing: 0) {
-                if changed {
-                    Text(text == nil ? " " : marker(side))
-                        .font(codeFont(.medium)).foregroundStyle(markerColor(side)).frame(width: 14)
-                }
-                codeText(text ?? " ").padding(.trailing, 10)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(text == nil ? theme.termPrompt : rowTint(kind))
-        }
-        // Each side takes half the row and clips its own overflow, so a long line stays on its side of
-        // the divider instead of bleeding into the opposite column.
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .clipped()
-    }
-
-    // MARK: - Shared row pieces
-
-    private func lineNumber(_ n: Int?, width: CGFloat) -> some View {
-        Text(n.map(String.init) ?? "")
-            .font(.system(size: 10, weight: .regular, design: .monospaced))
-            .foregroundStyle(theme.text3)
-            .padding(.trailing, 8)
-            .frame(width: width, alignment: .trailing)
-            .padding(.vertical, 1.5)
-    }
-
-    private func codeText(_ s: String) -> some View {
-        Text(s.isEmpty ? " " : s)
-            .font(codeFont(.regular))
-            .foregroundStyle(theme.term)
-            .fixedSize(horizontal: true, vertical: false)
-            .textSelection(.enabled)
-            .padding(.vertical, 1.5)
-    }
-
-    /// A soft band marking a jump in the file, labelled with git's section heading (the enclosing
-    /// function) when present. Replaces the raw `@@ -14,9 +14,11 @@` line.
-    private func hunkDivider(_ heading: String) -> some View {
-        Text(heading)
-            .font(.system(size: 10.5, design: .monospaced))
-            .foregroundStyle(theme.text3)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(theme.accent.opacity(theme.dark ? 0.10 : 0.06))
-            .overlay(Rectangle().fill(theme.hair).frame(height: 0.5), alignment: .top)
-            .overlay(Rectangle().fill(theme.hair).frame(height: 0.5), alignment: .bottom)
-    }
-
-    private func codeFont(_ weight: Font.Weight) -> Font { .system(size: 11.5, weight: weight, design: .monospaced) }
-    private func marker(_ kind: DiffRow.Kind) -> String { kind == .add ? "+" : kind == .remove ? "−" : " " }
-    private func markerColor(_ kind: DiffRow.Kind) -> Color {
-        kind == .add ? theme.green.text : kind == .remove ? theme.red.text : .clear
-    }
-    private func rowTint(_ kind: DiffRow.Kind) -> Color {
-        kind == .add ? theme.green.tint : kind == .remove ? theme.red.tint : .clear
-    }
     private func maxDigits(_ nums: [Int]) -> Int { max(2, String(nums.max() ?? 0).count) }
     private func numberWidth(digits: Int) -> CGFloat { CGFloat(digits) * 7 + 12 }
 

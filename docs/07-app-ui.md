@@ -363,9 +363,13 @@ a quick review doesn't need "View changes → Zed". It has a **baseline toggle**
 **Branch** (vs the default-branch merge-base, the default) · **Parent** (shown only once the card carries a
 `parentBranch`, for stacked cards) — and reloads on card selection and on baseline change. The diff text is
 fetched from the daemon's app-only [`diffText`](05-command-reference.md#server-only-built-in-methods)
-endpoint (difftastic-rendered when `difft` is installed, git's colored diff otherwise) and drawn by a small
-SGR→`AttributedString` parser (`ANSIText`) in a selectable scroll view; an **Open in Zed** button opens the
-full changes, and a huge diff is capped daemon-side. A non-git (`.scratch`/`.borrowed`) or zero-change card
+endpoint (difftastic-rendered when `difft` is installed, git's colored diff otherwise), parsed into the
+structured `DiffRows` line model, and rendered **as text** — one `NSTextView` per file (`DiffTextRenderer`),
+not a view per line. The row bands and the line-number gutter are drawn by the text view itself, over only
+the visible line fragments, so cost and memory stay flat as a diff grows; see
+[Render the diff as text, not as views](09-design-decisions.md#render-the-diff-as-text-not-as-views).
+Selection is per file and line numbers are drawn rather than inserted, so copying yields clean code. An
+**Open in Zed** button opens the full changes, and a huge diff is capped daemon-side. A non-git (`.scratch`/`.borrowed`) or zero-change card
 shows an empty state rather than a fabricated diff. Editing stays Zed's job (an explicit non-goal).
 
 The **agent chrome** stacks, top to bottom:
