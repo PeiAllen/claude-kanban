@@ -686,8 +686,8 @@ a displayed running/waiting state, manufacture runtime status, clear `pendingQue
 session, or participate in `wait`. Handoff remains authored session context rather than an inbox carrier.
 
 The separate `wait` primitive remains a subscription to a lifecycle conclusion. Deferred work is explicit:
-provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog, and possible
-deprecations of `wait` and `needs-input`.
+provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog, and a possible
+deprecation of `wait`.
 
 ## Superseded pre-native delivery protocol — historical only
 
