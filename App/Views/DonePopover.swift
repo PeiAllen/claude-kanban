@@ -24,7 +24,9 @@ struct DonePopover: View {
                     .padding(.vertical, 24)
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    // A long-lived board can have hundreds of archived cards. Keep the native popover's
+                    // opening and in-row interactions proportional to its viewport, not archive history.
+                    LazyVStack(spacing: 0) {
                         ForEach(Array(model.archived.enumerated()), id: \.element.id) { idx, t in
                             ArchiveRow(task: t)
                             if idx < model.archived.count - 1 {
@@ -45,7 +47,6 @@ struct DonePopover: View {
 }
 
 struct ArchiveRow: View {
-    @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: Task
 

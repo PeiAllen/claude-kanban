@@ -50,7 +50,17 @@ let package = Package(
             dependencies: [
                 "OrchestraKit",
                 .target(name: "OrchestraCore", condition: .when(platforms: [.macOS])),
-            ]
+            ],
+            // The document reader's bundled page: marked + KaTeX + DOMPurify and its stylesheet. NO
+            // math fonts — math renders as MathML against the system font. Declared HERE, on the
+            // shared UI target, rather than duplicated into the
+            // two XcodeGen app specs — `Bundle.module` then resolves on macOS and iOS alike, and each
+            // app embeds the generated resource bundle automatically. Same `.copy()` mechanism
+            // OrchestraCore already uses for its own resources.
+            //
+            // Vendored, never fetched at runtime: offline rendering on a phone is a requirement, and a
+            // CDN cannot be trusted to stay put. Regenerate with scripts/vendor-document-reader-assets.sh.
+            resources: [.copy("Resources/DocumentReader")]
         ),
         .target(
             name: "OrchestraCore",

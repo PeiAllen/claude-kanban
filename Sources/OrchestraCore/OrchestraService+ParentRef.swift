@@ -10,7 +10,7 @@ import Foundation
 /// to the default-branch baseline, keeping nil-parent behavior byte-identical to before branch-tree.
 ///
 /// PR5 actor-hygiene (Task 5.1.4): `gitRemotes`/`resolvableRef`/`resolvedParentRef` touch no actor
-/// mutable state — they're `nonisolated` so `offActor` hops (diffText/recomputeDiffStat/changedNotes,
+/// mutable state — they're `nonisolated` so `offActor` hops (diffText/recomputeDiffStat/listDocuments,
 /// computeTreeStat) can call them from a background thread. `gitRemotes` memoizes on the repo's
 /// `.git/config` mtime via `gitRemotesCache` (its own lock, not actor isolation) so a mid-run `git
 /// remote add` is still observed — no behavior change vs. the un-memoized original.

@@ -47,6 +47,9 @@ struct AgentTerminalView: NSViewRepresentable {
     /// inactive. Reading it here makes SwiftUI re-run `updateNSView` when it flips, so the terminal parks
     /// and unparks with the rest of the board.
     @Environment(\.animationsActive) private var animationsActive
+    /// Shared by every desktop agent and shell terminal, and persisted across launches. Updating this
+    /// property re-runs `updateNSView`, where the mounted SwiftTerm view recalculates its normal grid.
+    @AppStorage(TerminalFontSize.preferenceKey) private var terminalFontSize = TerminalFontSize.defaultPointSize
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
@@ -74,7 +77,7 @@ struct AgentTerminalView: NSViewRepresentable {
         let term = ScrollableTerminalView(frame: .zero)
         term.installClipboardOSCHandler()
         term.processDelegate = context.coordinator
-        term.font = Self.terminalFont
+        term.font = Self.terminalFont(size: CGFloat(TerminalFontSize.normalized(terminalFontSize)))
         // SwiftTerm v1.13.0 defaults its 256-colour palette to a "base16 LAB" strategy that re-derives
         // the whole 16–255 cube from the active theme's colours. That remaps fixed xterm indices: e.g.
         // 231 (normally pure white) becomes the theme *foreground*, so a TUI that uses 48;5;231 for a
@@ -109,6 +112,12 @@ struct AgentTerminalView: NSViewRepresentable {
         return term
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
+        // A font assignment makes SwiftTerm recompute its cell grid and resize the existing pty. Guard it
+        // so unrelated SwiftUI updates (theme, telemetry, focus) do not repeatedly reflow the TUI.
+        let requestedFontSize = CGFloat(TerminalFontSize.normalized(terminalFontSize))
+        if abs(nsView.font.pointSize - requestedFontSize) > .ulpOfOne {
+            nsView.font = Self.terminalFont(size: requestedFontSize)
+        }
         applyColors(nsView, coordinator: context.coordinator)   // re-tint when the app toggles light/dark
         context.coordinator.loadTranscriptImage = loadTranscriptImage
         context.coordinator.transcriptImagePreview.onUnavailable = onTranscriptImageUnavailable
@@ -191,8 +200,7 @@ struct AgentTerminalView: NSViewRepresentable {
     /// A real monospace font (SwiftTerm's default lacks many glyphs). Prefers an installed Nerd Font so
     /// powerline / git prompt icons render; falls back to SF Mono, then Menlo. CoreText still cascades
     /// to a Nerd Font for individual missing glyphs if one is installed under any family name.
-    static let terminalFont: NSFont = {
-        let size: CGFloat = 12.5
+    static func terminalFont(size: CGFloat) -> NSFont {
         // Homebrew's nerd-font casks register families as "<Name> Nerd Font Mono"; the manual
         // nerd-fonts release also ships "<Name> NF". List both so either install is picked up. The
         // "Mono" variant is single-width (ideal for a terminal). Falls back to SF Mono, then Menlo.
@@ -203,7 +211,7 @@ struct AgentTerminalView: NSViewRepresentable {
             if let f = NSFont(name: name, size: size) { return f }
         }
         return .monospacedSystemFont(ofSize: size, weight: .regular)
-    }()
+    }
 
     private func applyColors(_ term: LocalProcessTerminalView, coordinator: Coordinator) {
         let bg = NSColor(background), fg = NSColor(foreground)
@@ -515,6 +523,13 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     var onBecameFirstResponder: (() -> Void)?
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
 
+    /// The last cell a drag motion was reported for, so one event goes down the pty per cell crossed
+    /// rather than per pixel moved. Cleared on mouse-up so the next drag always reports its first cell.
+    private var lastDragCell: Position?
+
+    /// The terminal a left-button drag started in. Weak: a card closing mid-drag must not be pinned.
+    fileprivate static weak var dragOwner: ScrollableTerminalView?
+
     /// Own OSC 52 — the clipboard escape — instead of leaving it to SwiftTerm's built-in handler.
     ///
     /// Selection inside these terminals belongs to tmux, which copies by writing OSC 52 to this view.
@@ -589,7 +604,18 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     static func installScrollMonitorIfNeeded() {
         guard !monitorInstalled else { return }
         monitorInstalled = true
-        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .leftMouseDown, .leftMouseUp]) { event in
+        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .leftMouseDown,
+                                                    .leftMouseUp, .leftMouseDragged]) { event in
+            // A drag that wanders outside the terminal's bounds must keep extending the selection, so
+            // the gesture belongs to the view the PRESS landed in — not to whatever the pointer is over
+            // now (the board, another card). Hit-testing every motion would drop those events silently.
+            if event.type == .leftMouseDragged, let owner = dragOwner {
+                return owner.handleDragMotion(event) ? nil : event
+            }
+            if event.type == .leftMouseUp, let owner = dragOwner {
+                owner.endDragMotion()
+                dragOwner = nil
+            }
             guard let hit = event.window?.contentView?.hitTest(event.locationInWindow) else { return event }
             var view: NSView? = hit
             while let cur = view {
@@ -606,6 +632,7 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
                         // exception: keep both its down/up out of tmux so a preview never becomes a
                         // provider-TUI click.
                         term.onBecameFirstResponder?()
+                        dragOwner = term
                         return term.hasCommandLink(at: event) ? nil : event
                     case .leftMouseUp:
                         // SwiftTerm handles explicit OSC 8 links itself under `.alwaysWithModifier`.
@@ -621,6 +648,46 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
             return event   // not over a terminal — leave board/list scrolling alone
         }
     }
+
+    /// Send the drag motion SwiftTerm withholds, so a press-and-drag actually selects.
+    ///
+    /// SwiftTerm's `mouseDragged` forwards motion only when the program asked to be told about motion
+    /// at ALL times (DECSET 1003 / `.anyEvent`), and otherwise returns without starting a native
+    /// selection either. tmux asks for `1000;1002;1006`: `1002` is `.buttonEventTracking`, "report motion
+    /// WHILE a button is down". So nothing sent the motion, tmux saw a press and a release but never a
+    /// drag, `MouseDrag1Pane` never fired, and dragging selected nothing at all. (A double-click needs no
+    /// motion, which is why it still flashed a word.) SwiftTerm's own `sendButtonTracking()` is the right
+    /// predicate but is internal, so match on the public mode instead.
+    ///
+    /// This rides the shared event monitor rather than a `mouseDragged` override: SwiftTerm declares its
+    /// mouse handlers `public`, not `open`, so a subclass outside that module cannot override them — the
+    /// same constraint that put the click handling in the monitor.
+    ///
+    /// Motion is emitted once per CELL crossed, not per pixel: a drag across the pane is otherwise
+    /// hundreds of identical events down the pty, and tmux only acts on cell changes.
+    /// Returns `true` when it consumed the event.
+    func handleDragMotion(_ event: NSEvent) -> Bool {
+        guard terminal != nil, allowMouseReporting,
+              TerminalMouseInteractionPolicy.hostMustForwardDragMotion(
+                  appRequestedMotionWhileButtonDown: terminal.mouseMode == .buttonEventTracking,
+                  terminalForwardsMotionItself: terminal.mouseMode.sendMotionEvent())
+        else { return false }
+        let (col, row) = gridLocation(of: event)
+        guard lastDragCell != Position(col: col, row: row) else { return true }
+        lastDragCell = Position(col: col, row: row)
+        // Button 0 held; `sendMotion` adds the motion bit itself.
+        let flags = terminal.encodeButton(button: 0, release: false,
+                                          shift: event.modifierFlags.contains(.shift),
+                                          meta: event.modifierFlags.contains(.option),
+                                          control: event.modifierFlags.contains(.control))
+        let point = convert(event.locationInWindow, from: nil)
+        terminal.sendMotion(buttonFlags: flags, x: col, y: row,
+                            pixelX: Int(point.x), pixelY: Int(bounds.height - point.y))
+        return true
+    }
+
+    /// The drag finished — the next one must report its first cell even if it starts where this ended.
+    func endDragMotion() { lastDragCell = nil }
 
     /// Forward the wheel to the running program as mouse-wheel events. Returns `true` if it consumed
     /// the event (alternate buffer with mouse reporting on), `false` to let SwiftTerm scroll natively.

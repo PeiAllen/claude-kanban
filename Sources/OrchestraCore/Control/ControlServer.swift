@@ -145,12 +145,12 @@ public final class ControlServer: @unchecked Sendable {
             let task = try await service.resolveRef(ref)
             try await service.openInZed(task.id)
             return .object(["ok": .bool(true)])
-        case "openNotes":
+        case "openInObsidian":
             guard let p = req.params, let ref = p.optString("ref") else {
-                throw OrchestraError.invalidParams("openNotes needs ref")
+                throw OrchestraError.invalidParams("openInObsidian needs ref")
             }
             let task = try await service.resolveRef(ref)
-            let n = try await service.openNotes(task.id)
+            let n = try await service.openInObsidian(task.id)
             return .object(["ok": .bool(true), "opened": .int(n.opened), "total": .int(n.total)])
         case "hook":
             // The unified hook channel: the `_report` edge sends a TYPED event (already parsed at the
@@ -192,15 +192,42 @@ public final class ControlServer: @unchecked Sendable {
             let base = p.optString("base").flatMap(DiffBase.init(rawValue:))
             let stat = try await service.diffStat(task.id, base: base)
             return try stat.map { try JSONValue(encodable: $0) } ?? .null
-        case "changedNotes":
-            // The phone's Notes page (M6): the markdown notes this branch changed/added, WITH content,
-            // so the phone can render them in-app (the desktop's openNotes opens Obsidian, which the
-            // phone lacks). Internal + app-only — NOT a registry Command (agents read notes off disk).
+        case "listDocuments":
+            // The reader's document list: path + optional git status, NO content. Split from
+            // `readDocument` on purpose — shipping content with the list is fine for three changed
+            // documents and wrong for two hundred. Internal + app-only, like `diffText`.
             guard let p = req.params, let ref = p.optString("ref") else {
-                throw OrchestraError.invalidParams("changedNotes needs ref")
+                throw OrchestraError.invalidParams("listDocuments needs ref")
             }
             let task = try await service.resolveRef(ref)
-            return try JSONValue(encodable: try await service.changedNotes(task.id))
+            // CONDITIONAL, like an HTTP GET with `If-None-Match`. The reader polls this on a slow
+            // cadence; when the validator matches, the answer carries no documents and the daemon
+            // skips the two git forks behind `status`.
+            return try JSONValue(encodable:
+                try await service.listDocuments(task.id, ifNoneMatch: p.optString("ifNoneMatch")))
+        case "readDocument":
+            guard let p = req.params, let ref = p.optString("ref"), let path = p.optString("path") else {
+                throw OrchestraError.invalidParams("readDocument needs ref + path")
+            }
+            let task = try await service.resolveRef(ref)
+            // Also conditional — this is the reader's fast poll, and what replaced the file watcher.
+            return try JSONValue(encodable:
+                try await service.readDocument(task.id, path: path,
+                                               ifNoneMatch: p.optString("ifNoneMatch")))
+        case "documentAsset":
+            // An image a note references, read by the daemon so the phone — which cannot reach the
+            // daemon's disk — renders the same page the desktop does. Internal + app-only, like
+            // `diffText`: NOT a registry Command, so it never becomes an MCP tool.
+            //
+            // `note` is REQUIRED and is not decorative: it is the allowlist SCOPE. Without it the
+            // endpoint degenerates into an arbitrary worktree image read.
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let note = p.optString("note"), let asset = p.optString("asset") else {
+                throw OrchestraError.invalidParams("documentAsset needs ref + note + asset")
+            }
+            let task = try await service.resolveRef(ref)
+            return try JSONValue(encodable:
+                try await service.documentAsset(task.id, documentPath: note, assetPath: asset))
         case "media":
             // App-only transcript image retrieval. The caller supplies an opaque id, never a filesystem
             // path, and the service scopes it to the card's current session epoch.

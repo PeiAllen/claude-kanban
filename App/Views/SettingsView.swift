@@ -3,9 +3,10 @@ import OrchestraUI
 import OrchestraCore
 
 /// Settings, styled to match the rest of the app (themed surfaces, not the native grey Form). Edits
-/// auto-save to the daemon, debounced — there is no Save button. Appearance lives in the toolbar.
+/// auto-save to the daemon, debounced — there is no Save button.
 struct SettingsView: View {
     @EnvironmentObject var model: BoardModel
+    @EnvironmentObject var boardZoom: BoardZoom
     @Environment(\.theme) var theme: Theme
 
     @State private var reposRoot = ""
@@ -35,6 +36,10 @@ struct SettingsView: View {
     private var modelLabel: String {
         defaultModel.isEmpty ? "Use agent default"
             : (modelChoices.first { $0.id == defaultModel }?.displayName ?? defaultModel)
+    }
+
+    private func scaleLabel(_ scale: Double) -> String {
+        "\(Int((scale * 100).rounded()))%"
     }
 
     var body: some View {
@@ -84,6 +89,16 @@ struct SettingsView: View {
                     if statusLineMode == .custom {
                         rowDivider
                         row("Command") { field($customStatusLine, "statusline.sh", focus: .custom) }
+                    }
+                }
+
+                section("Appearance") {
+                    row("Board scale") {
+                        menu(scaleLabel(boardZoom.scale), width: 108) {
+                            ForEach(BoardZoom.values, id: \.self) { scale in
+                                Button(scaleLabel(scale)) { boardZoom.set(scale) }
+                            }
+                        }
                     }
                 }
 

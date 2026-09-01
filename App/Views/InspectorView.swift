@@ -23,10 +23,15 @@ struct InspectorView: View {
                         // the board; the binding routes to the selected card's entry.
                         HeaderBar(task: t, mode: Binding(get: { model.inspectorMode },
                                                          set: { model.inspectorMode = $0 }))
-                        if model.inspectorMode == .diff {
-                            DiffInspectorView(task: t)
-                        } else {
-                            AgentChrome(task: t)
+                        switch model.inspectorMode {
+                        case .diff:  DiffInspectorView(task: t)
+                        case .documents:
+                            // .id(t.id) is REQUIRED. Without it SwiftUI reuses the view, so the
+                            // @StateObject model, its selected document, and the webview's already-
+                            // bound assetProvider all survive a card switch — the next card renders
+                            // the previous card's text and resolves images against its worktree.
+                            DocumentReaderView(task: t).id(t.id)
+                        case .agent: AgentChrome(task: t)
                         }
                     }
                 }
@@ -99,6 +104,7 @@ private struct HeaderBar: View {
             Picker("", selection: $mode) {
                 Text("Agent").tag(InspectorMode.agent)
                 Text("Diff").tag(InspectorMode.diff)
+                Text("Docs").tag(InspectorMode.documents)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -132,12 +138,12 @@ private struct HeaderBar: View {
 
             // Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
             Button {
-                _Concurrency.Task { await model.openNotes(task.id) }
+                _Concurrency.Task { await model.openInObsidian(task.id) }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "note.text").font(F.ui(13, .semibold)).foregroundColor(theme.text)
                     if !compact {
-                        Text("Open notes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                        Text("Open in Obsidian").font(F.ui(12, .semibold)).foregroundColor(theme.text)
                     }
                 }
                 .padding(.horizontal, compact ? 7 : 11)
@@ -145,7 +151,7 @@ private struct HeaderBar: View {
                 .surface(theme.card, corner: 8, hair: theme.hair)
             }
             .buttonStyle(.plain)
-            .help("Open this card's changed notes in its worktree (Obsidian)")
+            .help("Open this card's worktree as an Obsidian vault, jumped to its changed notes")
 
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.phaseDisplay != .dead {

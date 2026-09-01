@@ -463,20 +463,70 @@ public struct TreeStat: Codable, Sendable, Equatable {
 
 // MARK: - Notes (the phone's Notes page)
 
-/// Whether a changed note is modified vs the branch base (`M`) or newly added (`A`). Deletions never
-/// appear — a deleted note has nothing to render. Wire form is the bare git status letter.
-public enum NoteStatus: String, Codable, Sendable { case modified = "M", added = "A" }
+/// Whether a changed document is modified vs the branch base (`M`) or newly added (`A`). Deletions never
+/// appear — a deleted document has nothing to render. Wire form is the bare git status letter.
+public enum DocumentStatus: String, Codable, Sendable { case modified = "M", added = "A" }
 
-/// One markdown note a card's branch changed/added vs its base, WITH its current content — the payload
-/// of the `changedNotes` RPC. The phone's Notes page renders these in-app (it has no Obsidian, which is
-/// what the desktop's "Open notes" opens the same file set in). `path` is worktree-relative. Mirrors the
-/// desktop changed-notes computation; see mobile spec §3 "Notes page".
-public struct NoteFile: Codable, Sendable, Equatable {
-    public let path: String        // worktree-relative, e.g. "notes/designs/foo.md"
-    public let status: NoteStatus  // M = modified vs base, A = added
-    public let content: String     // full file content (UTF-8), size-capped by the daemon
-    public init(path: String, status: NoteStatus, content: String) {
-        self.path = path; self.status = status; self.content = content
+/// One document the reader can open: where it is, and what git can say about it. NO CONTENT.
+///
+/// The list and the content are deliberately separate calls. Shipping content with the list is fine
+/// for three changed documents and wrong for two hundred discovered documents — different payload budget,
+/// different caching, and a phone pays for every byte.
+public struct DocRef: Codable, Sendable, Equatable, Identifiable {
+    /// Relative to the card's working directory, never absolute.
+    public let path: String
+    /// `M`/`A` when git can speak about this file, `nil` otherwise. MOST documents have no status —
+    /// discovery is git-independent, so a file that is committed and unchanged, or sitting in a
+    /// directory git ignores, simply has nothing to report. That is correct, not missing data.
+    public let status: DocumentStatus?
+
+    public var id: String { path }
+    public var name: String { (path as NSString).lastPathComponent }
+
+    public init(path: String, status: DocumentStatus? = nil) {
+        self.path = path; self.status = status
+    }
+}
+
+/// A document's content, answered CONDITIONALLY.
+///
+/// This is HTTP's `ETag` / `If-None-Match` / `304`, and deliberately so — the reader keeps its copy
+/// current by asking again on a timer, and asking is the common case while an answer is the rare one.
+/// The daemon stats the file (~5µs) and only reads and hashes it when the stat moved, so a poll that
+/// finds nothing costs almost exactly nothing.
+///
+/// There is no push counterpart. An FSEvents watcher used to broadcast these; it was Darwin-only,
+/// needed one inotify descriptor per directory to port, and cost more under build churn than the poll
+/// costs at rest. See `docs/09-design-decisions.md`.
+public struct DocumentContent: Codable, Sendable, Equatable {
+    /// The validator. Pass it back as `ifNoneMatch` on the next read.
+    public let hash: String
+    /// `nil` means NOT MODIFIED — the caller's `ifNoneMatch` still matches, so no bytes were sent.
+    public let content: String?
+    public init(hash: String, content: String?) { self.hash = hash; self.content = content }
+}
+
+/// A document LIST, answered conditionally on the same rule.
+///
+/// The validator covers the path set and each document's git status, so the answer is `nil` unless the
+/// set actually moved. That matters more here than for content: the walk is cheap but the git decoration
+/// behind `status` costs two forks, and it is skipped entirely when the digest matches.
+public struct DocumentList: Codable, Sendable, Equatable {
+    public let hash: String
+    /// `nil` means NOT MODIFIED.
+    public let documents: [DocRef]?
+    public init(hash: String, documents: [DocRef]?) { self.hash = hash; self.documents = documents }
+}
+
+/// One asset a document references (an image), fetched by the reader's scheme handler. The phone cannot
+/// read the daemon's disk, so the daemon reads it — and the desktop uses the same path, so both
+/// surfaces render identically.
+public struct DocumentAsset: Codable, Sendable, Equatable {
+    public let path: String
+    public let mimeType: String
+    public let base64: String
+    public init(path: String, mimeType: String, base64: String) {
+        self.path = path; self.mimeType = mimeType; self.base64 = base64
     }
 }
 

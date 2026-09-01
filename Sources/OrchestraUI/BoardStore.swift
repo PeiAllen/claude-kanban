@@ -911,6 +911,9 @@ public class BoardStore: ObservableObject {
                 // on its own).
                 if selectedId == t.id { selectedId = nil }
                 if archiveConfirm == t.id { archiveConfirm = nil }
+                // An archived card keeps no note cursor. This is the ARCHIVE path — a card is archived
+                // through `.taskUpserted(archived: true)`, NOT `.taskRemoved` — so reaping only in
+                // `.taskRemoved` would leave the cursor behind for the process's lifetime.
             } else {
                 // Prior snapshot of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
@@ -1225,11 +1228,22 @@ public class BoardStore: ObservableObject {
         (try? await client.call("diffText",
             .object(["ref": .string(id.uuidString), "base": .string(base)])).decode(String.self)) ?? ""
     }
-    /// The changed/new markdown notes on a card's branch, each with its current content — the phone's
-    /// Notes page (M6) renders these in-app (it has no Obsidian). Read-only; `[]` for non-worktree cards
-    /// or on any error. Delegates to M6a's typed `changedNotes` client method (`changedNotes` RPC).
-    public func changedNotes(_ id: UUID) async -> [NoteFile] {
-        (try? await client.changedNotes(id.uuidString)) ?? []
+    /// The card's documents — list only, no content, asked CONDITIONALLY. Pass the previous answer's
+    /// hash and a matching validator returns `documents == nil`, which also spares the daemon the two
+    /// git forks behind `status`. `nil` on any error, so the reader keeps what it has.
+    public func listDocuments(_ id: UUID, ifNoneMatch: String? = nil) async -> DocumentList? {
+        try? await client.listDocuments(id.uuidString, ifNoneMatch: ifNoneMatch)
+    }
+    /// One document's content, asked CONDITIONALLY — this is the reader's poll. `content == nil` in the
+    /// answer means the caller's copy is still current. `nil` overall on failure.
+    public func readDocument(_ id: UUID, path: String, ifNoneMatch: String? = nil) async -> DocumentContent? {
+        try? await client.readDocument(id.uuidString, path: path, ifNoneMatch: ifNoneMatch)
+    }
+    /// Bytes for an image the document at `note` references, read by the daemon and scoped to that document's
+    /// own references. `nil` on any failure — a missing image renders as a broken image, which is
+    /// strictly better than failing the whole page.
+    public func documentAsset(_ id: UUID, note: String, asset: String) async -> DocumentAsset? {
+        try? await client.documentAsset(id.uuidString, note: note, asset: asset)
     }
     public func openInZed(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
@@ -1240,20 +1254,20 @@ public class BoardStore: ObservableObject {
             toast("Couldn't open in Zed", sub: "\(error)", color: .red)
         }
     }
-    public func openNotes(_ id: UUID) async {
+    public func openInObsidian(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {
-            let r = try await client.call("openNotes", .object(["ref": .string(id.uuidString)]))
+            let r = try await client.call("openInObsidian", .object(["ref": .string(id.uuidString)]))
             let opened = r["opened"]?.intValue ?? 0
             let total = r["total"]?.intValue ?? 0
             let where_ = t.map { ($0.cwd as NSString).lastPathComponent } ?? "worktree"
             let title: String
-            if total == 0 { title = "Opening worktree notes…" }
-            else if opened < total { title = "Opening \(opened) of \(total) changed notes…" }
-            else { title = "Opening \(total) changed note\(total == 1 ? "" : "s")…" }
+            if total == 0 { title = "Opening worktree documents…" }
+            else if opened < total { title = "Opening \(opened) of \(total) changed documents…" }
+            else { title = "Opening \(total) changed document\(total == 1 ? "" : "s")…" }
             toast(title, sub: where_)
         } catch {
-            toast("Couldn't open notes", sub: "\(error)", color: .red)
+            toast("Couldn't open documents", sub: "\(error)", color: .red)
         }
     }
     public func saveConfig(_ cfg: Config) async {

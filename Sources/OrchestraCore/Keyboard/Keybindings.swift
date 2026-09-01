@@ -12,9 +12,10 @@ public protocol Keybindings: Sendable {
     func intent(for chord: KeyChord, in ctx: KeyContext, awaitingGoTo: Bool) -> KeyIntent?
 }
 
-/// The generic, always-on layer: the ⌘ accelerators (⌘N / ⌘T / ⌘W) plus a bare `Esc` to close or
-/// clear the board selection / an overlay. Nothing else is captured — no navigation, no single-key
-/// verbs — so every other key passes straight through to the terminal, a text field, or an overlay.
+/// The generic, always-on layer: the ⌘ accelerators (⌘N / ⌘T / ⌘W and terminal zoom) plus a bare `Esc`
+/// to close or clear the board selection / an overlay. Nothing else is captured — no navigation, no
+/// single-key verbs — so every other key passes straight through to the terminal, a text field, or an
+/// overlay.
 public struct CommandKeybindings: Keybindings {
     public init() {}
 
@@ -25,6 +26,11 @@ public struct CommandKeybindings: Keybindings {
             case "n": return .newCard
             case "t": return .newShell
             case "w": return .closeFrontmost
+            // AppKit's charactersIgnoringModifiers spelling for Cmd-+ is `=` on standard keyboards;
+            // accept `+` too so the pure policy does not depend on that platform representation.
+            case "=", "+": return .terminalZoom(.increase)
+            case "-": return .terminalZoom(.decrease)
+            case "0": return .terminalZoom(.reset)
             default:  return nil
             }
         }
@@ -121,7 +127,7 @@ public struct VimKeybindings: Keybindings {
         case "I": return .openInbox
         case "c": return .spawn
         case "a": return .archive
-        case "o": return .openNotes
+        case "o": return .openInObsidian
         case "O": return .openInZed
         case "d": return .toggleDiff
         case "t": return .newShell

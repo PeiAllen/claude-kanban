@@ -1,0 +1,21 @@
+{
+  "_why": "The ONE table both implementations are checked against. Swift decides what the daemon serves; docpath.js decides what the page requests. A disagreement is a silently broken image, so neither side gets to hold its own copy of the cases.",
+  "vectors": [
+    { "src": "images/board.png",        "dir": "docs",     "expect": "docs/images/board.png", "why": "the ordinary case" },
+    { "src": "a.png",                   "dir": "",         "expect": "a.png",                 "why": "a document at the worktree root needs no prefix" },
+    { "src": "./b.png",                 "dir": "docs",     "expect": "docs/b.png",            "why": "a leading ./ collapses" },
+    { "src": "../shared/x.png",         "dir": "docs/sub", "expect": "docs/shared/x.png",     "why": "parent traversal resolves against the document's directory" },
+    { "src": "/top.png",                "dir": "docs",     "expect": "top.png",               "why": "a leading / means worktree-root-relative, not filesystem-absolute" },
+    { "src": "images/my%20image.png",   "dir": "docs",     "expect": "docs/images/my image.png", "why": "DRIFT #1: WebKit decodes url.path, so an encoded allowlist entry could never match" },
+    { "src": "images/a%2Bb.png",        "dir": "docs",     "expect": "docs/images/a+b.png",   "why": "percent-decoding is not limited to spaces" },
+    { "src": "caf%C3%A9/x.png",         "dir": "docs",     "expect": "docs/café/x.png",       "why": "multi-byte UTF-8 survives decoding" },
+    { "src": "images/a.png?v=2",        "dir": "docs",     "expect": "docs/images/a.png",     "why": "a query is not part of the path" },
+    { "src": "images/a.png#frag",       "dir": "docs",     "expect": "docs/images/a.png",     "why": "a fragment is not part of the path" },
+    { "src": "https://x.test/a.png",    "dir": "docs",     "expect": null,                    "why": "remote: the CSP blocks it and the daemon never serves it" },
+    { "src": "data:image/png;base64,A", "dir": "docs",     "expect": null,                    "why": "inline: the page renders it without asking anyone" },
+    { "src": "//cdn.test/c.png",        "dir": "docs",     "expect": null,                    "why": "protocol-relative is still remote" },
+    { "src": "1x:a.png",                "dir": "docs",     "expect": "docs/1x:a.png",         "why": "DRIFT #2: RFC 3986 schemes start with a LETTER, so this is an oddly-named file" },
+    { "src": "",                        "dir": "docs",     "expect": null,                    "why": "degenerate" },
+    { "src": "   ",                     "dir": "docs",     "expect": null,                    "why": "degenerate" }
+  ]
+}

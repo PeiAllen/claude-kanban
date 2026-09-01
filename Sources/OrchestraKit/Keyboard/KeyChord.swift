@@ -51,7 +51,7 @@ public enum KeyIntent: Equatable, Sendable {
     case newCard                    // Cmd-N — open the spawn sheet
     case archive                    // a — archive the selected card
     case openInZed                  // o — View changes in Zed
-    case openNotes                  // O — open the card's worktree as an Obsidian vault, on its changed notes
+    case openInObsidian             // O — open the card's working directory as an Obsidian vault
     case toggleDiff                 // d — toggle Agent/Diff inspector view
     case openInbox                  // I — open the inbox editor
     case copy(CopyTarget)           // yc/yt/yp/yi — yank
@@ -64,6 +64,7 @@ public enum KeyIntent: Equatable, Sendable {
     case help                       // ? — help overlay
     case newShell                   // t / Cmd-T — new shell tab
     case closeFrontmost             // Cmd-W — close the frontmost thing
+    case terminalZoom(TerminalZoomAction) // Cmd-+/Cmd--/Cmd-0 — shared desktop terminal font size
     case resize(Direction)          // Ctrl-Shift-hjkl — grow/shrink the focused pane's edge
     case toggleCollapse             // z — collapse/expand the focused dock/panel
     case hint                       // f — link-hint overlay (jump to any card)

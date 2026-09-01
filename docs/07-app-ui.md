@@ -293,10 +293,11 @@ Selecting a card opens the **inspector**, a resizable right-hand sidebar (defaul
 persisted; drag the left edge to resize). A **live** card shows the agent chrome; a **dead** card shows
 the [Recovery panel](#onboarding-settings-recovery-and-popovers) instead.
 
-The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
-between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view). Immediately right
+The **header bar** leads with an **Agent | Diff | Docs** segmented toggle (axis 7) that swaps the inspector
+body between the agent terminal, the read-only in-app [Diff view](#the-in-app-diff-view), and the
+[Document reader](#the-document-reader). Immediately right
 of that toggle sits the card's **branch diffstat** (`7f +214 −38`, in the board card's quiet-cluster colors), then
-come **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes** (`note.text`),
+come **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open in Obsidian** (`note.text`),
 an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). The stat stays outside the
 segmented control so its semantic green/red survives the control tint, and it measures the card's *default*
 baseline (parent-relative when stacked, else branch-relative); switching the [Diff view](#the-in-app-diff-view)'s
@@ -320,12 +321,14 @@ ordering. That row degrades the same way — a big stat next to a long model nam
 mode chip onto two lines and push the context gauge's percentage off the trailing edge — so the chip
 sheds its file count first and hides last, leaving its neighbours intact.
 
-**Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
+**Open in Obsidian** opens the card's **working directory** as an **Obsidian vault** — the host's
 `~/.claude/open-obsidian-vault.sh` recipe, wired through the
-[`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
-plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk,
-since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a
-large card doesn't flood Obsidian. It is also bound to the bare
+[`openInObsidian` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
+plumbing. It seeds one tab per document the card **changed or created**, capped at 15. It deliberately
+does not seed every document in the workspace, which would flood Obsidian with every markdown file in
+the repo. The vault is the whole directory, so the rest stays one click away in the file tree. The tab
+set comes from the same list the [Document reader](#the-document-reader) shows, so the two surfaces
+always agree. It is also bound to the bare
 [`o` keyboard shortcut](#keyboard-navigation) on the selected card. The per-card **Inbox** button
 (`tray.full`, hidden for a `dead` card) is the manual message surface; the earlier Send/Handoff/Fork buttons
 were removed in favor of it plus the natural-language → MCP delegation path:
@@ -372,6 +375,129 @@ The **agent chrome** stacks, top to bottom:
    target", and a clickable path breadcrumb;
 4. the **agent terminal** (SwiftTerm);
 5. a **shell panel** — either the shell tabs, or a "New terminal" button when none are open.
+### The document reader
+
+The **Docs** tab reads the markdown documents in a card's working directory, and lets you comment on a
+passage without leaving the board.
+
+**What it lists.** A document is any `.md` or `.markdown` file in the card's working directory.
+Discovery is a filesystem walk, not a git query, so a gitignored `notes/` directory lists exactly like a
+tracked `docs/` one. The walk skips every hidden entry and prunes `node_modules`, `build`, `dist`,
+`target`, `vendor`, `Pods`, and `DerivedData` at the directory level. It stops at 500 documents.
+
+The hidden rule has **no exceptions**, `.claude` and `.github` included. A dot-directory holds
+machine-owned config, not a document a human reviews, so pruning all of it is fail-safe against tools the
+reader has never heard of. The cost is accepted: a card whose only markdown sits in `.claude/skills` or
+`.github` shows an empty picker, and its diff still shows the change.
+
+Documents belong to the **working directory**, not to the card — the same rule the diff follows. Two
+cards on one directory list the same documents. A freeform or scratch card has documents like a
+worktree card does.
+
+**What it leads with.** The picker shows the documents this card changed or created, under a
+**Changed by this card** heading. **Show all N documents** reveals the rest. Two rules keep that from
+hiding things:
+
+- The filter always searches every document, touched or not.
+- If no document has a status, the reader lists everything. A directory that is not a git repository
+  has no changed set, so a focus section there would be empty.
+
+A document gets an `A` badge when git does not track it, or when the branch added it. It gets an `M`
+badge when the branch modified it. Most documents carry no badge, because git has nothing to say about
+a file that is committed and unchanged. That is correct, not missing data.
+
+**How it reads.** The page takes its colors from the app's theme, so a document matches the inspector
+around it in both appearances. The text column stops at a reading measure and centers itself, because
+prose set across a very wide inspector is hard to track from one line to the next. Tables, fenced code,
+and display math are exempt and scroll inside their own box. The page itself never scrolls sideways.
+
+**How you comment.** Selecting text does NOT create a comment. It offers one: a **Comment** button
+appears beside the selection, and the comment exists once you click it or press **⌘⇧M**. Press Escape,
+scroll, or select something else, and the offer goes away with nothing created. People drag through
+text constantly while reading, so a reader that turned every selection into a card would be unusable.
+
+On the Mac you drag through any range. On the phone you tap a block, which arms the same offer — a tap
+is easy to make by accident, and the phone's rail is a sheet that would otherwise rise over the
+document to greet it.
+
+Take the offer and a card appears in the rail beside the document, ready to type into. On the phone the
+rail is a sheet you can keep reading behind.
+
+A comment belongs to a **reading pass**. Anchor as many passages as you want, write them in any order,
+and then either send one card at a time or send the whole pass as one message. Cards sit in document
+order, so the rail reads top to bottom the way the document does. Clicking a card scrolls to its
+passage, and scrolling the document brings that passage's card into view.
+
+Sent comments collapse into a single **N sent** row at the bottom of the rail, which expands. They stay
+in the pass rather than disappearing, because the pass is a record of what you said — but a long review
+otherwise ends as a rail of dimmed cards, with the ones you are still writing pushed off the bottom.
+Their passages stay tinted in the document either way. Dismiss one with the `×` on its card.
+
+The pass ends when you open another document — an anchor belongs to the document it came from. It is
+deliberately not durable, the same rule documents themselves follow. On the phone, dismissing the sheet
+only HIDES the pass: a swipe down is far too cheap a gesture to destroy something you have written, and
+a bar at the bottom of the document brings it back.
+
+If the agent rewrites a passage you anchored, its card is marked **text moved**. The comment survives
+and can still be sent, because its quote froze when you selected. Only the tint is gone. Because an open
+card holds the refresh, this happens to comments you have already SENT — which is usually the agent
+acting on what you said. If it restores the text, the tint comes back and the mark clears.
+
+One comment becomes ONE message in the card's inbox, addressed to the agent that owns the document:
+
+```
+Comment on `docs/design.md:42-46` § Design › Level contract
+
+> | L1 containers | What actually runs? | processes / artifacts |
+
+Should this say "processes only"? An artifact isn't a running thing.
+```
+
+Sending a whole pass produces the same format repeated, under a count, with the entries in document
+order. So what an agent has to read never changes with the number of comments, and a pass of exactly
+one comment is that single message with nothing added.
+
+The quote freezes when you select, not when you send, so it stays a valid anchor after the line numbers
+shift. Live refresh also pauses while any comment is open, written into or not — an open card means you
+are working on that passage, and the text under it must not move. Sent comments never hold it: sending
+is exactly when you want to watch the agent act on what you said. An open card you abandon holds the
+document still until you discard or send it, and it is sitting right there in the rail.
+
+**What a drag highlights.** Exactly the range you dragged through, tinted in place, and it stays tinted
+for as long as its comment exists. A selection that crosses several blocks tints the tail of the first,
+all of the middle ones, and the head of the last. The passage whose card is focused is tinted more
+strongly than the others.
+
+An anchored passage has its own color, and it is never the selection color. The two mean different
+things — a selection is live and goes away, an anchor persists and belongs to a comment — so they must
+not look the same. The rail matches it: a card's quote bar and its focus ring use the anchor color,
+while the Send button keeps the accent, because that is an action rather than an anchor.
+
+The tint survives a refresh. Each anchored passage remembers the content of the block it sits in, so an
+agent that inserts a paragraph above your passage does not move your highlight off it. If the agent
+rewrites the passage ITSELF, the highlight drops rather than tinting words you never picked. The block
+flashes as changed instead, which is the honest answer.
+
+**What the comment quotes.** The exact words you selected, whenever Swift can prove they are really in
+the file at those lines. It compares the words of your selection against the words of the source, so
+markdown markers do not defeat the match: `**poll**, not` in the file matches the `poll, not` you saw.
+A link matches on its label.
+
+The line range itself is coarser, and deliberately so. It narrows past the block only when the selected
+text appears exactly once in the block's markdown and the block has no raw HTML and no entities.
+Falling back to the whole block is common and expected. It is also the right failure — a coarse anchor
+is visibly coarse, and a confidently wrong line is not.
+
+**How it stays fresh.** The reader asks. While it is on screen it re-checks the open document every
+couple of seconds and the document list every thirty, and each question carries a validator so an
+unchanged answer sends nothing back. Blocks whose content moved flash for about a second — a change
+cue, not a diff. A document the agent CREATES appears on the slower clock; opening the picker asks for
+the list immediately.
+
+The reader is read-only. The agent edits; you comment. A comment carries no instruction line, because
+the author decides whether to answer, to edit, or both.
+
+
 
 ## Terminals and shell tabs
 
@@ -384,9 +510,10 @@ never yanks the agent terminal.
 **The pointer belongs to tmux, for every agent.** tmux holds the scrollback, so only tmux can anchor a
 selection or a scroll position to the TEXT: presses, drags, and the wheel all go to the same owner.
 Wheel events are forwarded on the alternate screen and fall back to SwiftTerm's native scrollback
-otherwise. A drag therefore selects in tmux copy mode, and the embedded config keeps the highlight when
-the user is **reading history** (already scrolled up) but copies and leaves copy mode at the **live
-bottom**, so an agent's pane can never look frozen. The app registers its own **OSC 52** handler
+otherwise. A drag therefore selects in tmux copy mode. The view overrides `mouseDragged` to send
+the drag motion itself — SwiftTerm withholds it for the tracking mode tmux requests, which left tmux
+seeing a press and a release but never a drag — and drag-end keeps tmux's default copy-and-cancel, so the
+pane always returns to live. The app registers its own **OSC 52** handler
 (`TerminalClipboardOSC`) over SwiftTerm's: a copy still reaches the pasteboard, and a clipboard *query*
 is never answered, so a program in a terminal cannot read the user's clipboard by printing an escape
 sequence.
@@ -661,6 +788,12 @@ never the action or clearing rule. Because membership is that single contract, a
 that is merely idle between turns no longer sits in the queue — it surfaces only when its provider has a
 current human need, it declares a question, requests a merge a human must grant, dies, or reaches the
 current compatibility stall threshold.
+
+**Documents.** The phone's **Docs** tab runs the same
+[document reader](#the-document-reader) the desktop inspector uses — one bundled renderer, one document
+list, one comment format. Only the selection gesture differs: the phone taps a block, because a drag
+gesture cannot pick an arbitrary range on a touch screen without fighting the scroller. The reader
+disables the system text-selection gestures for that reason.
 
 **Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
 client its own current-window *selection* but never an independent per-window *size* — so a narrow phone

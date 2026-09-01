@@ -299,6 +299,15 @@ The control plane carries commands, state, and events — never PTY bytes. Swift
 `shell`/`inspect` attach to **tmux directly**. This keeps the daemon simple and the terminals fully
 interactive and real-time.
 
+### Desktop terminal zoom changes font metrics, not the attachment
+
+Desktop keeps one persisted terminal font size for every mounted agent and shell terminal. `⌘+`, `⌘-`,
+and `⌘0` are host-owned accelerators (also exposed in the Terminal menu), so the focused TUI never
+receives them. `AgentTerminalView` replaces SwiftTerm's font only when that size changes; SwiftTerm then
+recomputes its grid and resizes the existing local PTY, without recreating or reattaching the tmux client.
+Claude and Codex therefore take the same provider-neutral path, while a bounded 8–32pt policy recovers
+from malformed persisted values instead of producing an unusable terminal.
+
 ### Transcript images are published, opaque, and session-scoped
 
 Images are the deliberate exception to the rule above: an agent's screenshot or plot has to reach a human
@@ -1313,16 +1322,350 @@ enables its own mouse capture and makes drags unreachable, the answer is a **use
 (the shape the phone already uses — it also stops forwarding the wheel, so the frozen screen and the
 selection agree), not a per-agent default that silently trades a correct selection for a scrollable one.
 
-Two details make tmux ownership feel right rather than merely correct. tmux's default drag-end is
-`copy-selection-and-cancel`, which copies and then drops the highlight the instant the button comes up —
-the behavior originally read as "dragging doesn't select anything", and the reason the native selector
-looked like a fix. The embedded config keeps the highlight instead when the user is **reading history**
-(already scrolled up, so the pane is already frozen) and keeps the cancel at the **live bottom**, so a
-running agent's pane can never appear frozen. And the app registers its own **OSC 52** handler over
-SwiftTerm's: the built-in performs the copy, but it also answers the *read* form from
-`clipboardRead` — which `LocalProcessTerminalView` implements as the real `NSPasteboard` — so any program
-in a terminal could exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies
-and never answers a query.
+Handing the pointer back is necessary but not sufficient: **the host has to send the drag itself.** A
+drag is a press, then motion while the button is down, then a release, and tmux only treats a gesture as
+a drag — only starts a selection — once it sees that motion. SwiftTerm forwards motion only when the
+program asks to hear about motion at ALL times (DECSET 1003), and otherwise returns without starting a
+native selection either. tmux asks for `1000;1002;1006`, where `1002` is "report motion WHILE a button is
+down" — so nothing sent the motion, tmux saw a press and a release but never a drag, and **dragging
+selected nothing at all**. A double-click needs no motion, which is why it still flashed a word: the
+exact pair of symptoms first reported. `ScrollableTerminalView` overrides `mouseDragged` to send the
+motion (once per cell crossed, not per pixel) whenever the view will not.
+
+Drag-end keeps tmux's default `copy-selection-and-cancel`, which copies and leaves copy mode. Holding the
+highlight with `copy-selection-no-clear` was tried and reverted: it strands the pane in copy mode, where
+the view is frozen on old text and typed keys go to copy mode instead of the agent, and no click gets you
+out. A pane that returns to live is worth more than a highlight that lingers.
+
+The app also registers its own **OSC 52** handler over SwiftTerm's, which makes host copy independent of
+which SwiftTerm the app resolves — it tracks `from: 1.2.0`, and two builds on one machine resolved two
+different revisions with materially different behavior. The older revision accepts only `c;<base64>` and
+silently drops tmux's spelling (an empty selection field), so a copy reached no pasteboard at all. The
+newer one accepts both, but answers the *read* form from `clipboardRead` — which
+`LocalProcessTerminalView` implements as the real `NSPasteboard` — so any program in a terminal could
+exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies, accepts tmux's
+spelling, and never answers a query, on every revision.
+
+### The document reader renders in a webview, and there is only one
+
+An arbitrary text range is not readable through SwiftUI. `.textSelection(.enabled)` lets the user copy,
+and hands the app nothing. A native renderer therefore cannot support "comment on this passage" at all,
+which is the whole point of the reader. A webview gives `window.getSelection()` for free, and one
+implementation then serves both gestures: a drag range on the Mac, a block tap on the phone.
+
+So the reader is ONE bundled `WKWebView` on both platforms, and the native markdown path was deleted
+rather than kept beside it. Two renderers would need two answers to every later format question. A fence type, a math delimiter,
+and a link behavior are three such questions. The two answers can then silently diverge.
+
+The page is vendored, never fetched: marked, KaTeX, and DOMPurify ship inside the app. Offline rendering
+matters on a phone, and a CDN cannot be trusted to stay available.
+
+### The page takes the app's theme, and the conversion keeps alpha
+
+The reader sits inside the inspector, so it matches the app's `Theme` rather than the OS appearance
+alone. Swift sends the theme as CSS custom properties, and the stylesheet consumes only those.
+
+One rule governs the conversion, and it is load-bearing: **every color goes through `Color.cssColor`,
+which keeps the color's own alpha.** Half of `Theme` is translucent OVERLAY colors that composite
+against the surface under them. `chip` is black at 5% on a white card. `hair` is black at 9%. A
+`#rrggbb` conversion drops that alpha silently and turns both into `#000000`, which is why the reader
+once painted a solid black slab behind every inline code span, every fenced block, and every table
+header, and solid white in dark mode. There is deliberately no hex conversion left to reach for.
+
+The page also takes the theme's PRIMARY text color. It is a reading surface, and a whole document set
+in the secondary label color reads as chrome rather than as prose.
+
+The stylesheet caps the text column at a reading measure and centers it. The inspector can be dragged
+very wide, and prose set edge to edge across it is hard to track from line to line. Tables, fenced
+blocks, and display math opt back out and scroll inside their own box, because the page itself must
+never scroll horizontally.
+
+### Documents belong to the working directory, not to the card
+
+A document is any markdown file a reviewer might read during a card's life. Orchestra does not care who
+wrote it or where it lives. Documents therefore behave exactly like the diff. Two cards on one working directory list the same
+documents. A freeform or scratch card has documents like a worktree card does.
+
+Discovery is a pruned filesystem walk, deliberately independent of git. A gitignored `notes/` directory
+must list exactly like a tracked `docs/` one, and a git query cannot see the first. Git runs afterwards
+only to decorate what it knows about, so most documents carry no status. The walk skips hidden entries for free with `.skipsHiddenFiles`. It also prunes `node_modules` and its
+peers at the DIRECTORY level. That directory-level pruning is what keeps the walk cheap: one comparison
+instead of forty thousand stats.
+
+Durability is not a goal. A document dies with its workspace, and that is intentional — it removes rot.
+
+### The document list and a document's content are separate calls
+
+One call that returns every document WITH its content is fine for three changed notes and wrong for two
+hundred documents. The phone pays for every byte, and the reader displays one document at a time.
+
+So `listDocuments` returns paths and statuses, and `readDocument` fetches one body on demand. The change
+event carries a path, so the client re-reads only what moved.
+
+`DocRef` carries a `DocRoot` rather than a bare relative path. There is one root today. The enum exists so a second root can arrive without a wire break. A bare string would hardcode "one
+root is the working directory" into the protocol.
+
+### A document git does not track counts as created
+
+The reader leads with what the card changed, and Obsidian seeds a tab only for those. So the definition
+of "changed" decides what both surfaces show.
+
+It is git's diff against the branch base, PLUS every discovered document git does not track. That second half catches three cases the diff alone misses:
+
+- a gitignored document, anywhere in the directory
+- an untracked document, when no merge base resolves
+- every document, in a repository with no commits yet
+
+A directory that is not a git repository yields NO status for any document, which differs from a
+repository that tracks nothing. The reader falls back to listing everything in that case, because a
+focus section there would be empty.
+
+This is an approximation, and it is honest about its edges. It measures the branch, not the card. So a
+file edited before the card started still counts, and two cards on one directory report the same set.
+
+### Math is MathML, laid out by the platform
+
+The reader renders math by asking KaTeX for `output: "mathml"` and letting WebKit lay it out against the
+system math font. Both macOS and iOS ship `STIXTwoMath.otf`, and WebKit maps the CSS `math` generic to
+it, so no webfont is bundled and no stylesheet is needed.
+
+KaTeX's default mode does the opposite: it reimplements TeX layout in HTML and CSS and ships 20 webfonts
+so the result is identical in browsers that cannot render MathML. That guarantee is worth nothing here —
+there is exactly one engine, and it can. The stylesheet and the fonts were 254 KB, about 80% of
+everything vendored for the reader, spent to avoid using a capability the platform already had.
+
+What KaTeX still does is parse LaTeX, which is genuinely not a platform capability: neither SDK exposes a
+LaTeX parser or a MathML API, and Core Text's `kCTFontTableMATH` is raw table access with no layout
+engine. So the library stays; only its renderer goes.
+
+Verified on both platforms before the switch, not after — real screenshots of fractions, integrals with
+limits, stretchy matrix delimiters, `cases` braces, radicals with indices, and accents.
+
+Removing the stylesheet also let the page's CSP drop `'unsafe-inline'` from `style-src`. The grant only
+ever existed for KaTeX's own inline styles.
+
+### The reader polls; it does not watch the filesystem
+
+The reader keeps its copy current by asking, on two clocks. The open document is re-asked about every
+two seconds. The document SET is re-asked about every thirty. Both send a validator and both are
+answered conditionally, so a question that finds nothing transfers nothing — this is HTTP's
+`ETag` / `If-None-Match` / `304`, and `readDocument` and `listDocuments` implement exactly that.
+
+A validator has to cover everything its answer depends on, which for the list is more than the files.
+It is built from each document's path and stat stamp AND from the branch base the `M`/`A` status is
+derived against — because a base that moves under an unchanged tree (a rebase, a retargeted parent)
+re-dates every badge without touching a single file. Leaving it out would have made the list answer
+"unchanged" indefinitely, with the only repair being a gesture nobody knows to make.
+
+The two rates exist because the two questions cost wildly different amounts. Statting a file is about
+5 microseconds. Walking the tree for the document set is about 80 milliseconds on a large repo, and
+deriving each document's `M`/`A` status costs two `git` forks on top. Coupling them meant paying the
+expensive one every time an agent saved a file.
+
+This replaced an FSEvents tree watcher, which pushed a `documentChanged` event per save. Three things
+retired it:
+
+- **It could not work everywhere.** FSEvents is Darwin-only, and this daemon cross-compiles to Linux —
+  where the watcher was a stub that never fired, so live refresh was silently dead on that build. The
+  Linux answer, inotify, needs one watch descriptor per DIRECTORY: about 10,000 for one worktree of this
+  repo, against a kernel default that has historically floored at 8,192.
+- **It cost more under load, not less.** A watcher fires for every file event in the tree, so a build
+  floods it with object-file churn that then has to be filtered one path at a time. FSEvents caps its
+  own exclusion list at eight directories. A poll costs the same whether the tree is idle or busy.
+- **It was never cheap enough to be worth a platform fork.** The tick it would have ridden already
+  shells out to tmux for the whole board every two seconds.
+
+Emacs settled this argument long ago and ships both mechanisms: `auto-revert-use-notify` defaults on,
+and `auto-revert-avoid-polling` defaults OFF, because notification is the optimization and the poll is
+the floor. With the floor this cheap, the optimization did not earn its second implementation.
+
+What the poll costs the design is precision. A newly created document appears within the slow poll
+rather than instantly — opening the picker asks immediately, which is the impatient path — and an edit
+shows up within a tick rather than within FSEvents' 0.3-second window. What it buys is that the daemon
+holds no per-document state, has no OS-specific code left in this path, and behaves identically on both
+platforms.
+
+The poll lives inside the reader's `.task`, so it runs only while the view is on screen and SwiftUI
+cancels it on the way out. There is no timer to invalidate and nothing to leak.
+
+### Selecting text offers a comment; it does not create one
+
+Reading and annotating use the same gesture. People drag through a sentence to hold their place, to
+re-read it, or to copy it, and only sometimes to say something about it. A reader that created a card
+on every selection would spend most of its time being dismissed.
+
+So a selection ARMS an offer. A **Comment** button appears beside it, and the comment exists only when
+you take that offer — by clicking, or by pressing ⌘⇧M. Escape, a scroll, or a new drag retires it, and
+nothing was created. Until then the page has reported nothing to Swift at all, which also keeps the
+bridge quiet during ordinary reading.
+
+The shortcut is handled INSIDE the page, not as a SwiftUI `keyboardShortcut`. The webview holds first
+responder while you are selecting in it, so a native shortcut would not fire — and the page is the side
+that knows what is selected.
+
+The phone arms the same offer from a block tap, for the same reason plus a sharper one: its rail is a
+sheet, so an accidental tap would raise a panel over the document it is about.
+
+The button is positioned through the CSSOM, never a `style` attribute. The page's CSP forbids inline
+styles, and setting the attribute is blocked while assigning `element.style.left` is not. That was
+verified in a real WKWebView under the shipped CSP rather than assumed.
+
+### A comment is a reading pass, and the rail is ordered rather than floating
+
+A comment used to be one-shot: select, type in a bar at the bottom, send, and nothing remained. That
+shape fights how review actually goes. You read a document top to bottom, you find four things, and
+having to send each one before you can note the next turns one review into four interruptions.
+
+So the reader holds a **pass**: several anchored passages at once, written in any order, sent
+individually or as one message. It lives as long as the document stays open and it is deliberately not
+durable — the same rule documents themselves follow. A sent card stays in the rail, because the pass is
+also a record of where you have been in a long document.
+
+**The rail is a column in document order, not cards floating beside their passages.** Floating them is
+the more obvious design and it is the wrong trade here: the rail is native SwiftUI and the document is
+a `WKWebView`, so pinning a card to a passage's exact `y` means chasing the webview's scroll position
+across a process boundary, frame by frame. That lags visibly on a fast scroll. The spatial cue it buys
+is one the page's own tint already gives. Instead the page reports which anchored passage is at the top
+of the viewport, throttled and only on a change, and the rail scrolls that card into view. One message
+every second or so replaces one per frame.
+
+Sent comments collapse into one row. They stay in the pass — it is a record of what you said, and their
+passages stay tinted — but a long review otherwise ends as a rail of dimmed cards with the ones you are
+still writing pushed off the bottom. Collapsing costs them their place in document order, which is the
+right trade: a finished comment's position in the rail matters less than its being out of the way. The
+focus-follow skips a card that is collapsed out of view, so scrolling the document never focuses
+something you cannot see.
+
+The phone gets the same rail as a sheet, with background interaction enabled so the document keeps
+scrolling behind it. One comment model, two containers — a margin does not fit a phone, and the rule
+that the two platforms share one renderer and one selection model is worth more than a bespoke phone
+design.
+
+Dismissing that sheet HIDES the pass rather than ending it. A swipe down is far too cheap a gesture to
+destroy writing, and the sheet covers the document being commented on — so wanting it out of the way is
+the common case, not a signal of being finished. A bar at the bottom of the document says how many
+comments are held and how many are unsent, and brings the sheet back.
+
+**The poll holds while any comment is open**, written into or not. Anchoring is a deliberate act — you
+select, then you take the offer — so an open card means someone is working on that passage and the text
+under it must not move. Covering the empty card matters: without it there is a window between taking the
+offer and typing the first character in which the agent can rewrite the passage and detach a comment the
+reviewer had not begun.
+
+Sent comments never hold. Sending is exactly when you want to watch the agent act on what you said, and
+it is the reason "text moved" is normally something you see on a SENT card rather than a warning about
+work in progress. The residual cost is an abandoned empty card holding the document still, which is
+visible in the rail and one click from being discarded.
+
+**A detached anchor can re-attach.** The page re-resolves every anchor on every render and reports the
+whole detached set, empty included, so a passage the agent rewrote and then restored comes back tinted
+and its card stops saying "text moved". Reporting only the non-empty set left a badge that could be set
+and never cleared, contradicting a highlight the reader could plainly see.
+
+### The reader's bridge reports a selection and nothing else
+
+A document can come from an agent, from git, or from `spawn --base origin/<branch>`, so its content is
+untrusted. A webview runs whatever HTML that content contains, in the app's process, with no prompt and no log.
+That is a different audit path from a shell command, which stays visible in the terminal.
+
+The page therefore reports a selection and nothing else. It cannot request anything, write anything, or
+name a path, because the compose field is native and never needs it to. The invariant is that **the
+worst a compromised page can do is misreport WHICH lines the user picked.** Swift then quotes from its
+own copy of the file, so the message stays internally consistent.
+
+The page speaks three sentences and no others. A **selection**, which anchors a passage. A **detached**
+report, naming anchors the agent has rewritten out from under. A **visible** report, naming the topmost
+anchor in the viewport so the rail can follow the reading position. The last two carry only ids the page
+itself minted, and Swift validates their shape before echoing any of them back.
+
+A selection is `{blockIndex, startLine, endLine, text, highlight}`. `text` is the rendered text the user
+dragged through, and it is the one field that is not a number or a token — so it gets a proof rather
+than trust. Swift
+accepts it as the quote only when the words of the selection occur, in order and unbroken, in Swift's
+own copy of those lines. Markdown markers and link targets are punctuation between words, so
+`**poll**, not` in the file matches the rendered `poll, not`. Anything that changes the WORDS — an HTML
+entity, an attribute value, a string the page invented — fails the proof, and the quote falls back to
+the whole line range.
+
+That keeps the invariant exactly as it was. The page still cannot put words in the user's mouth. It can
+only choose between two quotes that both come out of the real file: the precise selection, or the whole
+block. The field earns its place because the line range alone is coarse — source and rendered text
+differ, so the page can rarely prove which lines a selection fell on, and a comment about four words
+used to quote the entire paragraph.
+
+The page tints the exact range instead of the enclosing block, which is a readability fix rather than a
+security one. It anchors each highlight to the CONTENT of its block, not to the block's position, so a
+passage keeps its tint while the agent edits above it. When the anchored text itself is rewritten, the
+highlight is dropped rather than re-placed. Tinting words the user did not choose is the same class of
+error as quoting a line they did not pick.
+
+Two layers back that up. DOMPurify sanitizes the rendered HTML, and a strict CSP with no remote loads
+catches anything sanitization misses — script gets no inline or eval grant. The page is served over a private scheme, not `file://` or `loadHTMLString`. An opaque origin makes CSP
+`'self'` meaningless, and `file://` origins carry inconsistent CORS behavior.
+
+The image endpoint is scoped the same way. It serves only images the document being read actually
+references, and only from inside the working directory. Without that reference check it becomes an arbitrary read of any image-extension file under any card's
+directory. That is wider than anything else the daemon ships.
+
+### Containment is proved from a descriptor, never from a pathname
+
+Every file the reader returns — a document or an image — goes through one reader, `ContainedFile`. It
+opens the file once and proves everything from that descriptor: where the file really lives, that it is
+a regular file, and how big it is.
+
+The obvious alternative is to canonicalize the pathname, compare it against the working directory, and
+then read that pathname. It does not hold. Between the check and the read, the name can be replaced by a
+symlink pointing at any file the daemon can read, and the second open follows it. The check describes a
+name; the bytes come from a file. A descriptor cannot be swapped underneath its holder, so it is the
+only thing worth checking.
+
+One open answers three questions that were three separate defects:
+
+- **Escape.** The descriptor reports its own real location, symlinks already followed. That is what the
+  containment test uses.
+- **Blocking.** A FIFO named `stall.md` makes a plain open wait forever for a writer. That would park
+  the caller, and on the shared watch actor every other workspace behind it. The open is non-blocking,
+  and the regular-file test then rejects it.
+- **Size.** Reading a file to find out how big it is defeats the cap. `fstat` answers first, so a
+  document is truncated and an oversized image is refused before either is read.
+
+The reference scan that builds the image allowlist is deliberately NOT part of this boundary, and it is
+deliberately approximate. It scopes what a **client** may name — without it, `documentAsset` is a read of
+any image-extension file under any card's directory. It is not a check on the document's author, because
+that check would be theatre: anyone who can write the document can write a real image reference. So a
+regex that matches a near-miss the page never renders costs nothing, and matching a real parser exactly
+would buy nothing.
+
+### A comment is one inbox message, and it carries no instruction
+
+A reader comment becomes ONE message addressed to the card whose document you are reading. That matches
+how a follow-up already routes, and that card holds the context.
+
+The message is human-first. The user reads it, and can edit it in the inbox editor. It must also read
+the same way to every agent:
+
+```
+Comment on `<path>:<start>-<end>` § <heading path>
+
+> <excerpt>
+
+<the user's note, verbatim>
+```
+
+There is deliberately no trailing instruction line. A human reviewer writes a remark, and the author
+decides whether to answer, to edit, or both. An instruction like "address this in the document" forces
+one response mode, and makes a document messy when the comment was a question.
+
+The quote freezes when the user selects, not when they send. Refresh pauses while the compose field is
+open, so text cannot move mid-sentence, and the frozen quote stays a valid anchor after line numbers
+shift.
+
+A comment carries NO dedup key. A deliberate re-send is meaningful and must never be silently
+suppressed. `dedupKey` exists for machine re-drives. The Send button disables while a request is in
+flight, which is the whole double-send guard.
+
+An accepted gap: a question comment has nowhere for its answer to go except the agent's terminal.
+Durable agent-to-human messages close it, and that work is tracked separately.
 
 ## Shipped feature history
 

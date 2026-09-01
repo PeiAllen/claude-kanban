@@ -325,10 +325,33 @@ public final class ControlClient: @unchecked Sendable {
         ]), as: TranscriptImagePayload.self)
     }
 
-    /// Typed convenience over the `changedNotes` verb — the markdown notes a card's branch changed/added,
-    /// each with content, for the phone's Notes page (M6). Empty for a non-worktree card.
-    public func changedNotes(_ ref: String) async throws -> [NoteFile] {
-        try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
+    /// Every document in the card's working directory — path + optional git status, NO content.
+    /// Discovery is a git-independent filesystem walk, so a gitignored `notes/` lists exactly like a
+    /// tracked `docs/`, and most results carry no status because git has nothing to say about them.
+    ///
+    /// Asked CONDITIONALLY. Pass the previous answer's `hash`; a matching
+    /// validator comes back with `documents == nil` and costs the daemon no git forks.
+    public func listDocuments(_ ref: String, ifNoneMatch: String? = nil) async throws -> DocumentList {
+        var params: [String: JSONValue] = ["ref": .string(ref)]
+        if let ifNoneMatch { params["ifNoneMatch"] = .string(ifNoneMatch) }
+        return try await call("listDocuments", .object(params), as: DocumentList.self)
+    }
+
+    /// One document's content, asked CONDITIONALLY — the reader's poll. `content == nil` means the
+    /// caller's copy is still current, so nothing crossed the wire.
+    public func readDocument(_ ref: String, path: String,
+                             ifNoneMatch: String? = nil) async throws -> DocumentContent {
+        var params: [String: JSONValue] = ["ref": .string(ref), "path": .string(path)]
+        if let ifNoneMatch { params["ifNoneMatch"] = .string(ifNoneMatch) }
+        return try await call("readDocument", .object(params), as: DocumentContent.self)
+    }
+
+    /// Bytes for an image the note at `note` references. Scoped to that note's OWN references, so the
+    /// endpoint is not a general worktree file read — see `OrchestraService.documentAsset`'s five gates.
+    public func documentAsset(_ ref: String, note: String, asset: String) async throws -> DocumentAsset {
+        try await call("documentAsset", .object([
+            "ref": .string(ref), "note": .string(note), "asset": .string(asset),
+        ]), as: DocumentAsset.self)
     }
 
     /// Typed convenience over the `spawnRepos` verb — absolute paths to the git repos under the daemon's
