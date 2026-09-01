@@ -95,8 +95,11 @@ trap cleanup EXIT
 if [[ "$BUILD" == 1 ]]; then
   echo "▶ regenerating xcodeproj + building Debug…"
   xcodegen generate --spec App/project.yml --project App >/dev/null
+  # `-skipPackagePluginValidation`: the throwaway DerivedData dir has no recorded trust for
+  # SwiftTerm's build-tool plugin, and there is no one here to click "Trust & Enable" — without the
+  # flag every first build in a fresh $DD fails on "Validate plug-in SwiftTermBuildInfoPlugin".
   scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
-    -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
+    -destination 'platform=macOS' -derivedDataPath "$DD" -skipPackagePluginValidation build >/dev/null
 fi
 
 APP="$(/usr/bin/find "$DD/Build/Products/Debug" -maxdepth 1 -name 'Orchestra.app' | head -1)"
@@ -265,6 +268,13 @@ snap_hier() { # writes the hier PNGs into $OUT/det via ImageRenderer (window-fre
   done
 }
 snap_hier
+
+# Inbox editor popover (fix/inbox-size). ImageRenderer renders the REAL view through its `preview:`
+# seed, clipped at the same height the live viewport scrolls at — so these shots show the popover at
+# its true full size, in both schemes.
+echo "▶ capturing inbox editor…"
+snap "29-inbox"       env ORCH_SNAPSHOT_INBOX="$PWD/$OUT/29-inbox.png" ORCH_SNAP_DARK=1
+snap "30-inbox-light" env ORCH_SNAPSHOT_INBOX="$PWD/$OUT/30-inbox-light.png" ORCH_SNAP_DARK=0
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
 
