@@ -128,8 +128,11 @@ cmd_up() {
     "$REPO_ROOT"/scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestrad
     echo "▶ building Mac app (Debug)…"
     xcodegen generate --spec App/project.yml --project App >/dev/null
+    # -skipPackagePluginValidation: the FIRST build in a fresh $DD otherwise fails on "Validate
+    # plug-in SwiftTermBuildInfoPlugin". scripts/orch-ui-shot.sh carries the same flag for the same
+    # reason; without it `iso-stack.sh up` only works when $DD happens to be warm.
     scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
-      -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
+      -destination 'platform=macOS' -derivedDataPath "$DD" -skipPackagePluginValidation build >/dev/null
     if [[ "$do_ios" == 1 ]]; then
       echo "▶ building iPhone app (Debug)…"
       xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
