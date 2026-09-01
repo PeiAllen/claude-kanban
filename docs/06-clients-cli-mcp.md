@@ -189,8 +189,10 @@ the command carries a baked `--agent <id>` so the client can resolve its adapter
   "hooks": {
     "SessionStart":      [{ "hooks": [{ "command": "<orchestra> _report --event session --agent claude-code"      }] }],
     "UserPromptSubmit":  [{ "hooks": [{ "command": "<orchestra> _report --event prompt --agent claude-code"       }] }],
+    "MessageDisplay":    [{ "hooks": [{ "command": "<orchestra> _report --event messagedisplay --agent claude-code" }] }],
     "PreToolUse":        [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event pretool --agent claude-code"  }] }],
     "PostToolUse":       [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event posttool --agent claude-code" }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event permission --agent claude-code" }] }],
     "Notification":      [{ "hooks": [{ "command": "<orchestra> _report --event notification --agent claude-code" }] }],
     "Stop":              [{ "hooks": [{ "command": "<orchestra> _report --event stop --agent claude-code"         }] }],
     "SessionEnd":        [{ "hooks": [{ "command": "<orchestra> _report --event sessionend --agent claude-code"   }] }]
@@ -199,7 +201,7 @@ the command carries a baked `--agent <id>` so the client can resolve its adapter
 ```
 
 The `--event` strings **are** the `HookEvent` raw values (Core), so the template, client, and daemon
-share one vocabulary. `Notification`/`Stop` and `PreToolUse`/`PostToolUse` each get a distinct event —
+share one vocabulary. `MessageDisplay`, `PermissionRequest`, `Notification`/`Stop`, and tool hooks each get a distinct event —
 so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires SessionStart and Stop for its
 native hook lifecycle, while its app-server connection remains the sole source of turn status and provider
 human need. A card that also needs per-card settings (read-only enforcement — see [the
@@ -249,7 +251,7 @@ The hook's `session_id` is an invocation identity, not the Codex thread id, so i
 readiness and orientation only. The launch-local app server alone binds the provider session.
 
 Both conversions remain adapter-owned. `parse(_:)` handles metadata from hooks or the Codex rollout
-tail; `agentSignals(from:context:)` maps current Claude hook payloads and OTLP spans, or Codex app-server
+tail; `agentSignals(from:context:)` maps current Claude hook payloads or Codex app-server
 messages, into the provider-neutral live state. Codex rollout and hook data never supplies that state. The
 CLI never interprets provider fields itself.
 

@@ -341,6 +341,12 @@ are additionally bound to the provider thread id, and Claude hooks are checked a
 and top-level turn. The Codex rollout tail and hooks remain metadata/orientation only. There is no status
 field in `StatusReport` and no second Core status reducer.
 
+Claude same-prompt continuation activity is normalized as `turnReactivated`, which restores `running`
+without becoming a distinct-turn boundary or clearing `pendingQuestion`. A global provider snapshot may
+submit a waiting reconciliation only for an exact Claude session that stayed running with the same
+in-memory observation generation throughout the subprocess call; the generation is a correlation fence,
+not a second status copy.
+
 For a fresh Codex launch, the structured observer may start while `agentSessionId` is nil. It makes one
 `thread/list` call scoped to the exact card cwd and durable launch cutoff, filters out child and ephemeral
 threads, and binds only when exactly one candidate remains; ambiguity stays `unavailable`. A later filtered

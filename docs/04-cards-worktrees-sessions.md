@@ -120,9 +120,10 @@ window; also kills the window's view session), `capture` (`capture-pane`, a boun
 The agent provider is abstracted behind the **`Adapter`** protocol so Orchestra isn't wedded to Claude
 Code. Each adapter owns launch/session behavior, a capability descriptor, metadata parsing, and
 provider-to-`AgentSignal` normalization. Claude uses strictly correlated current-session hooks plus a
-narrow local OTLP fallback; Codex uses a rollout metadata tail for metadata and a launch-local app-server
-observer for live state. Core consumes only the shared capabilities and normalized signals. An adapter declares its `id`,
-`name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
+narrow provider-native idle repair for hook-silent Ctrl-C; Codex uses a rollout metadata tail for metadata
+and a launch-local app-server observer for live state. Core consumes only the shared capabilities and
+normalized signals. An adapter declares its `id`, `name`, `icon`, `bin`, `models()`, and its `capabilities`,
+and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
 - **`resume(ctx)`** — argv to reattach an existing session (or `nil` if unsupported),
@@ -243,12 +244,18 @@ with a newest-matching-`.jsonl` fallback used only when no id was tracked.
 only lifecycle/display metadata into `StatusReport`, while `hookObservationPayload` projects the small
 provider fields needed for `agentSignals(from:context:)` without forwarding large tool bodies. Prompt and
 Stop become top-level turn edges; a known permission or input prompt updates the optional provider
-`humanNeed` only when it belongs to the current session and top-level turn. A current-turn resolution
-clears that aggregate need, delayed notifications and child-tool activity cannot change the top-level state,
-and an exact
-OTLP interaction span is the missing-Stop fallback. A non-`hooksPush` metadata input (for example a
+`humanNeed` only when it belongs to the current session. A current-turn resolution clears that aggregate
+need. Subagent activity cannot change the main turn, but its human-needed hook still rolls up. After a
+Stop, exact same-prompt main `MessageDisplay` or `PreToolUse` activity can reactivate the same turn without
+creating a distinct-turn boundary. A non-`hooksPush` metadata input (for example a
 `fileTail` line) returns `nil` — Claude has no tail transport. See
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
+
+Claude omits `Stop` on Ctrl-C. The daemon therefore runs one global, non-overlapping
+`claude agents --json` snapshot every ten seconds only while an exact Claude session remains locally
+running with no provider human gate. An `idle` result becomes waiting only if the Card epoch, provider
+session, lifecycle, and observation generation are unchanged after the subprocess returns. Busy, missing,
+malformed, failed, or superseded results are no-ops; the snapshot never creates unavailable or running.
 
 ### The Codex adapter
 
@@ -327,11 +334,12 @@ server is the sole source for thread identity, turn state, and provider human ne
   restores running or waiting without periodic status polling. The existing two-second rollout tick may
   still refresh metadata, but it cannot change `AgentState`.
 
-Claude uses the same normalized contract from live hooks: `UserPromptSubmit` starts a turn, `Stop` ends
-the exact current turn, and known permission/input prompts update the aggregate `humanNeed`. The completed
-`claude_code.interaction` root span covers user interruption when Claude omits `Stop`. Claude hook
-observations are not read from transcripts or replayed after daemon restart; the state is unavailable until
-the next current-session hook/span.
+Claude uses the same normalized contract from live hooks: `UserPromptSubmit` starts a distinct turn,
+`Stop` tentatively ends the exact current turn, and exact same-prompt main activity reopens it when a Stop
+hook blocked completion. Known permission/input prompts update the aggregate `humanNeed`, including those
+from a subagent, without letting subagent activity mutate the main turn. Claude hook observations are not
+read from transcripts or replayed after daemon restart; the state is unavailable until the next
+current-session hook, while the narrow global idle snapshot repairs only hook-silent Ctrl-C.
 
 **Codex native sender.** A queued message never rides a synthetic TUI keystroke. The app-server observer
 continues to own Codex status; a fresh, separate app-server peer uses the current live session handle to

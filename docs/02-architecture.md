@@ -55,8 +55,9 @@ typed `hook` RPC back over the same socket), while Codex is `fileTail` (dotted a
 model, and display detail; they do not decide Codex session identity or live turn status.
 
 Provider observation is a separate seam. Claude's structured hooks carry the current session and prompt
-identity, with an exactly correlated OTLP terminal span only as the missing-`Stop` fallback. Codex's
-launch-local app-server owns both its thread identity and runtime state. An unbound observer performs one
+identity; a narrow global `claude agents --json` snapshot repairs only a hook-silent Ctrl-C left locally
+running. Codex's launch-local app-server owns both its thread identity and runtime state. An unbound
+observer performs one
 exact-cwd, launch-scoped `thread/list` reconciliation and accepts only one root, non-ephemeral candidate;
 otherwise it waits for a matching `thread/started`. Once bound, `thread/resume` reconciles the snapshot and
 pushed turn/thread updates maintain it. Both adapters emit normalized `AgentSignal`s into the same reducer, so no downstream consumer
@@ -427,15 +428,19 @@ reducer. Hook responses carry SessionStart orientation only:
 | statusLine refresh | `statusline` | `ctxPct`, model id + display, session id, session name |
 | `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact); also injects the card's live column/mode/self-id **orientation** as `additionalContext` |
 | `UserPromptSubmit` | `prompt` | prompt text → auto-title; normalized, identified top-level turn start |
-| `Pre/PostToolUse` | `pretool` / `posttool` | activity detail only |
-| known permission/input prompt | `notification` | current provider `humanNeed`, tagged `.permission`, `.input`, or `.unspecified` |
-| resolution event | `notification` / tool hook | clears provider human need only within the current correlated turn |
+| `MessageDisplay` | `messagedisplay` | exact same-prompt main activity; reactivates a turn only after a blocking Stop continuation |
+| `Pre/PostToolUse` | `pretool` / `posttool` | activity detail; main `PreToolUse` can also prove exact same-prompt reactivation |
+| `PermissionRequest` / known input tool | `permission` / `pretool` | current provider `humanNeed`, tagged `.permission`, `.input`, or `.unspecified` |
+| resolution event | tool hook | clears provider human need only within the current correlated turn |
 | `Stop` | `stop` | exact current top-level turn completion |
 | `SessionEnd` | `sessionend` | exit reason → may drive the card to `dead(_)` via the `transition()` funnel |
 
-Claude accepts only prompt/session-correlated observations: delayed notifications and child-tool activity
-cannot change a top-level turn, a missing identity fails closed to `unavailable`, and an older event is
-ignored. Its exact OTLP span is only a missing-`Stop` fallback, not a polling or replay authority.
+Claude accepts only prompt/session-correlated observations: delayed observations and subagent activity
+cannot change the main turn, while subagent permission/input hooks still roll up to the card's aggregate
+human need. A missing terminal identity fails closed to `unavailable`, and an older event is ignored.
+Because Claude emits no terminal hook on Ctrl-C, one global non-overlapping snapshot runs every ten seconds
+only while an eligible Claude card remains `running`. It can apply only exact-session, unchanged-generation
+`running → waiting`; it never creates `running`/`unavailable`, changes `humanNeed`, or repairs `waiting`.
 
 Codex uses the hook channel for SessionStart orientation, while its turn state and provider-human need come
 only from a launch-local app-server observer. The rollout tail is metadata only: it discovers the session

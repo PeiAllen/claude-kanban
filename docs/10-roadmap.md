@@ -14,8 +14,9 @@ describe work to pick up, although the non-git card substrate and the connection
 
 ### Current provider and inbox direction
 
-The provider seam now has Claude and Codex adapters. Claude supplies strictly correlated hook observations
-with an OTLP fallback; Codex uses rollout data for metadata and the app server alone for turn state and
+The provider seam now has Claude and Codex adapters. Claude supplies strictly correlated hook observations,
+exact same-prompt continuation reactivation, and a narrow provider-native idle repair for hook-silent
+Ctrl-C; Codex uses rollout data for metadata and the app server alone for turn state and
 provider human need. The app server also owns Codex's thread identity: one fail-closed attach reconciliation
 binds a fresh card, and rollout/hook metadata cannot race it. Their normalized observations reduce into one
 provider-neutral live state.

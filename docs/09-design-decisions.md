@@ -175,9 +175,11 @@ need, and it is also the sole authority for Codex's durable thread id. A fresh u
 one exact-cwd, launch-cutoff `thread/list` reconciliation and binds only one root, non-ephemeral candidate;
 otherwise it remains unavailable until a filtered `thread/started`. Its rollout tail supplies metadata
 only, and its hooks supply lifecycle readiness/orientation, never identity or status. Claude accepts
-only session- and current-turn-correlated hook evidence;
-an exact OTLP interaction span is the missing-Stop fallback. A terminal event without required current
-identity fails closed to unavailable, while a positively stale terminal is ignored.
+only session- and current-turn-correlated hook evidence. Exact same-prompt main activity can reactivate a
+turn after a blocking Stop continuation without becoming a distinct turn. A terminal event without
+required current identity fails closed to unavailable, while a positively stale terminal is ignored.
+Because Ctrl-C emits no terminal hook, one global ten-second `claude agents --json` snapshot may only move
+an exact, unchanged, human-unblocked Claude session from running to waiting; every other result is silent.
 
 `StatusReport` is metadata/lifecycle-only; it has no `run` or `turnCompleted` field. Decode-time
 compatibility preserves the live lifecycle while old status shapes and `activeRequests` become unavailable,
