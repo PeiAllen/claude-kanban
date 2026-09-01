@@ -142,7 +142,8 @@ extension Theme {
     public func statusColor(_ key: PhaseDisplayKey) -> SemColor {
         switch key {
         case .running:                        return green
-        case .idle, .needsPermission:         return amber
+        case .idle:                           return amber
+        case .unavailable:                    return gray
         case .starting, .launching, .relaunching: return blue
         case .done:                           return gray
         case .dead:                           return red

@@ -83,7 +83,7 @@ final class PushNotifierTests: XCTestCase {
 
     private func prefs(_ scope: NotifyScope) -> NotifyPrefsSnapshot {
         let e = NotifyPrefsSnapshot.Entry(scope: scope, sound: .glass)
-        return NotifyPrefsSnapshot(permission: e, needsYou: e, died: e)
+        return NotifyPrefsSnapshot(humanRequired: e, died: e)
     }
 
     private func makeService() -> OrchestraService {
@@ -105,12 +105,12 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))          // first sighting: no fire
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))  // running→waiting
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))))
 
         let sends = await mock.recorded()
         XCTAssertEqual(sends.count, 1)
         XCTAssertEqual(sends.first?.token, tokA)
-        XCTAssertEqual(sends.first?.payload["trigger"]?.stringValue, "permission")
+        XCTAssertEqual(sends.first?.payload["trigger"]?.stringValue, "humanRequired")
         // Named macOS sounds aren't bundled on iOS → mapped to the system default (#2).
         XCTAssertEqual(sends.first?.payload["aps"]?["sound"]?.stringValue, "default")
     }
@@ -137,14 +137,16 @@ final class PushNotifierTests: XCTestCase {
         let mock = MockPushSender()
         let notifier = PushNotifier(service: service, sender: mock)
 
-        // A card on a background task stays .running across snapshots — never a .waiting transition.
+        // A provider-owned background wait is visibly waiting but carries an automatic-resume commitment,
+        // so it remains work in flight and cannot produce a Needs-You notification.
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        let autoResume = AgentState(turnStatus: .waiting(.init(resume: .init())))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(autoResume))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(autoResume))))
 
         let sends = await mock.recorded()
-        XCTAssertTrue(sends.isEmpty, "a background-waiting (still-running) card must never push")
+        XCTAssertTrue(sends.isEmpty, "an automatic-resume wait must never push")
     }
 
     func testRemovedCardIsForgotten() async throws {
@@ -157,7 +159,7 @@ final class PushNotifierTests: XCTestCase {
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
         await notifier.handle(.taskRemoved(id))
         // Re-created with the same id is a fresh card (prev == nil) — the first waiting sighting won't fire.
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.humanTurn)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting))))
         let sends = await mock.recorded()
         XCTAssertTrue(sends.isEmpty)
     }
@@ -197,54 +199,37 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertTrue(sends.isEmpty, "an already-dead-at-boot card must not re-notify")
     }
 
-    /// The stuck counterpart the reviewer named: a live-WAITING card at boot whose FIRST post-boot event
-    /// accrues `deliveryStuckSince` must fire `deliveryStuck` — the seed sets `seen == true` so the
-    /// false→true stuck rise is observed instead of suppressed.
-    func testBootBaselineSeedsWaitingSoAFirstStuckFires() async throws {
-        let service = makeService()
-        try await service.registerDevice(DeviceRegistration(token: validToken(1), clientId: "c", prefs: prefs(.always)))
-        let mock = MockPushSender()
-        let notifier = PushNotifier(service: service, sender: mock)
-
-        let id = UUID()
-        await notifier.seedBaseline([card(id: id, phase: .live(.waiting(.humanTurn)))])   // waiting at boot, not stuck
-        var stuck = card(id: id, phase: .live(.waiting(.humanTurn)))
-        stuck.deliveryStuckSince = Date()                                                 // first post-boot event: stuck
-        await notifier.handle(.taskUpserted(stuck))
-
-        let sends = await mock.recorded()
-        XCTAssertEqual(sends.map { $0.payload["trigger"]?.stringValue }, ["deliveryStuck"],
-                       "the first stuck rise after boot must fire, not be suppressed as a first sighting")
-    }
-
     /// The window `run()` actually opens: an event landing between `subscribe()` and the baseline snapshot
     /// is buffered but is causally OLDER than the seed, so replaying it against the newer seed would misfire.
-    /// This drives `run()` with both seams: the card flaps running→waiting→running INSIDE the window (all
-    /// revs ≤ baseline → must be dropped), then a GENUINE post-snapshot running→waiting (rev > baseline →
-    /// must fire). Without the rev boundary the stale window `waiting` fires a second, spurious needsYou.
+    /// This drives `run()` with both seams: the card flaps no-human-need→human-need→no-human-need INSIDE
+    /// the window (all revs ≤ baseline → must be dropped), then a GENUINE post-snapshot human-need edge
+    /// (rev > baseline → must fire). Without the rev boundary the stale human-required edge fires twice.
     func testRunWindowDropsStaleBufferedEventsButFiresGenuinePostBootTransition() async throws {
         let env = TestEnv.make(grace: 2)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))   // .running
+        // Launch lands unavailable until current provider observation. Seed the current running snapshot
+        // before opening the notifier window so the test's human-need flap is a real state transition.
+        await env.svc.testSetTurnStatus(card.id, .running)
         try await env.svc.registerDevice(DeviceRegistration(token: validToken(7), clientId: "c", prefs: prefs(.always)))
         let mock = MockPushSender()
         let notifier = PushNotifier(service: env.svc, sender: mock)
 
-        // Window flap (buffered, all rev ≤ the baseline the snapshot then captures = running).
+        // Window flap (buffered, all rev ≤ the baseline the snapshot then captures = no human need).
         await notifier.setAfterSubscribeForTest {
-            try? await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
-            try? await env.svc.report(card.id, StatusReport(run: .running))
+            await env.svc.testSetHumanNeed(card.id, .permission)
+            await env.svc.testSetHumanNeed(card.id, nil)
         }
-        // Genuine post-snapshot transition (rev > baseline): running→waiting → must push exactly once.
+        // Genuine post-snapshot transition (rev > baseline): human need rises → must push exactly once.
         await notifier.setAfterBaselineForTest {
-            try? await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+            await env.svc.testSetHumanNeed(card.id, .permission)
         }
         let run = _Concurrency.Task { await notifier.run() }
         defer { run.cancel() }
 
-        try await pollUntil { await mock.recorded().contains { $0.payload["trigger"]?.stringValue == "needsYou" } }
-        let needsYou = await mock.recorded().filter { $0.payload["trigger"]?.stringValue == "needsYou" }
-        XCTAssertEqual(needsYou.count, 1, "the stale window waiting must be dropped; only the genuine post-boot transition fires")
+        try await pollUntil { await mock.recorded().contains { $0.payload["trigger"]?.stringValue == "humanRequired" } }
+        let humanRequired = await mock.recorded().filter { $0.payload["trigger"]?.stringValue == "humanRequired" }
+        XCTAssertEqual(humanRequired.count, 1, "the stale human-required edge must be dropped; only the genuine post-boot transition fires")
     }
 
     // MARK: Fix #1 — malformed device token is rejected at registration (never reaches URL(string:))
@@ -287,7 +272,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))))
 
         let remaining = await service.registeredDevices()
         XCTAssertTrue(remaining.isEmpty, "a 410 Unregistered must drop the dead token")
@@ -322,7 +307,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))))
 
         let remaining = await service.registeredDevices()
         XCTAssertEqual(remaining.map(\.token), [newTok],
@@ -338,7 +323,7 @@ final class PushNotifierTests: XCTestCase {
 
         let id = UUID()
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
-        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.init(turnStatus: .running, humanNeed: .permission)))))
 
         let remaining = await service.registeredDevices()
         XCTAssertEqual(remaining.map(\.clientId), ["cA"], "a transient 500 must NOT drop the token")

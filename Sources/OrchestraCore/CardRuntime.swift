@@ -21,7 +21,7 @@ struct CardRuntime {
 
     // MARK: - The armed-task bag
 
-    /// The five per-card timer/loop slots. `CaseIterable` is load-bearing: the detach iterates
+    /// The per-card timer/loop slots. `CaseIterable` is load-bearing: the detach iterates
     /// `Armed.allCases`-independent `tasks.values`, so a new slot is cancelled at teardown by
     /// construction.
     enum ArmedSlot: Hashable, CaseIterable, Sendable {
@@ -30,6 +30,8 @@ struct CardRuntime {
         case diffStat             // footer diffstat debounce
         case treeStat             // branch-tree stat debounce
         case childFanout          // child tree-stat fan-out debounce
+        case agentObservation     // structured provider event stream + reconnect loop
+        case nativeInbox          // provider-native advisory inbox sender loop
     }
 
     /// One arming of one slot: the running task plus the **arming token** that fences every delayed
@@ -46,6 +48,82 @@ struct CardRuntime {
     /// The bag. Mutate ONLY via the service helpers (`arm`/`disarm`/`clearSlot(ifToken:)`) so the
     /// cancel-before-replace and token-fenced-clear disciplines hold everywhere.
     var tasks: [ArmedSlot: Armed] = [:]
+
+    // MARK: - Live agent observation
+
+    /// Exact subscription identity. The endpoint selects the launch-local provider server; epoch and
+    /// provider session fence callbacks that were already queued when a source was superseded.
+    struct AgentObservationIdentity: Equatable, Sendable {
+        let endpoint: AgentObservationEndpoint
+        let sessionEpoch: Int
+        let binding: AgentObservationBinding
+    }
+
+    /// One ordered ingress for every provider observation affecting this card. The coordinator is
+    /// reference-typed so copies of `CardRuntime` retain the same queue and correlation fence.
+    let agentObservationCoordinator = AgentObservationCoordinator()
+    var agentObservationIdentity: AgentObservationIdentity?
+    /// Advances before every normalized provider observation enters the coordinator. Snapshot repairs
+    /// capture it so an observation arriving while their subprocess runs makes the result stale.
+    var agentObservationGeneration: UInt64 = 0
+
+    /// Provider observations that arrived during the narrow readiness handoff before the stepper
+    /// published `.live`. These are normalized source facts, not a second effective-state snapshot;
+    /// the live landing drains them through the same coordinator/reducer as every later observation.
+    struct PendingAgentSignals: Sendable {
+        let context: AgentSignalContext
+        var signals: [AgentSignal]
+    }
+    var pendingAgentSignals: PendingAgentSignals?
+
+    // MARK: - Native message delivery
+
+    /// Exact ownership fence for a live provider-native sender. Provider id prevents an endpoint from a
+    /// mismatched hook adapter crossing the neutral Core seam; epoch and harness id fence superseded sessions.
+    struct AgentMessageIdentity: Equatable, Sendable {
+        let providerId: String
+        let sessionEpoch: Int
+        let harnessSessionId: String
+    }
+
+    /// The one bounded submission budget for the FIFO head. It follows the durable message snapshot and
+    /// provider incarnation, but deliberately excludes the ephemeral endpoint so a credential refresh cannot
+    /// turn one three-attempt budget into two.
+    struct NativeInboxAttempt: Equatable, Sendable {
+        let messageId: UUID
+        let text: String
+        let identity: AgentMessageIdentity
+        let count: Int
+    }
+
+    /// A hook can report its endpoint just before the launch step publishes `.live`; retain that one
+    /// current-generation value and install it at the lifecycle landing.
+    struct PendingAgentMessageEndpoint: Sendable {
+        let identity: AgentMessageIdentity
+        let endpoint: AgentMessageEndpoint
+    }
+
+    /// The live sender and the endpoint it was built from. Replacement is centralized in
+    /// `reconcileAgentMessageHandle`; detach closes the retained sender before dropping the runtime entry.
+    final class AgentMessageHandle: Sendable {
+        let identity: AgentMessageIdentity
+        let endpoint: AgentMessageEndpoint
+        let sender: any AgentMessageSender
+
+        init(identity: AgentMessageIdentity, endpoint: AgentMessageEndpoint,
+             sender: any AgentMessageSender) {
+            self.identity = identity
+            self.endpoint = endpoint
+            self.sender = sender
+        }
+    }
+
+    var pendingAgentMessageEndpoint: PendingAgentMessageEndpoint?
+    var agentMessageHandle: AgentMessageHandle?
+    /// Every producer advances this even while the single sender loop is active. The loop compares the value
+    /// around its empty read so an enqueue cannot land in the clear-slot gap.
+    var nativeInboxWakeGeneration: UInt64 = 0
+    var nativeInboxAttempt: NativeInboxAttempt?
 
     // MARK: - Readiness
 
@@ -77,39 +155,14 @@ struct CardRuntime {
     /// S3-1 once-latch for the persistent remote-parent warnings (gone / PR-closed-unmerged).
     var remoteWarned: Bool = false
 
-    // MARK: - Delivery (B4/B5)
-
-    /// Retry accounting for the delivery arm: attempts charged + next-eligible backoff stamp.
-    var deliveryAttempt: OrchestraService.DeliveryAttempt?
-    /// Delivery tokens dispatched but not yet confirmed (in-memory shadow of the durable inbox
-    /// leases; teardown drops this in the same step sequence that `releaseAll`s the leases).
-    var outstandingTokens: Set<UUID> = []
-    /// Wake-vs-wake single-winner claim (held synchronously across the wake ladder). A TOKEN, not a
-    /// Bool: the claiming wake clears it compare-and-swap on its own token, so a stale wake whose
-    /// entry was detached-and-recreated (archive→reopen while `deliver` was suspended) cannot release
-    /// a successor wake's claim and admit a concurrent delivery.
-    var deliveryClaim: UInt64?
-    /// Epoch-scoped, reference-counted mutual-exclusion fence for the editor-driven stuck re-arm.
-    /// The epoch pins the count to one card generation: a stale re-arm's deferred decrement (its
-    /// entry detached and recreated across archive→reopen mid-op) mismatches and no-ops instead of
-    /// releasing a successor's held fence.
-    var reArming: (epoch: Int, count: Int)?
-
     // MARK: - Watch / wait
 
     /// Live CLI `orchestra wait` processes for this watcher card.
     var activeWaitProcesses: Int = 0
 
     // MARK: - Funnel bookkeeping
-
-    /// F3 runaway-inject guard: consecutive auto-injects since the last genuine user prompt.
-    var injectCount: Int = 0
-    /// The generation that owes a MACHINE opening turn: a launch whose flavor carries a positional the
-    /// daemon supplied (a spawn/handoff seed, or a wake-delivered inbox batch). That positional reaches
-    /// the report path as a `promptText` exactly like a typed prompt — and a resume lands
-    /// `.waiting(.humanTurn)` — so the human-paced setter consumes this marker on the FIRST prompt of the
-    /// generation instead of mistaking the seed for a direct human turn (which would wrongly exempt agent
-    /// work from the stall row). Set in `finishLaunch`, consumed once by `report()`. nil ⇒ no seed owed.
+    /// The generation that owes a system-supplied opening prompt. Set in `finishLaunch` and consumed
+    /// once by `report()` so a launch seed is not mistaken for a direct human turn.
     var seedTurnEpoch: Int? = nil
     /// Per-card monotonic seq guard for snapshot reports.
     var lastSeq: UInt64 = 0
@@ -192,6 +245,9 @@ extension OrchestraService {
         }
         for armed in rt.tasks.values { armed.task.cancel() }
         rt.tasks = [:]
+        rt.agentMessageHandle?.sender.shutdown()
+        rt.agentMessageHandle = nil
+        rt.pendingAgentMessageEndpoint = nil
         if let waiter = rt.readinessWaiter {
             rt.readinessWaiter = nil
             waiter.cont.resume(returning: .superseded)

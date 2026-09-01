@@ -222,131 +222,6 @@ private struct HeaderBar: View {
     }
 }
 
-// MARK: - Inbox editor
-
-/// The inbox editor popover: list the card's durable queued messages with per-row reorder
-/// (up/down), inline edit, and delete, plus an append field. All ops round-trip to the daemon
-/// and reload. Loaded fresh each time the popover opens.
-struct InboxEditorView: View {
-    @EnvironmentObject var model: BoardModel
-    @Environment(\.theme) var theme: Theme
-    let task: Task
-    /// Non-nil only for the DEBUG headless snapshot: seeds `messages` and skips the daemon load +
-    /// the ScrollView (which ImageRenderer can't lay out). Nil in the real app.
-    private let preview: [InboxMessage]?
-
-    @State private var messages: [InboxMessage] = []
-    @State private var appendText = ""
-    @State private var editingId: UUID?
-    @State private var editText = ""
-
-    init(task: Task, preview: [InboxMessage]? = nil) {
-        self.task = task
-        self.preview = preview
-        if let preview { _messages = State(initialValue: preview) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Inbox — \(messages.count) queued").font(F.ui(12, .semibold)).foregroundColor(theme.text)
-            Text("Delivered at the agent's next turn-end (F3).").font(F.ui(11)).foregroundColor(theme.text2)
-
-            if messages.isEmpty {
-                Text("No queued messages.").font(F.ui(11.5)).foregroundColor(theme.text3)
-                    .padding(.vertical, 6)
-            } else if preview != nil {
-                VStack(spacing: 4) { ForEach(messages, id: \.id) { row($0) } }
-            } else {
-                ScrollView {
-                    VStack(spacing: 4) { ForEach(messages, id: \.id) { row($0) } }
-                }
-                .frame(maxHeight: 220)
-            }
-
-            HStack(spacing: 6) {
-                TextField("Append a message…", text: $appendText)
-                    .textFieldStyle(.plain)
-                    .font(F.ui(12.5)).foregroundColor(theme.text)
-                    .padding(.horizontal, 9).frame(height: 30)
-                    .background(theme.field)
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                Button {
-                    let text = appendText.trimmed; guard !text.isEmpty else { return }
-                    appendText = ""
-                    _Concurrency.Task { await model.send(task.id, text); await reload() }
-                } label: {
-                    Text("Add").font(F.ui(12, .semibold)).foregroundColor(.white)
-                        .padding(.horizontal, 14).frame(height: 28)
-                        .background(theme.accent.opacity(appendText.trimmed.isEmpty ? 0.4 : 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .disabled(appendText.trimmed.isEmpty)
-            }
-        }
-        .padding(12).frame(width: 360)
-        .task { if preview == nil { await reload() } }
-    }
-
-    private func row(_ m: InboxMessage) -> some View {
-        HStack(spacing: 6) {
-            VStack(spacing: 1) {
-                chevron("chevron.up") { _Concurrency.Task { await move(m, by: -1) } }
-                chevron("chevron.down") { _Concurrency.Task { await move(m, by: 1) } }
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("From \(m.sourceLabel)").font(F.ui(10.5, .medium)).foregroundColor(theme.text2)
-                if editingId == m.id {
-                    TextField("", text: $editText, onCommit: { _Concurrency.Task { await commitEdit(m) } })
-                        .textFieldStyle(.plain)
-                        .font(F.ui(12)).foregroundColor(theme.text)
-                } else {
-                    Text(m.text).font(F.ui(12)).foregroundColor(theme.text).lineLimit(2)
-                        .contentShape(Rectangle())
-                        .onTapGesture { editingId = m.id; editText = m.text }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button { _Concurrency.Task { await remove(m) } } label: {
-                Image(systemName: "trash").font(F.ui(10)).foregroundColor(theme.text2)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(theme.field)
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-    }
-
-    private func chevron(_ name: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name).font(F.ui(8, .semibold)).foregroundColor(theme.text2)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func reload() async { messages = await model.inboxPeek(task.id) }
-
-    private func remove(_ m: InboxMessage) async {
-        await model.inboxRemove(task.id, messageId: m.id); await reload()
-    }
-
-    private func commitEdit(_ m: InboxMessage) async {
-        let text = editText.trimmed
-        editingId = nil
-        if !text.isEmpty && text != m.text { await model.inboxEdit(task.id, messageId: m.id, text: text) }
-        await reload()
-    }
-
-    private func move(_ m: InboxMessage, by delta: Int) async {
-        guard let i = messages.firstIndex(where: { $0.id == m.id }) else { return }
-        let j = i + delta
-        guard j >= 0, j < messages.count else { return }
-        var ids = messages.map(\.id); ids.swapAt(i, j)
-        await model.inboxReorder(task.id, orderedIds: ids); await reload()
-    }
-}
-
 // MARK: - Agent chrome (terminal)
 
 private struct AgentChrome: View {
@@ -439,7 +314,7 @@ private struct AgentChrome: View {
                                       // Auto-reattach on a dead pane while the card is genuinely live on a
                                       // live link — never for a dead/creating card or a down link.
                                       attachWhileLiveGate: { !displayState(phase: task.phase, connection: model.connectionState).isStale
-                                                         && [.running, .idle, .needsPermission].contains(task.phaseDisplay) })
+                                                         && [.running, .idle, .unavailable].contains(task.phaseDisplay) })
                         // Key by session AND active connection so switching cards OR connections tears down the
                         // old terminal and attaches a fresh one against the right host — without this, SwiftUI
                         // reuses the same NSView and every card shows card #1's tmux.

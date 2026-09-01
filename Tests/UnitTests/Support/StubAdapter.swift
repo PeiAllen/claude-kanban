@@ -9,11 +9,9 @@ extension AgentCapabilities {
     /// is `.relaunchLiveness` so a blank spawn/reopen and a resume both land immediately on a successful
     /// `ensure` — no readiness signal to hand-deliver. This keeps the many tests that spawn/resume a card
     /// merely as SETUP green and synchronous under 2.6's capability-gated launch readiness. Tests that
-    /// specifically exercise the awaited signal path opt into `.claudeCode` (`.sessionStartHook`) or
-    /// `.codex` (`.rolloutMeta`) explicitly.
+    /// specifically exercise the awaited signal path opt into `.sessionStartHook` explicitly.
     static let stub = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
 
@@ -22,7 +20,6 @@ extension AgentCapabilities {
     /// Codex adapter. Readiness stays `.relaunchLiveness` so spawn/resume still land synchronously.
     static let fileTailStub = AgentCapabilities(
         sessionId: .seeded, telemetry: .fileTail, contextUsage: .percent,
-        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
 }
@@ -82,7 +79,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     /// A recognizable, NON-Claude parse: turns a tailed line into a marker report, proving parse is
     /// per-adapter (a Claude adapter returns nil for the same `.fileTail` raw).
     func parse(_ raw: RawTelemetry) -> StatusReport? {
-        if case let .fileTail(line) = raw { return StatusReport(desc: "tail:\(line)", run: .running) }
+        if case let .fileTail(line) = raw { return StatusReport(desc: "tail:\(line)") }
         return nil
     }
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {

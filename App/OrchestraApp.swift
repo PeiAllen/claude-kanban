@@ -433,13 +433,13 @@ private struct DebugLaunchHook: ViewModifier {
                  phase: phase, initialPrompt: title)
         }
         model.tasks = [
-            mk("Design the keyboard scheme", "feat/keys-design", .plan, .live(.waiting(.humanTurn)), 0),
+            mk("Design the keyboard scheme", "feat/keys-design", .plan, .live(.waiting), 0),
             mk("Draft the spec document", "feat/spec", .plan, .live(.running), 1),
             mk("Wire the KeyboardController", "feat/controller", .impl, .live(.running), 0),
             mk("Add the command palette", "feat/palette", .impl, .live(.running), 1),
-            mk("Pure BoardNavigator + tests", "feat/navigator", .impl, .live(.waiting(.humanTurn)), 2),
+            mk("Pure BoardNavigator + tests", "feat/navigator", .impl, .live(.waiting), 2),
             mk("Review the focus model", "feat/review", .review, .live(.running), 0),
-            mk("Ship the context chip", "feat/chip", .review, .live(.waiting(.humanTurn)), 1),
+            mk("Ship the context chip", "feat/chip", .review, .live(.waiting), 1),
             mk("Scratch: perf notes", "perf-notes", .plan, .live(.running), 0, origin: .borrowed),
         ]
         model.selectedId = model.tasks.first?.id
@@ -465,7 +465,7 @@ private struct DebugLaunchHook: ViewModifier {
             mk("Attached agents PR", targetBranch, .live(.running), 0),
             mk("Claude review", "review/attached-claude", .live(.running), 1,
                access: .readOnly, parentBranch: targetBranch),
-            mk("Codex review", "review/attached-codex", .live(.waiting(.humanTurn)), 2,
+            mk("Codex review", "review/attached-codex", .live(.waiting), 2,
                access: .readOnly, parentBranch: targetBranch),
         ]
         model.selectedId = model.tasks.first?.id
@@ -491,7 +491,7 @@ private struct DebugLaunchHook: ViewModifier {
             mk("Board hierarchy: roots, peek & drill", rootBranch, .impl, .live(.running), 0,
                treeStat: TreeStat(state: .inSync, behind: 0, mergedChildren: 2, plannedChildren: 5)),
             mk("Peek rows layout", "feat/peek-row-layout", .impl, .live(.running), 1, parentBranch: rootBranch),
-            mk("Drill breadcrumb & banner", "feat/drill-banner", .plan, .live(.waiting(.humanTurn)), 2, parentBranch: rootBranch),
+            mk("Drill breadcrumb & banner", "feat/drill-banner", .plan, .live(.waiting), 2, parentBranch: rootBranch),
             mk("Scope re-resolution", "feat/scope-resolve", .review, .live(.running), 3, parentBranch: rootBranch),
         ]
         model.selectedId = nil   // leave the root UNSELECTED so its L4 summary (not peek rows) shows
@@ -542,8 +542,11 @@ private struct DebugLaunchHook: ViewModifier {
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/demo",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), initialPrompt: "demo")
-        let seed = ["charlie", "BRAVO (edited)", "review the auth refactor before merging"]
-            .map { InboxMessage(cardId: card.id, text: $0) }
+        let seed = [
+            InboxMessage(cardId: card.id, text: "review the auth refactor before merging", state: .queued),
+            InboxMessage(cardId: card.id, text: "retry the unavailable provider", state: .failed),
+            InboxMessage(cardId: card.id, text: "branch context for the harness", state: .handedOff),
+        ]
         let view = InboxEditorView(task: card, preview: seed)
             .environmentObject(model)
             .environment(\.theme, theme)
@@ -658,7 +661,7 @@ private struct DebugLaunchHook: ViewModifier {
             mk("Wire the branch diffstat into the L1 quiet cluster", branch: "feat/quiet-stat",
                phase: .live(.running), stat: DiffStat(filesChanged: 6, insertions: 214, deletions: 37)),
             mk("Small tweak to the baseline toggle", branch: "fix/baseline",
-               phase: .live(.waiting(.humanTurn)), stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
+               phase: .live(.waiting), stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
             mk("Freeform notes card (no git diff)", branch: "scratch",
                phase: .live(.running), stat: nil),
         ]
@@ -776,14 +779,14 @@ private struct DebugLaunchHook: ViewModifier {
                          diff: DiffStat(filesChanged: 4, insertions: 38, deletions: 9))
         // OWN chip: blocked mid-turn on a tool approval — the hardest block short of death.
         let blocked = mk("pr/wake-endpoint", "pr/wake-endpoint", .impl,
-                         .live(.waiting(.permission)), 1, desc: "Wake endpoint + route ladder",
+                         .live(.init(turnStatus: .running, humanNeed: .permission)), 1, desc: "Wake endpoint + route ladder",
                          diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28))
         // OWN chip + overflow: a declared question on a card that is also nearly out of context.
         let asking = mk("plan/codex-restart", "plan/codex-restart", .plan,
-                        .live(.waiting(.humanTurn)), 0, ageMinutes: 30, ctxPct: 91,
+                        .live(.waiting), 0, ageMinutes: 30, ctxPct: 91,
                         question: "squash or rebase the wave?")
         // The quiet control that must NOT amber: merge-requested into a parent a live card owns.
-        let owned = mk("pr/child-of-root", "pr/child", .review, .live(.waiting(.humanTurn)), 0,
+        let owned = mk("pr/child-of-root", "pr/child", .review, .live(.waiting), 0,
                        diff: DiffStat(filesChanged: 2, insertions: 21, deletions: 4),
                        tree: TreeStat(state: .mergeRequested), ageMinutes: 90,
                        parentBranch: "feat/orchestrator")
@@ -791,16 +794,16 @@ private struct DebugLaunchHook: ViewModifier {
         // means the amber sits on the child and the parent shows "1 needs you" on L4 — one fact, one
         // amber, aggregated once.
         let orchestrator = mk("feat/orchestrator", "feat/orchestrator", .impl,
-                              .live(.waiting(.humanTurn)), 2, desc: "Wave C — attention system",
+                              .live(.waiting), 2, desc: "Wave C — attention system",
                               tree: TreeStat(state: .inSync, mergedChildren: 2, plannedChildren: 4),
                               ageMinutes: 40)
-        let stoppedChild = mk("pr/stopped-child", "pr/stopped", .impl, .live(.waiting(.humanTurn)), 3,
+        let stoppedChild = mk("pr/stopped-child", "pr/stopped", .impl, .live(.waiting), 3,
                               diff: DiffStat(filesChanged: 9, insertions: 412, deletions: 96),
                               ageMinutes: 40, parentBranch: "feat/orchestrator")
 
         // The LONGEST label the chip can carry. It exists in the fixture specifically so the narrow
         // shot proves "never truncates" against the worst case rather than against "permission".
-        let drained = mk("feat/wave-b", "feat/wave-b", .impl, .live(.waiting(.humanTurn)), 4,
+        let drained = mk("feat/wave-b", "feat/wave-b", .impl, .live(.waiting), 4,
                          desc: "Wave B — all children merged",
                          tree: TreeStat(state: .inSync, mergedChildren: 4, plannedChildren: 4,
                                         drained: true),
@@ -862,21 +865,21 @@ private struct DebugLaunchHook: ViewModifier {
                .impl, .live(.running), 1, desc: "Reproducing the <1s exit path under a fake clock",
                diff: DiffStat(filesChanged: 12, insertions: 412, deletions: 96), ageMinutes: 47),
             // Neither note nor desc: the ref falls back to the identity line.
-            mk("docs-refresh", "chore/docs", .impl, .live(.waiting(.humanTurn)), 2, ageMinutes: 125),
+            mk("docs-refresh", "chore/docs", .impl, .live(.waiting), 2, ageMinutes: 125),
             // Waiting + merge-requested (grey clock, NOT amber).
-            mk("plan/spawn-hang", "plan/spawn-hang", .review, .live(.waiting(.humanTurn)), 0,
+            mk("plan/spawn-hang", "plan/spawn-hang", .review, .live(.waiting), 0,
                note: "Startup-abort misclassification fix",
                diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28),
                tree: TreeStat(state: .mergeRequested), ageMinutes: 120),
             // Merge-stalled keeps its warning look; restack rides the same one glyph slot.
-            mk("pr/wake-endpoint", "pr/wake-endpoint", .review, .live(.waiting(.humanTurn)), 1,
+            mk("pr/wake-endpoint", "pr/wake-endpoint", .review, .live(.waiting), 1,
                desc: "Wake endpoint + route ladder",
                tree: TreeStat(state: .stale, behind: 2, nudges: 3, mergeStalled: true), ageMinutes: 21),
             mk("pr/codex-clean-restart", "pr/codex-restart", .plan, .live(.running), 0,
                desc: "Codex clean-restart launch path",
                tree: TreeStat(state: .restackNeeded), ageMinutes: 3),
             // A second repo opens the source-prefix gate (unless ORCH_ANATOMY=single-repo).
-            mk("fix/rss-dates", "fix/rss-dates", .plan, .live(.waiting(.humanTurn)), 1, repo: other,
+            mk("fix/rss-dates", "fix/rss-dates", .plan, .live(.waiting), 1, repo: other,
                desc: "Feed dates render a day early in Safari",
                diff: DiffStat(filesChanged: 1, insertions: 22, deletions: 6), ageMinutes: 38),
             // A target with two attached reviewers → the labelled eye on L4.
@@ -884,7 +887,7 @@ private struct DebugLaunchHook: ViewModifier {
                note: "Attached-agents seam", ageMinutes: 8),
             mk("Claude review", "review/attached-claude", .impl, .live(.running), 4,
                access: .readOnly, parentBranch: "feat/attached"),
-            mk("Codex review", "review/attached-codex", .impl, .live(.waiting(.humanTurn)), 5,
+            mk("Codex review", "review/attached-codex", .impl, .live(.waiting), 5,
                access: .readOnly, parentBranch: "feat/attached"),
             // A freeform card: no repo, so it is never repo-prefixed on the board (its dir is inspector-only).
             mk("board-redesign research", "", .plan, .live(.running), 6,
@@ -907,10 +910,10 @@ private struct DebugLaunchHook: ViewModifier {
                diff: DiffStat(filesChanged: 8, insertions: 188, deletions: 40), ageMinutes: 47,
                parentBranch: "feat/live-wake"),
             mk("You are the **D (Claude channels) card** — wire MCP channel push into the delivery arm",
-               "pr/claude-channels", .impl, .live(.waiting(.permission)), 9,
+               "pr/claude-channels", .impl, .live(.init(turnStatus: .running, humanNeed: .permission)), 9,
                desc: "MCP channel push wiring", ageMinutes: 9, parentBranch: "feat/live-wake"),
             mk("You are the **wake-endpoint + route-ladder** PR card for the live-wake-delivery redesign",
-               "pr/wake-route", .review, .live(.waiting(.humanTurn)), 10,
+               "pr/wake-route", .review, .live(.waiting), 10,
                desc: "Wake endpoint + route ladder",
                diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28), ageMinutes: 21,
                parentBranch: "feat/live-wake"),

@@ -2,8 +2,8 @@ import SwiftUI
 import OrchestraKit
 import OrchestraUI
 
-/// Notifications settings: one row per attention trigger (🔐 Permission needed · 🙋 Needs you · 💀 Card
-/// died), each with a **scope dial** (Off / Background only / Always) and a **sound dial**. Prefs persist
+/// Notifications settings: one row per attention trigger (🙋 Human action needed · 💀 Card died ·
+/// 🚧 Merge stalled), each with a **scope dial** (Off / Background only / Always) and a **sound dial**. Prefs persist
 /// client-side through the shared `NotificationPrefs` (same UserDefaults keys the macOS notifier reads).
 /// Push delivery is wired in N1 (device registration → daemon → APNs); the scope/sound dials here gate it.
 struct NotificationsSettingsSection: View {
@@ -106,19 +106,15 @@ struct NotificationsSettingsSection: View {
 
     static func emoji(_ t: NotifyTrigger) -> String {
         switch t {
-        case .permission:    return "🔐"
-        case .needsYou:      return "🙋"
+        case .humanRequired: return "🙋"
         case .died:          return "💀"
-        case .deliveryStuck: return "📪"
         case .mergeStalled:  return "🚧"
         }
     }
     static func title(_ t: NotifyTrigger) -> String {
         switch t {
-        case .permission:    return "Permission needed"
-        case .needsYou:      return "Needs you"
+        case .humanRequired: return "Human action needed"
         case .died:          return "Card died"
-        case .deliveryStuck: return "Delivery stuck"
         case .mergeStalled:  return "Merge stalled"
         }
     }

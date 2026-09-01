@@ -43,7 +43,7 @@ struct BoardCardCell: View {
             if !task.cardLine.isEmpty {
                 Text(task.cardLine)
                     .font(.subheadline)
-                    .foregroundStyle(task.waitReason != nil ? theme.amber.text : theme.text2)
+                    .foregroundStyle(task.agentState?.isWaiting == true ? theme.amber.text : theme.text2)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -54,7 +54,7 @@ struct BoardCardCell: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardShape.fill(theme.card))
         .overlay(
-            cardShape.strokeBorder(task.waitReason != nil ? theme.waitingBorder : theme.cardBorder, lineWidth: 1)
+            cardShape.strokeBorder(task.agentState?.isWaiting == true ? theme.waitingBorder : theme.cardBorder, lineWidth: 1)
         )
         .overlay(alignment: .top) {
             if task.phaseDisplay == .running {

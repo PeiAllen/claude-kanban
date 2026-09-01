@@ -1,7 +1,7 @@
 import Foundation
 
 /// Client-local notification preferences, shared across every client (the macOS notifier and the iOS
-/// Settings screen). Five attention triggers, each with a focus **scope** (off / background / always)
+/// Settings screen). Each attention trigger has a focus **scope** (off / background / always)
 /// and a **sound** (default / none / a named system sound). Persisted per-client in `UserDefaults` under
 /// the SAME keys the macOS `AgentNotifier` reads (`orch_notify_<trigger>_scope` / `_sound`) so choosing
 /// how notifications fire is one model, not two that drift.
@@ -10,7 +10,7 @@ import Foundation
 /// persist prefs without APNs delivery, which is a backend follow-on (N1). The macOS notifier keeps its
 /// own `UNNotificationSound` mapping; this type owns only the scope/sound *storage* contract.
 public enum NotifyTrigger: String, CaseIterable, Codable, Sendable {
-    case permission, needsYou, died, deliveryStuck, mergeStalled
+    case humanRequired, died, mergeStalled
 }
 
 public enum NotifyScope: String, CaseIterable, Codable, Sendable {
@@ -39,8 +39,8 @@ public enum NotifySound: String, CaseIterable, Codable, Sendable {
 }
 
 /// UserDefaults-backed read/write for the per-trigger scope + sound. Value semantics; a fresh instance
-/// always reflects what's on disk. Defaults match the macOS notifier exactly (permission always/Hero,
-/// needsYou background/Submarine, died always/Basso).
+/// always reflects what's on disk. Human-required is immediate because it combines the old permission
+/// and Needs You categories; old per-category values are read as a migration fallback.
 public struct NotificationPrefs {
     private let defaults: UserDefaults
 
@@ -51,39 +51,55 @@ public struct NotificationPrefs {
 
     public static func defaultScope(_ t: NotifyTrigger) -> NotifyScope {
         switch t {
-        case .permission:    return .always
-        case .needsYou:      return .background
+        case .humanRequired: return .always
         case .died:          return .always
-        // A stuck card needs the human but isn't as urgent as a crash — background (like needsYou),
-        // so it stays quiet while the Mac app is frontmost yet still pushes to a backgrounded phone.
-        case .deliveryStuck: return .background
         case .mergeStalled:  return .background
         }
     }
     public static func defaultSound(_ t: NotifyTrigger) -> NotifySound {
         switch t {
-        case .permission:    return .hero
-        case .needsYou:      return .submarine
+        case .humanRequired: return .hero
         case .died:          return .basso
-        case .deliveryStuck: return .submarine
         case .mergeStalled:  return .submarine
         }
     }
 
     public func scope(_ t: NotifyTrigger) -> NotifyScope {
-        defaults.string(forKey: Self.scopeKey(t)).flatMap(NotifyScope.init(rawValue:))
-            ?? Self.defaultScope(t)
+        if let current = defaults.string(forKey: Self.scopeKey(t)).flatMap(NotifyScope.init(rawValue:)) {
+            return current
+        }
+        if t == .humanRequired {
+            return legacyValue("permission", suffix: "scope", as: NotifyScope.self)
+                ?? legacyValue("needsYou", suffix: "scope", as: NotifyScope.self)
+                ?? Self.defaultScope(t)
+        }
+        return Self.defaultScope(t)
     }
     public func setScope(_ scope: NotifyScope, for t: NotifyTrigger) {
         defaults.set(scope.rawValue, forKey: Self.scopeKey(t))
     }
 
     public func sound(_ t: NotifyTrigger) -> NotifySound {
-        defaults.string(forKey: Self.soundKey(t)).flatMap(NotifySound.init(rawValue:))
-            ?? Self.defaultSound(t)
+        if let current = defaults.string(forKey: Self.soundKey(t)).flatMap(NotifySound.init(rawValue:)) {
+            return current
+        }
+        if t == .humanRequired {
+            return legacyValue("permission", suffix: "sound", as: NotifySound.self)
+                ?? legacyValue("needsYou", suffix: "sound", as: NotifySound.self)
+                ?? Self.defaultSound(t)
+        }
+        return Self.defaultSound(t)
     }
     public func setSound(_ sound: NotifySound, for t: NotifyTrigger) {
         defaults.set(sound.rawValue, forKey: Self.soundKey(t))
+    }
+
+    private func legacyValue<T: RawRepresentable>(
+        _ trigger: String,
+        suffix: String,
+        as type: T.Type
+    ) -> T? where T.RawValue == String {
+        defaults.string(forKey: "orch_notify_\(trigger)_\(suffix)").flatMap(T.init(rawValue:))
     }
 }
 

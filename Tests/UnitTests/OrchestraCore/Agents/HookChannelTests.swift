@@ -6,8 +6,10 @@ import Foundation
     @Test("HookEvent raw values map the --event strings")
     func events() {
         #expect(HookEvent(rawValue: "session") == .sessionStart)
+        #expect(HookEvent(rawValue: "messagedisplay") == .messageDisplay)
         #expect(HookEvent(rawValue: "pretool") == .preToolUse)
         #expect(HookEvent(rawValue: "posttool") == .postToolUse)
+        #expect(HookEvent(rawValue: "posttoolfailure") == .postToolUseFailure)
         #expect(HookEvent(rawValue: "notification") == .notification)
         #expect(HookEvent(rawValue: "taskcompleted") == .taskCompleted)
         #expect(HookEvent(rawValue: "stop") == .stop)
@@ -29,12 +31,11 @@ import Foundation
         #expect(back == r)
     }
 
-    @Test("HookEnvelope encodes the shared stdout shapes")
+    @Test("HookEnvelope encodes session-start stdout")
     func envelope() {
         let ac = HookEnvelope.additionalContext("X")
         #expect(ac.contains("\"additionalContext\":\"X\""))
         #expect(ac.contains("\"hookEventName\":\"SessionStart\""))
-        #expect(HookEnvelope.block("go").contains("\"decision\":\"block\""))
     }
 
     @Test("HookEnvelope.additionalContext escapes newlines/quotes")

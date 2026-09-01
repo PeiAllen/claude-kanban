@@ -29,11 +29,10 @@ yourself: you can **ask an agent to do it**, in plain English, and watch the boa
 
 Above: one orchestrator card is told *"split the rate-limiting work into three PRs and fan them out."*
 It calls the ordinary `spawn` command three times — three children appear on the board, each cut into
-its own git worktree, each reporting its own live context-% and diffstat — then `wait`s on them and
-wakes as each one concludes. Nothing about that card is special: it is a normal agent session holding
-the same commands you have. The machinery underneath is
-[one delivery seam](docs/04-cards-worktrees-sessions.md#the-orchestration-seam-handoff--fork--fan-out--send--wait),
-which `handoff`, `fork`, `fan-out`, `send`, and `wait` all compose from.
+its own git worktree, each reporting its own live context-% and diffstat — then subscribes with `wait`
+for real conclusions. Nothing about that card is special: it is a normal agent session holding the same
+commands you have. `handoff` and seeds carry authored session context; `send` records a local inbox row
+and uses the live provider's native message path independently of a card's displayed runtime status.
 
 ## …or never touch the mouse
 
@@ -55,9 +54,11 @@ intercepts keys meant for the live agent terminal:
 - **Four card modes.** **Worktree** (isolated git branch), **Borrowed/Freeform** (run in any existing
   directory you point at), **Scratch** (a fresh throwaway dir Orchestra makes and deletes), and a
   **Read-only** access mode that lets an agent read/search/`git` but physically cannot write.
-- **Live state, never screen-scraped.** Cards show context-window %, current activity, model, and
-  status — sourced per agent through a normalized telemetry seam: Claude Code **pushes** via a hooks
-  channel, while Codex is **tailed** from its rollout JSONL by the daemon. Never screen-scraped.
+- **Live state, provider-owned.** A card's lifecycle stays separate from its current provider state:
+  `running`, `waiting`, or `unavailable`. Claude supplies strictly correlated hook observations (with a
+  narrow provider-native idle repair), Codex supplies app-server thread/turn state, and a newly live card remains
+  unavailable until current evidence arrives. The Codex rollout tail is metadata only; neither it nor
+  inbox delivery manufactures status.
 - **See the diff on the board.** Each git card shows a live `+N −M / k files` diffstat in its footer,
   and the inspector has a read-only **Diff** view (difftastic-rendered when `difft` is installed, git's
   colored diff otherwise; a working / branch baseline toggle) — so you can review an agent's changes
@@ -66,10 +67,11 @@ intercepts keys meant for the live agent terminal:
   sessions after a crash or reboot; unrecoverable cards surface a Recovery panel. Even a finished card
   isn't terminal — **Reopen** a Done card and the daemon recreates its worktree and resumes the agent.
 - **Agents orchestrate agents.** A card can **hand off** to a clean-context resume, **fork** a slice into
-  a new card, **fan out** across many, or **send** into another card's durable inbox — and an orchestrator
-  card can `wait` on its children and wake as each concludes. All four compose from one live-delivery seam
-  (F1 resume · F2 wake · F3 inbox), driven from the CLI or MCP (the app surfaces the inbox as an editor —
-  list/reorder/edit/append/remove — while handoff/fork/fan-out are agent/CLI moves). A card can also
+  a new card, **fan out** across many, or **send** into another card's durable inbox; `wait` is a separate
+  subscription for a child reaching a real conclusion. A successful `send` means the local row was queued.
+  Later `handedOff` means the native harness accepted the request, never that the model read or acted on
+  it. The app exposes queued, failed, and bounded handed-off history with retry/edit/remove controls, while
+  handoff/fork/fan-out remain agent/CLI moves. A card can also
   **re-seat itself onto a different model in place** — `handoff <ref> "<summary>" --model <id>` keeps the
   card, worktree, and context and comes back on the stronger model, so an agent that finds its task too
   hard escalates itself instead of spawning a successor
@@ -133,19 +135,21 @@ flowchart TB
   TMUX --- CLAUDE["Claude Code agent"]
   TMUX --- CODEX["Codex agent"]
 
-  CLAUDE ==>|"PUSH — statusLine + hooks<br/>orchestra _report → hook RPC"| UDS
-  CODEX -->|"writes"| ROLL[("Codex rollout .jsonl")]
+  CLAUDE ==>|"PUSH — metadata + structured hooks<br/>orchestra _report → hook RPC"| UDS
+  CODEX --- AS["codex app-server"]
+  AS ==>|"current thread / turn events"| SVC
+  CODEX -->|"writes metadata"| ROLL[("Codex rollout .jsonl")]
   SVC -.->|"TAIL — pollTelemetry + RolloutTailer"| ROLL
 ```
 
 The app, the CLI, and the MCP bridge are all `ControlClient`s speaking the same JSON-RPC over the
 same user-only socket, so what the three can do can never drift — the CLI's verbs and the MCP tool
-list are generated from one `CommandRegistry`. The agents report back by *different* mechanisms, and
-that asymmetry is deliberate: Claude Code **pushes** (its statusLine and hooks shell out to
-`orchestra _report`, which sends one typed `hook` RPC back over the same socket), while Codex is
-**tailed** (it pushes nothing; the daemon polls its rollout JSONL). Both land as the same normalized
-telemetry, so nothing downstream branches on the agent. Terminals never cross this plane — SwiftTerm
-attaches to tmux directly.
+list are generated from one `CommandRegistry`. The agents report metadata by different mechanisms:
+Claude Code **pushes** through `orchestra _report`, while the daemon **tails** Codex rollout JSONL.
+Live turn and provider-human state follow a separate normalized path: Claude's current-session hooks and
+generation-fenced idle repair feed it, while Codex's app-server observer feeds it. The generic reducer
+then owns the live snapshot, so no downstream consumer branches on the provider. Terminals never cross
+this plane — SwiftTerm attaches to tmux directly.
 
 - **`OrchestraCore`** — the shared library: all business logic (`OrchestraService`, `TaskStore`,
   `WorktreeManager`, `SessionManager`, `AgentRegistry`/`ClaudeCodeAdapter` + `CodexAdapter`, `PathResolver`,
@@ -222,4 +226,4 @@ how to pause or uninstall it.
 
 Backend (core + control plane + daemon + CLI + MCP) is the primary build target here and is fully
 unit-tested. The SwiftUI app sources match the Orchestra UI prototype; building the `.app` bundle
-requires Xcode + SwiftTerm. Current version: see [`Version.swift`](Sources/OrchestraCore/Version.swift).
+requires Xcode + SwiftTerm. Current version: see [`Version.swift`](Sources/OrchestraKit/Version.swift).

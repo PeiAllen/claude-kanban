@@ -257,9 +257,8 @@ public struct SessionManager: Sendable {
                 // `-l` = literal; `--` ends option parsing so text starting with `-` isn't swallowed.
                 r = try tmux(["send-keys", "-t", target, "-l", "--", text])
             }
-            // A failed send-keys must NOT report success: the Needs-You gate's "Approve" would otherwise
-            // return ok while the agent stays blocked (the keystroke never reached the pane — e.g. the
-            // window vanished between the liveness check and the send). Surface it so the caller can retry.
+            // A failed send-keys must NOT report success: the window may vanish between the liveness check
+            // and the send. Surface the tmux failure so the caller can retry or report it honestly.
             guard r.ok else {
                 throw OrchestraError.io(r.stderr.isEmpty ? "tmux send-keys failed for \(target)" : r.stderr)
             }

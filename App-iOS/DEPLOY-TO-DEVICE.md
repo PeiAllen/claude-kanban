@@ -170,13 +170,13 @@ On first launch the app opens a **"Connect your Mac"** screen (3 steps, matching
    key line is in `authorized_keys`.
 
 After that the board is driven by your **live daemon** — the same cards you see on the Mac, plus
-spawn, Needs-You approvals, terminals, and phone→desktop takeover.
+spawn, Needs-You/Open-Harness routing, terminals, and phone→desktop takeover.
 
 ---
 
 ## What works vs. what doesn't (free tier)
 
-- **Works:** board sync, spawn + freeform trust, Needs-You approve/deny, block-REPL terminals,
+- **Works:** board sync, spawn + freeform trust, Needs-You/Open-Harness routing, block-REPL terminals,
   phone-owned shells, agent-terminal takeover — all over the tailnet SSH transport.
 - **Not on the free tier:** real APNs push (agents-ended / needs-you banners while the app is closed).
   It's a paid-membership feature and is intentionally disabled here; use the Claude/Codex mobile apps'

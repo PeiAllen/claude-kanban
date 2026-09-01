@@ -11,7 +11,6 @@ struct AuthRateMonitorTests {
                                         capabilities: .claudeCode, id: "claude-code", name: "Claude")
     static let apiKeyCaps = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .apiKey)
     static let keyAdapter = StubAdapter(transcriptDir: NSTemporaryDirectory(),
                                         capabilities: apiKeyCaps, id: "keyed", name: "Keyed")

@@ -13,17 +13,16 @@ public struct ClaudeCodeAdapter: Adapter {
     /// Claude Code's shipped seam behavior, frozen as the descriptor (A1).
     public var capabilities: AgentCapabilities { .claudeCode }
 
-    /// B3 — cold-path resume-modal suppression. A machine-driven `claude --resume` on an old
-    /// (> ~70min) AND large (> ~100k tokens) session opens a "Resume from summary/full" modal INSTEAD of
-    /// running the seed argv; with no human to answer it, the resume deadlocks and swallows the seed (two
-    /// live cards were observed parked at it). Set both thresholds impossibly high so the modal never
-    /// triggers. FAIL-SOFT by construction: these are undocumented internals a differing build ignores
-    /// harmlessly, and if the modal still appears the readiness await times out → the lease survives →
-    /// the arm retries / stuck-flags (never a silent swallow). Agent-agnostic: this is the `Adapter.env`
-    /// seam (Codex uses it for `CODEX_HOME`); other adapters return nothing.
+    /// Suppress Claude's resume-choice modal for old, large transcripts. A machine-driven resume cannot
+    /// answer that modal, so the thresholds keep the explicit resume path non-interactive. Builds that do
+    /// not recognize these variables ignore them harmlessly.
     public var env: [String: String] {
         ["CLAUDE_CODE_RESUME_THRESHOLD_MINUTES": "1000000",
          "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD": "1000000"]
+    }
+
+    public func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        .pushed
     }
 
     /// Allow tests to inject a fake binary (the fake-agent fixture) without spawning real Claude.
@@ -59,9 +58,9 @@ public struct ClaudeCodeAdapter: Adapter {
     // MARK: telemetry parse (hooksPush) — relocated from the `orchestra` CLI `ReportHelper.map`.
 
     /// Claude telemetry is `hooksPush`: the `_report` transport pushes each hook event (kind + JSON
-    /// payload); this converts it to a normalized two-tier `StatusReport`. Byte-identical to the former
-    /// CLI `ReportHelper.map` so `ReportTests` and live Claude reporting are unchanged. Claude has no
-    /// `fileTail` transport, so any non-`hooksPush` raw returns nil.
+    /// payload); this extracts lifecycle and display metadata into `StatusReport`. Turn state is mapped
+    /// separately by `agentSignals`, so this parser never writes agent status. Claude has no `fileTail`
+    /// transport, so any non-`hooksPush` raw returns nil.
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
         guard case let .hooksPush(kind, p) = raw else { return nil }
         switch kind {
@@ -81,27 +80,16 @@ public struct ClaudeCodeAdapter: Adapter {
                 transcriptPath: p["transcript_path"]?.stringValue,
                 sessionSource: p["source"]?.stringValue)
         case "prompt":
-            return StatusReport(run: .running, promptText: p["prompt"]?.stringValue)
-        case "pretool", "posttool":
+            return StatusReport(promptText: p["prompt"]?.stringValue)
+        case "pretool", "posttool", "posttoolfailure":
             let tool = p["tool_name"]?.stringValue ?? "tool"
-            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), run: .running)
+            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]))
         case "notification":
-            // The Notification hook: permission_prompt is the only "you're blocking me" case; everything
-            // else (idle_prompt, …) is a genuine human-turn wait.
-            let reason: WaitReason = p["notification_type"]?.stringValue == "permission_prompt"
-                ? .permission : .humanTurn
-            return StatusReport(desc: p["message"]?.stringValue, run: .waiting(reason))
+            return StatusReport(desc: p["message"]?.stringValue)
         case "taskcompleted":
-            return StatusReport(run: .waiting(.humanTurn), turnCompleted: true)
+            return nil
         case "stop":
-            // A turn that yielded to await background work (a run_in_background shell, a background
-            // subagent, a /loop or scheduled wake) will AUTO-RESUME — the human isn't needed. Leave the
-            // card running (return nil) so it neither flips to waiting nor alerts. (background_tasks /
-            // session_crons are Claude Code v2.1.145+; absent on older builds → treated as empty.)
-            let hasBg = (p["background_tasks"]?.arrayValue?.isEmpty == false)
-                || (p["session_crons"]?.arrayValue?.isEmpty == false)
-            if hasBg { return nil }
-            return StatusReport(run: .waiting(.humanTurn))
+            return nil
         case "sessionend":
             let reason = p["reason"]?.stringValue ?? "other"
             // Transition reasons are ignored (the matching SessionStart handles them).
@@ -112,11 +100,148 @@ public struct ClaudeCodeAdapter: Adapter {
         }
     }
 
+    // MARK: provider-neutral agent-state mapping
+
+    public func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? {
+        let keys: [String]
+        switch event {
+        case .sessionStart:
+            keys = ["session_id", "source"]
+        case .userPrompt:
+            keys = ["session_id", "prompt_id", "agent_id"]
+        case .messageDisplay:
+            keys = ["session_id", "prompt_id", "agent_id"]
+        case .preToolUse, .postToolUse, .postToolUseFailure, .permission:
+            keys = ["session_id", "prompt_id", "agent_id", "tool_name"]
+        case .stop:
+            keys = ["session_id", "prompt_id", "agent_id", "background_tasks", "session_crons"]
+        case .statusLine, .notification, .taskCompleted, .sessionEnd:
+            return nil
+        }
+        return projectedHookPayload(payload, keys: keys)
+    }
+
+    public func hookMessageEndpoint(
+        event: HookEvent,
+        payload: JSONValue,
+        environment: [String: String]
+    ) -> AgentMessageEndpointReport? {
+        guard event == .sessionStart || event == .statusLine,
+              let harnessSessionId = payload["session_id"]?.stringValue,
+              !harnessSessionId.isEmpty,
+              let socketPath = environment["CLAUDE_CODE_MESSAGING_SOCKET"],
+              !socketPath.isEmpty,
+              let token = environment["CLAUDE_CODE_MESSAGING_TOKEN"],
+              !token.isEmpty
+        else { return nil }
+        return AgentMessageEndpointReport(
+            providerId: id,
+            harnessSessionId: harnessSessionId,
+            endpoint: .claudeHookRPC(socketPath: socketPath, token: token)
+        )
+    }
+
+    public func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? {
+        guard case .claudeHookRPC(let socketPath, let token) = endpoint,
+              !socketPath.isEmpty, !token.isEmpty
+        else { return nil }
+        return ClaudeMessageSender(socketPath: socketPath, token: token)
+    }
+
+    public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
+        switch raw {
+        case .hooksPush(let hook, let payload):
+            guard belongsToHarnessSession(payload, context: context) else { return [] }
+            let turnID = promptID(in: payload)
+            switch hook {
+            case "prompt":
+                guard isMainAgent(payload), validTurnID(turnID) else { return [] }
+                return [signal(.turnStarted, context: context, turnID: turnID)]
+            case "messagedisplay":
+                guard isMainAgent(payload), validTurnID(turnID) else { return [] }
+                return [signal(.turnActivity, context: context, turnID: turnID)]
+            case "stop":
+                guard isMainAgent(payload) else { return [] }
+                return [
+                    signal(
+                        .turnCompleted(resume: hasAutomaticResume(payload) ? .init() : nil),
+                        context: context,
+                        turnID: turnID
+                    ),
+                    signal(.humanNeedChanged(nil), context: context, turnID: turnID),
+                ]
+            case "session" where ["startup", "clear", "resume"].contains(payload["source"]?.stringValue):
+                return [
+                    signal(.turnReconciled(.waiting(), humanNeed: nil), context: context),
+                ]
+            case "permission":
+                return [signal(
+                    .humanNeedChanged(humanNeed(for: payload["tool_name"]?.stringValue)),
+                    context: context,
+                    turnID: turnID
+                )]
+            case "pretool":
+                var signals: [AgentSignal] = []
+                if isMainAgent(payload), validTurnID(turnID) {
+                    signals.append(signal(.turnActivity, context: context, turnID: turnID))
+                }
+                if humanNeed(for: payload["tool_name"]?.stringValue) == .input {
+                    signals.append(signal(.humanNeedChanged(.input), context: context, turnID: turnID))
+                }
+                return signals
+            case "posttool", "posttoolfailure":
+                return [signal(.humanNeedChanged(nil), context: context, turnID: turnID)]
+            default:
+                return []
+            }
+
+        case .fileTail, .rpcNotification, .rpcResponse:
+            return []
+        }
+    }
+
+    private func signal(
+        _ kind: AgentSignal.Kind,
+        context: AgentSignalContext,
+        turnID: String? = nil
+    ) -> AgentSignal {
+        .init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: kind)
+    }
+
+    private func promptID(in payload: JSONValue) -> String? {
+        payload["prompt_id"]?.stringValue ?? payload["prompt.id"]?.stringValue
+    }
+
+    private func humanNeed(for toolName: String?) -> ProviderHumanNeed {
+        guard let toolName, !toolName.isEmpty else { return .unspecified }
+        return ["AskUserQuestion", "ExitPlanMode"].contains(toolName) ? .input : .permission
+    }
+
+    private func hasAutomaticResume(_ payload: JSONValue) -> Bool {
+        payload["background_tasks"]?.arrayValue?.isEmpty == false
+            || payload["session_crons"]?.arrayValue?.isEmpty == false
+    }
+
+    private func belongsToHarnessSession(_ payload: JSONValue, context: AgentSignalContext) -> Bool {
+        guard let expected = context.harnessSessionId, !expected.isEmpty else { return false }
+        let observed = payload["session_id"]?.stringValue ?? payload["session.id"]?.stringValue
+        return observed == expected
+    }
+
+    private func validTurnID(_ turnID: String?) -> Bool {
+        guard let turnID else { return false }
+        return !turnID.isEmpty
+    }
+
+    private func isMainAgent(_ payload: JSONValue) -> Bool {
+        guard let agentID = payload["agent_id"]?.stringValue else { return true }
+        return agentID.isEmpty
+    }
+
     /// Receive-direction format: wrap core's neutral `HookResponse` in Claude's hook stdout envelope.
     /// Explicit (not the protocol default) so Claude's shape is never silently inherited by another agent.
     public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
         if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
-        if let cont = r.continuation   { return HookEnvelope.block(cont) }
         return nil
     }
 
@@ -262,8 +387,8 @@ public struct ClaudeCodeAdapter: Adapter {
         // launch posture must be identical whether a session is starting or continuing.
         argv += startInFlags(ctx.startIn)
         argv += accessFlags(ctx.access)
-        // F1 (C3): a handoff/fork seed (authored ctx + folded inbox) rides as the resumed session's
-        // opening positional turn — history holds the task, the seed adds the new instruction.
+        // A handoff/fork seed rides as the resumed session's opening positional turn: history holds the
+        // task, while the seed adds the new instruction.
         if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
         return argv   // no --session-id; no prompt beyond the optional seed — history holds the task
     }
@@ -335,8 +460,6 @@ public extension AgentCapabilities {
         sessionId: .seeded,
         telemetry: .hooksPush,
         contextUsage: .percent,
-        wakeTransport: .nativeReinvoke,
-        inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,

@@ -42,15 +42,13 @@ struct CodexAdapterArgvTests {
         #expect(try reg.get("claude-code").id == "claude-code")   // both registered
     }
 
-    @Test("capabilities are Codex's discovered/fileTail/relaunch/stopHook tuple")
+    @Test("capabilities are Codex's discovered/fileTail tuple")
     func capabilities() {
         let c = CodexAdapter().capabilities
         #expect(c == .codex)
         #expect(c.sessionId == .discovered)
         #expect(c.telemetry == .fileTail)
         #expect(c.contextUsage == .tokens)
-        #expect(c.wakeTransport == .relaunch)
-        #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
@@ -61,62 +59,61 @@ struct CodexAdapterArgvTests {
         #expect(CodexAdapter().newSessionId() == nil)
     }
 
-    // F3 · live drain: Codex encodes a Stop-drain continuation into the SAME `decision:block` envelope as
-    // Claude (byte-identical framing). This is what `handleHook(.stop)` → `payloadForStop` rides.
-    @Test("encode(.continuation, for: .stop) is the shared block continuation")
-    func encodesStopContinuation() {
-        let out = CodexAdapter().encode(HookResponse(continuation: "DRAIN-ME"), for: .stop)
-        #expect(out == HookEnvelope.block("DRAIN-ME"))
-        #expect(out == StopDrain.blockJSON(reason: "DRAIN-ME"))
-    }
-
-    // The rendered Codex hooks file must wire the Stop event, or the drain above never fires.
-    @Test("rendered Codex hooks wire the Stop event to `_report --event stop --agent codex`")
-    func rendersStopHook() throws {
+    @Test("rendered Codex hooks omit the retired Stop callback")
+    func omitsStopHook() throws {
         let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")
-        #expect(json.contains("\"Stop\""))
-        #expect(json.contains("_report --event stop --agent codex"))
+        #expect(!json.contains("\"Stop\""))
+        #expect(!json.contains("_report --event stop --agent codex"))
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
-    // C1 · Codex permission gate. Codex's `PermissionRequest` hook fires `_report --event permission`,
-    // and THIS adapter classifies that hooksPush into the SAME `waitReason == .permission` Claude uses
-    // (via its Notification/permission_prompt), so a blocked Codex card surfaces as a Needs-You 🔐 row.
-    @Test("parse(permission hooksPush) → waiting/.permission (Codex PermissionRequest gate)")
-    func parsePermissionHook() {
-        let r = adapter.parse(.hooksPush(kind: "permission", payload: .object([:])))
-        #expect(r == StatusReport(run: .waiting(.permission)))
+    @Test("PermissionRequest bypasses metadata parsing and is state-silent")
+    func permissionHookSignal() {
+        let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
+        #expect(adapter.parse(raw) == nil)
+        #expect(adapter.agentSignals(
+            from: raw,
+            context: .init(sessionEpoch: 1, harnessSessionId: "thread")
+        ).isEmpty)
     }
 
-    // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
-    // the definitive card ↔ rollout correlation. Do not discard it and fall back to cwd/time discovery.
-    @Test("parse(SessionStart hooksPush) binds Codex's direct session id; Stop stays telemetry-free")
+    @Test("SessionStart is lifecycle-only; app-server thread/started owns Codex identity")
     func parseSessionStartHook() {
         let payload: JSONValue = .object([
-            "session_id": .string("codex-session"),
+            "session_id": .string("hook-invocation-id"),
             "source": .string("startup"),
             "cwd": .string("/same/freeform/cwd"),
         ])
-        #expect(adapter.parse(.hooksPush(kind: "session", payload: payload)) == StatusReport(sessionId: "codex-session"))
+        #expect(adapter.parse(.hooksPush(kind: "session", payload: payload))
+            == StatusReport(sessionSource: "startup"))
         #expect(adapter.parse(.hooksPush(kind: "session", payload: .object([:]))) == nil)
-        #expect(adapter.parse(.hooksPush(kind: "stop", payload: .object([:]))) == nil)
+
+        let started: JSONValue = .object([
+            "thread": .object([
+                "id": .string("thread-1"),
+                "sessionId": .string("thread-1"),
+                "status": .object(["type": .string("idle")]),
+            ]),
+        ])
+        #expect(adapter.parse(.rpcNotification(method: "thread/started", params: started))
+            == StatusReport(sessionId: "thread-1"))
+        #expect(adapter.parse(.rpcResponse(
+            method: "thread/read",
+            result: .object(["thread": started["thread"]!])
+        )) == StatusReport(sessionId: "thread-1"))
     }
 
-    // The permission push must not disturb the fileTail path: a completed turn is still humanTurn.
-    @Test("fileTail turn-complete still classifies humanTurn (permission push is additive)")
-    func fileTailUnaffected() {
+    @Test("fileTail turn-complete is ignored because app-server owns turn state")
+    func fileTailTurnCompleteIgnored() {
         let line = #"{"type":"turn_complete","timestamp":"2026-07-04T10:00:00Z"}"#
-        let r = adapter.parse(.fileTail(line: line))
-        #expect(r?.snapshot?.run != nil)
-        #expect(r?.snapshot?.run == .waiting(.humanTurn))
+        #expect(adapter.parse(.fileTail(line: line)) == nil)
     }
 
-    // The rendered Codex hooks file must wire the PermissionRequest event, or the gate never fires.
-    @Test("rendered Codex hooks wire PermissionRequest → `_report --event permission --agent codex`")
+    @Test("rendered Codex hooks leave permission state to app-server")
     func rendersPermissionHook() throws {
         let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")
-        #expect(json.contains("\"PermissionRequest\""))
-        #expect(json.contains("_report --event permission --agent codex"))
+        #expect(!json.contains("\"PermissionRequest\""))
+        #expect(!json.contains("_report --event permission --agent codex"))
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
@@ -133,6 +130,51 @@ struct CodexAdapterArgvTests {
         #expect(!argv.contains("never"))
         #expect(adjacent(argv, "-m", "gpt-5.5"))
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
+    }
+
+    @Test("Codex declares one short per-card Unix endpoint for its app-server observer")
+    func observationEndpoint() {
+        #expect(adapter.observationEndpoint(.init(cardId: UUID(), cardRef: "abc12345", sessionEpoch: 2,
+                                                  runtimeStateDir: "/runtime")) ==
+                .unixSocket(path: "/runtime/codex-abc12345.sock"))
+    }
+
+    @Test("an observation endpoint wraps the stock TUI around a launch-local app-server without inlining guidance")
+    func appServerLaunch() throws {
+        let testAdapter = CodexAdapter(binOverride: "codex", hookTrustBypass: false)
+        let ctx = AdapterContext(
+            cwd: "/wt/with spaces",
+            model: "gpt-5.5",
+            prompt: "go",
+            orchestraBin: "/abs/orchestra",
+            access: .readOnly,
+            trustCwd: false,
+            orchestraMCPBin: "/abs/orchestra-mcp",
+            observationEndpoint: .unixSocket(path: "/runtime/codex-card.sock")
+        )
+        let plan = try #require(CodexLaunchConfiguration.appServerLaunch(
+            binary: "codex",
+            context: ctx,
+            agentId: "codex",
+            clientArguments: CodexLaunchConfiguration.flags(cwd: ctx.cwd)
+                + ["-s", "read-only", "-a", "never", "-m", "gpt-5.5"],
+            positional: ["go"]
+        ))
+
+        #expect(plan.socketPath == "/runtime/codex-card.sock")
+        #expect(plan.serverArgv.starts(with: ["codex", "app-server", "--listen",
+                                               "unix:///runtime/codex-card.sock"]))
+        #expect(plan.serverArgv.contains { $0.contains("hooks.SessionStart=") })
+        #expect(plan.serverArgv.contains { $0.contains("mcp_servers.orchestra.command=") &&
+                                           $0.contains("/abs/orchestra-mcp") })
+        #expect(plan.serverArgv.contains { $0.contains("mcp_servers.orchestra.disabled_tools=") &&
+                                           $0.contains("exec") })
+        #expect(!plan.serverArgv.contains { $0.contains("developer_instructions") })
+        #expect(adjacent(plan.clientArgv, "--remote", "unix:///runtime/codex-card.sock"))
+        #expect(adjacent(plan.clientArgv, "-C", "/wt/with spaces"))
+        #expect(plan.argv.first == "/bin/bash")
+        #expect(plan.argv.joined(separator: " ").count < 4_000)
+        #expect(testAdapter.start(ctx) == plan.argv)
     }
 
     @Test("start and resume select the same profile file carrying the scoped hooks, trust, and instructions")
@@ -153,8 +195,8 @@ struct CodexAdapterArgvTests {
         let lines = start.lines
         #expect(lines.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level = \"untrusted\""))
         #expect(lines.contains { $0.hasPrefix("hooks.SessionStart = ") && $0.contains("_report --event session --agent codex") })
-        #expect(lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") && $0.contains("_report --event permission --agent codex") })
-        #expect(lines.contains { $0.hasPrefix("hooks.Stop = ") && $0.contains("_report --event stop --agent codex") })
+        #expect(!lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") })
+        #expect(!lines.contains { $0.hasPrefix("hooks.Stop = ") })
         #expect(lines.contains("[mcp_servers.orchestra]"))
         #expect(lines.contains("command = \"/abs/orchestra-mcp\""))
         #expect(lines.contains("default_tools_approval_mode = \"approve\""))
@@ -205,12 +247,12 @@ struct CodexAdapterArgvTests {
             "hooks": .array([
                 .object([
                     "type": .string("command"),
-                    "command": .string("/bin/orchestra _report --event stop"),
+                    "command": .string("/bin/orchestra _report --event session"),
                 ]),
             ]),
         ])
         #expect(TOMLOverride.value(hook) ==
-                "{hooks = [{command = \"/bin/orchestra _report --event stop\", type = \"command\"}]}")
+                "{hooks = [{command = \"/bin/orchestra _report --event session\", type = \"command\"}]}")
         #expect(TOMLOverride.value(.null) == nil)
     }
 
@@ -264,9 +306,9 @@ struct CodexAdapterArgvTests {
         #expect(a.sessionsDir == "/tmp/ch/sessions")
     }
 
-    // Defect 2 · hook-trust. This customized Codex build TRUST-GATES hooks behind a launch modal Orchestra
-    // can't answer → the Stop hook never runs → the inbox never drains. `--dangerously-bypass-hook-trust`
-    // enables the launch-scoped Orchestra hooks. It is the ONLY empirically-verified
+    // Defect 2 · hook trust. This customized Codex build trust-gates hooks behind a launch modal Orchestra
+    // cannot answer. `--dangerously-bypass-hook-trust` enables the launch-scoped Orchestra hooks. It is the
+    // only empirically verified
     // mechanism (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a
     // config-seed is fragile). Build-gated so a stock codex-rs build (no gate, no flag) still launches;
     // `hookTrustBypass:` injects the probe result for hermetic tests.
@@ -352,157 +394,43 @@ struct CodexHookTrustProbeTests {
     }
 }
 
-@Suite("CodexAdapter — rollout session-id discovery")
+@Suite("CodexAdapter — bound rollout metadata")
 struct CodexAdapterDiscoveryTests {
-    /// Make an injected rollout-discovery home + adapter.
     private func makeHome() -> (home: String, adapter: CodexAdapter) {
         let home = NSTemporaryDirectory() + "codexhome-\(UUID().uuidString)"
         return (home, CodexAdapter(codexHome: home))
     }
-    private func writeRollout(_ home: String, day: String, sessionId: String,
-                              cwd: String = "/wt", startedAt: String? = nil,
-                              threadSource: String? = nil, parentThreadId: String? = nil,
-                              mtime: Date? = nil) {
+    private func writeRollout(_ home: String, sessionId: String) {
+        let day = "2026/07/01"
         let dir = "\(home)/sessions/\(day)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/rollout-2026-07-01T10-00-00-\(sessionId).jsonl"
-        var fields = ["\"id\":\"\(sessionId)\"", "\"cwd\":\"\(cwd)\""]
-        if let startedAt { fields.append("\"timestamp\":\"\(startedAt)\"") }
-        if let threadSource { fields.append("\"thread_source\":\"\(threadSource)\"") }
-        if let parentThreadId { fields.append("\"parent_thread_id\":\"\(parentThreadId)\"") }
-        let line = "{\"type\":\"session_meta\",\"payload\":{\(fields.joined(separator: ","))}}\n"
+        let line = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(sessionId)\"}}\n"
         try? line.write(toFile: path, atomically: true, encoding: .utf8)
-        if let m = mtime {
-            try? FileManager.default.setAttributes([.modificationDate: m], ofItemAtPath: path)
-        }
     }
 
-    private func date(_ timestamp: String) -> Date {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: timestamp)!
-    }
-
-    @Test("sessionInfo discovers the session id from the newest rollout file")
-    func discoversFromRollout() throws {
+    @Test("a bound app-server id selects its rollout metadata and resume target")
+    func boundIdSelectsMetadata() throws {
         let (home, adapter) = makeHome()
         let sid = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/07/01", sessionId: sid)
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: []))
+        writeRollout(home, sessionId: sid)
+        let info = try #require(adapter.sessionInfo(
+            AdapterContext(cwd: "/wt"), current: sid, prior: ["old"]
+        ))
         #expect(info.sessionId == sid)
         #expect(info.transcriptPath?.hasSuffix("-\(sid).jsonl") == true)
-        #expect(info.resumeCmd?.contains("resume") == true)
         #expect(info.resumeCmd?.contains(sid) == true)
-    }
-
-    @Test("discovery picks the NEWEST rollout by mtime")
-    func discoversNewest() throws {
-        let (home, adapter) = makeHome()
-        let older = UUID().uuidString.lowercased()
-        let newer = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/06/30", sessionId: older, mtime: Date(timeIntervalSince1970: 1000))
-        writeRollout(home, day: "2026/07/01", sessionId: newer, mtime: Date(timeIntervalSince1970: 2000))
-        #expect(adapter.discover() == newer)
-    }
-
-    @Test("sessionInfo discovers newest rollout for the card cwd, not global newest")
-    func sessionInfoDiscoversByCwd() throws {
-        let (home, adapter) = makeHome()
-        let target = UUID().uuidString.lowercased()
-        let other = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/07/01", sessionId: target,
-                     cwd: "/work/target", mtime: Date(timeIntervalSince1970: 1000))
-        writeRollout(home, day: "2026/07/01", sessionId: other,
-                     cwd: "/work/other", mtime: Date(timeIntervalSince1970: 2000))
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/work/target"),
-                                                    current: nil, prior: []))
-        #expect(info.sessionId == target)
-        #expect(info.transcriptPath?.hasSuffix("-\(target).jsonl") == true)
-    }
-
-    @Test("launch discovery uses rollout creation time and ignores same-cwd subagents")
-    func launchDiscoveryUsesCreationTimeAndIgnoresSubagents() throws {
-        let (home, adapter) = makeHome()
-        let stale = UUID().uuidString.lowercased()
-        let launched = UUID().uuidString.lowercased()
-        let subagent = UUID().uuidString.lowercased()
-        let cutoff = date("2026-07-01T10:00:00Z")
-
-        // An older card can still append after a new card starts, so its file mtime is not its launch time.
-        writeRollout(home, day: "2026/07/01", sessionId: stale,
-                     startedAt: "2026-07-01T09:59:00Z", mtime: date("2026-07-01T10:00:03Z"))
-        writeRollout(home, day: "2026/07/01", sessionId: launched,
-                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
-                     mtime: date("2026-07-01T10:00:01Z"))
-        writeRollout(home, day: "2026/07/01", sessionId: subagent,
-                     startedAt: "2026-07-01T10:00:02Z", threadSource: "subagent",
-                     parentThreadId: launched, mtime: date("2026-07-01T10:00:02Z"))
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
-                                                    current: nil, prior: []))
-        #expect(info.sessionId == launched)
-    }
-
-    @Test("launch discovery ignores a parent-linked rollout with a nonstandard thread source")
-    func launchDiscoveryIgnoresParentLinkedRollout() throws {
-        let (home, adapter) = makeHome()
-        let parent = UUID().uuidString.lowercased()
-        let child = UUID().uuidString.lowercased()
-        let cutoff = date("2026-07-01T10:00:00Z")
-
-        writeRollout(home, day: "2026/07/01", sessionId: parent,
-                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user")
-        writeRollout(home, day: "2026/07/01", sessionId: child,
-                     startedAt: "2026-07-01T10:00:02Z", threadSource: "worker",
-                     parentThreadId: parent)
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
-                                                    current: nil, prior: []))
-        #expect(info.sessionId == parent)
-    }
-
-    @Test("unbound discovery refuses multiple primary rollouts in one cwd")
-    func unboundDiscoveryRefusesMultiplePrimaryRollouts() throws {
-        let (home, adapter) = makeHome()
-        let first = UUID().uuidString.lowercased()
-        let second = UUID().uuidString.lowercased()
-        writeRollout(home, day: "2026/07/01", sessionId: first,
-                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
-                     mtime: date("2026-07-01T10:00:03Z"))
-        writeRollout(home, day: "2026/07/01", sessionId: second,
-                     startedAt: "2026-07-01T10:00:02Z", threadSource: "user",
-                     mtime: date("2026-07-01T10:00:04Z"))
-
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: []))
-        #expect(info.sessionId == nil)
-    }
-
-    @Test("current id wins over discovery")
-    func currentWins() throws {
-        let (home, adapter) = makeHome()
-        writeRollout(home, day: "2026/07/01", sessionId: UUID().uuidString.lowercased())
-        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: "explicit-id", prior: ["old"]))
-        #expect(info.sessionId == "explicit-id")
         #expect(info.priorSessionIds == ["old"])
     }
 
-    @Test("no rollouts → nil session id, nil resume")
-    func noRollouts() {
-        let (_, adapter) = makeHome()   // empty home
+    @Test("an unbound card never derives identity from rollout files")
+    func unboundIsIdentitySilent() {
+        let (home, adapter) = makeHome()
+        writeRollout(home, sessionId: UUID().uuidString.lowercased())
         let info = adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: [])
         #expect(info?.sessionId == nil)
+        #expect(info?.transcriptPath == nil)
         #expect(info?.resumeCmd == nil)
-    }
-
-    @Test("a non-UUID rollout tail is rejected (never a fabricated id)")
-    func rejectsNonUuidTail() {
-        let (home, adapter) = makeHome()
-        let dir = "\(home)/sessions/2026/07/01"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try? "{}".write(toFile: "\(dir)/rollout-2026-07-01T10-00-00-not-a-uuid.jsonl",
-                        atomically: true, encoding: .utf8)
-        #expect(adapter.discover() == nil)
     }
 }
 
@@ -533,7 +461,8 @@ struct CodexSpawnWiringTests {
         #expect(t.agentId == "codex")
         let name = sessions.sessionName(t.id)
         let argv = try #require(sessions.ensureArgv[name])
-        #expect(argv.first == "fake-codex")
+        #expect(argv.first == "/bin/bash")                         // tmux owns the app-server/TUI wrapper
+        #expect(argv.contains("fake-codex"))                       // both server + stock TUI use the adapter binary
         #expect(argv.contains("read-only"))
         #expect(argv.contains("never"))
         // The service still stamps its own launch epoch, but Codex chooses its own native home.
@@ -569,7 +498,7 @@ struct CodexModelRoutingTests {
 
     /// A registry with a side-effect-free default agent (a Stub keyed "claude-code", so the real
     /// ClaudeTrust write to ~/.claude.json never fires) alongside Codex with a fake bin and injected
-    /// rollout-discovery home under the scratch base. Distinct model catalogs (m1/m2 vs gpt-*) keep routing
+    /// rollout metadata home under the scratch base. Distinct model catalogs (m1/m2 vs gpt-*) keep routing
     /// unambiguous.
     private func isolatedRegistry(_ base: String) -> AgentRegistry {
         let stub = StubAdapter(transcriptDir: base + "/tx", id: "claude-code", name: "Stub")
@@ -598,7 +527,8 @@ struct CodexModelRoutingTests {
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
-        #expect(argv.first == "fake-codex")                         // launched the Codex adapter's argv
+        #expect(argv.first == "/bin/bash")                         // launched the app-server/TUI wrapper
+        #expect(argv.contains("fake-codex"))                       // whose provider binary is Codex
         #expect(!argv.contains("read-only"))                        // default card = Codex's own permissioning
         try? FileManager.default.removeItem(atPath: base)
     }

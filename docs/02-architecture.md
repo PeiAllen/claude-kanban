@@ -38,20 +38,32 @@ flowchart TB
   TMUX --- CLAUDE["Claude Code agent"]
   TMUX --- CODEX["Codex agent"]
 
-  CLAUDE ==>|"PUSH — statusLine + hooks<br/>orchestra _report → hook RPC"| UDS
-  CODEX -->|"writes"| ROLL[("Codex rollout .jsonl")]
+  CLAUDE ==>|"PUSH — metadata + structured hooks<br/>orchestra _report → hook RPC"| UDS
+  CODEX --- AS["codex app-server"]
+  AS ==>|"current thread / turn events"| SVC
+  CODEX -->|"writes metadata"| ROLL[("Codex rollout .jsonl")]
   SVC -.->|"TAIL — pollTelemetry + RolloutTailer"| ROLL
 ```
 
 Two details in that picture are load-bearing. First, the three clients are *interchangeable* because
 they are the same `ControlClient` against the same `CommandRegistry` — the CLI's verbs and the MCP
 tool list are generated from one vocabulary, so they cannot drift apart. Second, the two agents
-report back by **different mechanisms**, captured by `AgentCapabilities.telemetry`: Claude Code is
+report metadata by **different mechanisms**, captured by `AgentCapabilities.telemetry`: Claude Code is
 `hooksPush` (thick arrow — its statusLine and hooks shell out to `orchestra _report`, which sends one
-typed `hook` RPC back over the same socket), while Codex is `fileTail` (dotted arrow — it pushes
-nothing, and the daemon's 2-second `pollTelemetry` tick tails its rollout JSONL via `RolloutTailer`).
-Both normalize into the same card telemetry, so no code downstream of the adapter branches on which
-agent is running. Terminal bytes never cross this plane — SwiftTerm attaches to tmux directly.
+typed `hook` RPC back over the same socket), while Codex is `fileTail` (dotted arrow — the daemon's
+2-second `pollTelemetry` tick tails its rollout JSONL via `RolloutTailer`). Those paths report context,
+model, and display detail; they do not decide Codex session identity or live turn status.
+
+Provider observation is a separate seam. Claude's structured hooks carry the current session and prompt
+identity; a narrow global `claude agents --json` snapshot repairs only a hook-silent Ctrl-C left locally
+running. Codex's launch-local app-server owns both its thread identity and runtime state. An unbound
+observer reads the app-server's loaded threads and accepts only one exact-cwd, launch-scoped root,
+non-ephemeral candidate; otherwise it waits for a matching `thread/started`. Once bound,
+`thread/resume` reconciles the snapshot and
+seeds the current turn fence when its snapshot is active; pushed turn/thread updates maintain it. The
+coordinator also retains that fence across Codex's idle-before-completed notification order. Both adapters
+emit normalized `AgentSignal`s into the same reducer, so no downstream consumer branches on the provider.
+Terminal bytes never cross this plane — SwiftTerm attaches to tmux directly.
 
 ## The daemon (`orchestrad`)
 
@@ -79,7 +91,8 @@ On startup the daemon (`Sources/orchestrad/main.swift`):
    orphaned tmux sessions, and (as a safety net) flips a `.live` card to `dead` if its session vanished
    without a `SessionEnd` hook (see [the Convergence model](#the-convergence-model)) — and, alongside it,
    drives [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter), the rollout-tail tick that
-   pulls live state for `fileTail` agents (Codex) that don't push it.
+   refreshes metadata for `fileTail` agents (Codex). Turn state comes from structured provider events,
+   never this polling loop.
 5. **Installs a `SIGTERM` flush handler** (launchd/systemd send `SIGTERM` before `SIGKILL` on a clean
    stop/restart) that flushes any debounced `tasks.json` write, then parks on `dispatchMain()`.
 
@@ -143,13 +156,14 @@ reconciler step — routes through it, which in one call:
    set is `.rejected`, the stored phase untouched; a same-phase call is a `.noop` — except the
    `relaunching → relaunching` supersede self-edge, which re-arms a fresh generation instead of being
    swallowed);
-2. stamps `phaseChangedAt` and, on a (re)launch-bound entry, bumps `sessionEpoch` — all inside **one**
-   `store.update` patch that also applies the caller's `mutate` closure, so companion field writes
+2. stamps `phaseChangedAt` when the lifecycle phase or live `TurnStatus` changes and, on a
+   (re)launch-bound entry, bumps `sessionEpoch` — all inside **one** `store.update` patch that also
+   applies the caller's `mutate` closure, so companion field writes
    (`archived = true`, a cleared `agentSessionId`, a `deadReason`, a folded `pendingSeed`) land atomically
    with the phase;
 3. fires the terminal `Conclusion` exactly once, on entry into a terminal phase from a non-terminal one —
    `wait` resolves off this, never off `git`;
-4. wakes a message parked while the card was being born (`wakeIfPending`) on entry into `.live`.
+4. retires any old per-session runtime handle before a replacement session can install its own.
 
 ### `sessionEpoch` — making stale signals harmless
 
@@ -397,47 +411,77 @@ worktree cwd (a being-born or spawn-failed card has none).
 `dead(.spawnFailed)` — like every other dead reason — maps through `Phase.displayKey` to the `.dead` key
 and renders **Dead**, never a stale "Creating…"; only `.archived` reads as `.done` ("Done").
 
-## The report channel
+## Provider observation and metadata channel
 
-The fourth participant is the **agent itself**. Each adapter supplies its native hook configuration at
-launch — Claude through a managed `--settings` file and Codex through a per-launch profile file (`-p`) —
-that wires the agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind>
---agent <id>`. Codex therefore keeps its normal native home, authentication, plugins, and state instead of
-receiving an Orchestra-owned `CODEX_HOME`.
-The helper resolves the card's adapter, parses at the edge, and sends one typed `hook` RPC to the daemon's
-adapter-free `handleHook` over the same control socket — which applies the `StatusReport` (and returns
-orientation/inbox-drain content to print):
+The fourth participant is the **agent itself**. Its two data planes remain deliberately separate:
+`StatusReport` carries session identity and display metadata, while a live card's `AgentState` is reduced
+only from provider-normalized `AgentSignal`s. Lifecycle is still `Task.phase`; entering `live` starts with
+an `unavailable` turn status until current provider evidence arrives. A launch argument, seed, inbox
+message, activity string, or process being alive cannot manufacture `running` or `waiting`.
+
+Each adapter supplies its native launch configuration — Claude through a managed `--settings` file and
+Codex through a per-launch profile file (`-p`) — without replacing Codex's normal home, authentication,
+plugins, or state. Claude's `statusLine` and structured hooks call the thin edge helper,
+`orchestra _report --event <kind> --agent <id>`, which sends a typed `hook` RPC over the control socket.
+The adapter separates metadata from a current-session observation before it reaches the provider-neutral
+reducer. Hook responses carry SessionStart orientation only:
 
 | Claude event | `_report --event` | What it updates on the card |
 |--------------|-------------------|------------------------------|
 | statusLine refresh | `statusline` | `ctxPct`, model id + display, session id, session name |
 | `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact); also injects the card's live column/mode/self-id **orientation** as `additionalContext` |
-| `UserPromptSubmit` | `prompt` | the prompt text → auto-title; run-state → `.running` |
-| `Pre/PostToolUse` | `tool` | `desc` (a live blurb of what the agent is doing) |
-| `Notification` / `Stop` | `notify` | `desc`; run-state → `.waiting(_)` |
+| `UserPromptSubmit` | `prompt` | prompt text → auto-title; identified top-level turn start when its id is distinct |
+| `MessageDisplay` | `messagedisplay` | exact main-turn activity; reactivates the same prompt or establishes a distinct queued turn when no turn is active |
+| `Pre/PostToolUse` | `pretool` / `posttool` | activity detail; main `PreToolUse` carries the same turn-activity evidence |
+| `PermissionRequest` / known input tool | `permission` / `pretool` | current provider `humanNeed`, tagged `.permission`, `.input`, or `.unspecified` |
+| resolution event | tool hook | clears provider human need only within the current correlated turn |
+| `Stop` | `stop` | exact current top-level turn completion |
 | `SessionEnd` | `sessionend` | exit reason → may drive the card to `dead(_)` via the `transition()` funnel |
 
-This is a **two-way** channel: agent → Orchestra carries live fields, and the Orchestra → agent direction
-is now **realized** on several paths — the F3 Stop-drain injects the durable inbox back at turn-end via the
-Stop hook, the F1 resume seed (PR C3) and the new-card spawn seed (`SpawnInput.seed`, PR D3) ride a session's
-opening turn (as an argv positional, not this settings file), and the **SessionStart hook** now folds the
-card's live column/mode/self-id **orientation** into the session via its `additionalContext` envelope (see
-[the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel)).
+Claude accepts only prompt/session-correlated observations: delayed observations and subagent activity
+cannot change the main turn, while subagent permission/input hooks still roll up to the card's aggregate
+human need. A missing terminal identity fails closed to `unavailable`, and an older event is ignored.
+Because Claude emits no terminal hook on Ctrl-C, one global non-overlapping snapshot runs every ten seconds
+only while an eligible Claude card remains `running`. It can apply only exact-session, unchanged-generation
+`running → waiting`; it never creates `running`/`unavailable`, changes `humanNeed`, or repairs `waiting`.
+
+Codex uses the hook channel for SessionStart orientation, while its turn state and provider-human need come
+only from a launch-local app-server observer. The rollout tail is metadata only: it discovers the session
+and reports context, model, and coarse activity text.
+
+`humanNeed` describes the provider's current request and is not itself a second phase. The separate,
+durable `pendingQuestion` records a task-authored question. `Task.requiresHuman` is their pure OR, so an
+ordinary `waiting` turn is not a Needs You reason. `pendingQuestion` clears only when a positively
+identified **distinct** next turn starts, including `running → running`; reconnecting the same session,
+provider resolution, opening the harness, sending a message, resolving a native prompt, and inbox delivery
+leave it alone.
+
+This is a **two-way** channel. Agent → Orchestra carries metadata and provider observations; Orchestra →
+agent carries authored launch or handoff context and SessionStart orientation in `additionalContext`.
+
+Normal inbox delivery is a separate per-live-session path. `send` first persists a local row, then a sender
+uses the provider handle held only in `CardRuntime`. Claude's endpoint and token are ephemeral hook metadata;
+Claude Stop remains status-only. Codex's app-server observer remains the status authority while a separate
+sender peer submits `turn/start`. On provider acceptance the row becomes `handedOff`; that means the harness
+accepted the request, not that a model read or acted on it. The sender never emits status, and it does not
+wait for `running`, `waiting`, `unavailable`, attention, `pendingQuestion`, or `wait`. See
+[the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel).
 
 Two robustness rules matter:
 
 - **Bounded sends.** The statusLine report is a ~50 ms synchronous call cancelled on the next tick, so
   a slow daemon never stalls the agent's status bar; hooks get a ~2 s budget. The helper always prints
   the status line to stdout *before* attempting the network send.
-- **Monotonic seq guard.** Every snapshot report carries a sequence number; the daemon drops or
-  coalesces stale ones so a slow `ctxPct` can't land after a fresher value.
+- **Monotonic metadata seq guard.** Snapshot metadata reports carry a sequence number; the daemon drops
+  or coalesces stale ones so a slow `ctxPct` can't land after a fresher value. Turn/human-need signals use
+  provider event order plus Card epoch and provider-session identity instead.
 - **Field-delta writes, not whole-object replace.** `report()`'s persisted write goes through
   `Task.applyReportFields(from:changedFrom:)`, which overlays only the telemetry fields `report()` owns
   (session ids, `desc`, `title`/`titleSource`/`lastSessionName`/`awaitingFirstPrompt`, `ctxPct`, model)
   onto the task currently in the store. That list is a **whitelist**: a field report() mutates but does
   not name here is silently discarded on the way to disk, so every new report-owned field must be added
-  to it. Run-state and dead metadata are *not* overlaid here — they flow through the `transition()`
-  funnel / `markDead` (Stage 2), which is why `status`/`waitReason` no longer appear in this list.
+  to it. Live `AgentState` and dead metadata are *not* overlaid here — normalized signals and lifecycle
+  evidence flow through the `transition()` funnel.
   Being on the list is **not** enough to be written, though: `report()` reads the card, suspends, and
   writes back, so the overlay applies a field only when the report actually *changed* it
   (`changedFrom` is the snapshot it started from). Without that second test, an owned field with a
@@ -445,7 +489,7 @@ Two robustness rules matter:
   restored to the stale value report happened to read, silently and with no self-heal. So every other
   field, and every unchanged owned field, is left exactly as a concurrent RPC left it.
 
-Polling (`tmux capture-pane`) exists only as a *fallback* when the push channel is silent.
+`tmux capture-pane` remains a bounded terminal-render fallback; it is never a status authority.
 
 ## Tracing a command end to end
 
@@ -464,8 +508,9 @@ Spawning a card from the CLI:
    (or the N-tick fallback) the card reaches `.live`.
 4. `ControlServer` returns the new task to the CLI and fans the events out to every subscriber — so the
    app's board updates live, even though the spawn came from the CLI.
-5. The agent starts, its `SessionStart`/statusLine hooks fire, and `_report` begins pushing live state
-   back onto the card.
+5. The agent starts. Its SessionStart/statusLine path supplies metadata and orientation; Claude then
+   supplies current-session observations through structured hooks, while Codex's app-server observer
+   reconciles the current thread and receives turn updates.
 
 The next chapters detail each collaborator: the [data model](03-data-model.md) the service mutates, and
 the [worktree/session/adapter internals](04-cards-worktrees-sessions.md) it drives.

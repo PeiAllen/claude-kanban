@@ -29,7 +29,7 @@ struct VerbContractTests {
         "send": (.convergence, nonArchived),
         "wait": (.mutation, allKinds),
         "inbox-edit": (.mutation, nonArchived), "inbox-remove": (.mutation, nonArchived),
-        "inbox-reorder": (.mutation, nonArchived),
+        "inbox-retry": (.mutation, nonArchived), "inbox-reorder": (.mutation, nonArchived),
         "set-parent": (.mutation, liveDead), "synced": (.mutation, liveDead), "shipped": (.mutation, liveDead),
         "merge-request": (.mutation, liveDead), "borrow": (.mutation, liveDead), "release": (.mutation, liveDead),
         "shell": (.mutation, liveDead), "inspect": (.mutation, liveDead), "closeShell": (.mutation, liveDead),

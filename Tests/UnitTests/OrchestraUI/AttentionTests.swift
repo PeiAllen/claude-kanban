@@ -19,11 +19,10 @@ import Foundation
     /// A card whose timestamps default to `t0` — so "nothing changed since t0" is the baseline and a
     /// test only states the fields it cares about.
     private func card(_ id: String = "01",
-                      phase: Phase = .live(.waiting(.humanTurn)),
+                      phase: Phase = .live(.waiting),
                       treeStat: TreeStat? = nil,
                       pendingQuestion: PendingQuestion? = nil,
                       ctxPct: Double = 0,
-                      hasPendingDelivery: Bool = false,
                       awaitingFirstPrompt: Bool = false,
                       access: CardAccess = .readWrite,
                       at: Date? = nil) -> Task {
@@ -33,7 +32,7 @@ import Foundation
              origin: .worktree, access: access, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, phase: phase,
              phaseChangedAt: at ?? t0, ctxPct: ctxPct, initialPrompt: id,
-             treeStat: treeStat, hasPendingDelivery: hasPendingDelivery,
+             treeStat: treeStat,
              createdAt: t0, updatedAt: at ?? t0)
     }
 
@@ -59,10 +58,14 @@ import Foundation
         #expect(r.first?.label == "dead")
     }
 
-    @Test func permissionRow() {
-        let r = reasons(card(phase: .live(.waiting(.permission))))
-        #expect(r.first?.reason == .permission)
-        #expect(r.first?.label == "permission")
+    @Test func humanRequiredRowCombinesProviderAndQuestionSources() {
+        let provider = card(phase: .live(.init(turnStatus: .running, humanNeed: .permission)))
+        let question = card(pendingQuestion: PendingQuestion(text: "which db?", declaredAt: t0))
+
+        #expect(provider.requiresHuman)
+        #expect(question.requiresHuman)
+        #expect(reasons(provider).first?.reason == .humanRequired)
+        #expect(reasons(question).first?.reason == .humanRequired)
     }
 
     /// Row 3 fires only when the merge target has NO owning card — the root→main case in practice.
@@ -82,11 +85,30 @@ import Foundation
         #expect(r.isEmpty)
     }
 
-    @Test func questionRow_declared() {
+    @Test func humanRequiredRow_declaredQuestion() {
         let c = card(pendingQuestion: PendingQuestion(text: "which db?", declaredAt: t0))
         let r = reasons(c)
-        #expect(r.first?.reason == .question)
+        #expect(r.first?.reason == .humanRequired)
         #expect(r.first?.label == "question")
+    }
+
+    @Test func humanRequiredRow_detectedInput() {
+        let state = AgentState(
+            turnStatus: .running,
+            humanNeed: .input
+        )
+        let r = reasons(card(phase: .live(state)))
+        #expect(r.first?.reason == .humanRequired)
+        #expect(r.first?.label == "input needed")
+    }
+
+    @Test func humanNeedExplainsAnIdleCardSoItDoesNotAlsoStall() {
+        let state = AgentState(
+            turnStatus: .waiting(),
+            humanNeed: .input
+        )
+        let r = reasons(card(phase: .live(state)), now: late)
+        #expect(r.map(\.reason) == [.humanRequired])
     }
 
     @Test func ctxCriticalRow_rendersPercent() {
@@ -166,11 +188,9 @@ import Foundation
     }
 
     /// The exemption is carried by `humanPaced` ALONE — `awaitingFirstPrompt` is NOT consulted by the
-    /// predicate. A "New agent" card the human made but hasn't prompted is exempt because the DAEMON sets
-    /// `humanPaced` at that promptless launch (and migrates legacy provisional cards on decode), not
-    /// because the client reads `awaitingFirstPrompt`. Keeping the predicate single-bit is what lets an
-    /// agent-delivered card that never cleared `awaitingFirstPrompt` (a Codex provisional card given work)
-    /// still stall: the delivery flips `humanPaced` false, and the sticky flag no longer masks it.
+    /// predicate. A promptless card can be exempt because a future stalled-state policy sets
+    /// `humanPaced`, not because the client reads `awaitingFirstPrompt`. Delivery does not mutate this
+    /// flag, so the predicate stays independent of inbox state.
     @Test func stall_awaitingFirstPromptAloneDoesNotExempt() {
         #expect(reasons(card(awaitingFirstPrompt: true), now: late).contains { $0.reason == .stalled })
         #expect(!reasons(card(awaitingFirstPrompt: true), now: late, humanPaced: true).contains { $0.reason == .stalled })
@@ -179,12 +199,8 @@ import Foundation
     @Test func stall_declaredQuestionSuppressesIt() {
         let c = card(pendingQuestion: PendingQuestion(text: "q", declaredAt: t0))
         let r = reasons(c, now: late)
-        #expect(r.contains { $0.reason == .question })
+        #expect(r.contains { $0.reason == .humanRequired })
         #expect(!r.contains { $0.reason == .stalled })
-    }
-
-    @Test func stall_ownPendingDeliveryDefeatsIt() {
-        #expect(!reasons(card(hasPendingDelivery: true), now: late).contains { $0.reason == .stalled })
     }
 
     @Test func stall_activeDescendantDefeatsIt() {
@@ -201,22 +217,9 @@ import Foundation
         }
     }
 
-    /// A quiet child with queued work is imminently active — an ancestor must not announce "wave done".
-    @Test func stall_descendantPendingDeliveryDefeatsIt() {
-        let child = card("03", hasPendingDelivery: true)
-        #expect(!reasons(card(), descendants: [child], now: late).contains { $0.reason == .stalled })
-    }
-
     @Test func stall_nonIdleAttachedAgentDefeatsIt() {
         let workingReviewer = card("02", phase: .live(.running), access: .readOnly)
         #expect(!reasons(card(), attached: [workingReviewer], now: late).contains { $0.reason == .stalled })
-    }
-
-    /// A reviewer that READS idle but has a message queued is about to speak — the delivery bit is part
-    /// of "settled", not a separate check, and dropping it from the attached branch must fail here.
-    @Test func stall_attachedAgentWithPendingDeliveryDefeatsIt() {
-        let armedReviewer = card("02", hasPendingDelivery: true, access: .readOnly)
-        #expect(!reasons(card(), attached: [armedReviewer], now: late).contains { $0.reason == .stalled })
     }
 
     /// Concluded and dead reviewers are both SETTLED, so neither defeats the quiet check — a parked
@@ -279,8 +282,8 @@ import Foundation
         let reviewer = card("02", access: .readOnly)
         #expect(!reasons(reviewer, canStall: false, now: late).contains { $0.reason == .stalled })
 
-        let blocked = card("02", phase: .live(.waiting(.permission)), access: .readOnly)
-        #expect(reasons(blocked, canStall: false, now: late).contains { $0.reason == .permission })
+        let blocked = card("02", phase: .live(.init(turnStatus: .running, humanNeed: .permission)), access: .readOnly)
+        #expect(reasons(blocked, canStall: false, now: late).contains { $0.reason == .humanRequired })
     }
 
     /// canStall gates every isStalled path, mergeStalled included.
@@ -292,22 +295,21 @@ import Foundation
     // MARK: - priority + overflow
 
     @Test func priority_isHardBlockedFirst() {
-        #expect(Attention.Reason.allCases.map(\.rawValue) == [0, 1, 2, 3, 4, 5])
-        #expect(Attention.Reason.dead.rawValue < Attention.Reason.permission.rawValue)
-        #expect(Attention.Reason.permission.rawValue < Attention.Reason.mergeRequested.rawValue)
-        #expect(Attention.Reason.mergeRequested.rawValue < Attention.Reason.question.rawValue)
-        #expect(Attention.Reason.question.rawValue < Attention.Reason.stalled.rawValue)
+        #expect(Attention.Reason.allCases.map(\.rawValue) == [0, 1, 2, 3, 4])
+        #expect(Attention.Reason.dead.rawValue < Attention.Reason.humanRequired.rawValue)
+        #expect(Attention.Reason.humanRequired.rawValue < Attention.Reason.mergeRequested.rawValue)
+        #expect(Attention.Reason.mergeRequested.rawValue < Attention.Reason.stalled.rawValue)
         #expect(Attention.Reason.stalled.rawValue < Attention.Reason.ctxCritical.rawValue)
     }
 
     /// Multi-reason cards sort hard-blocked-first, so the L1 chip's top label is the most urgent and
     /// the rest become its "+N".
     @Test func multipleReasons_sortByPriority() {
-        let c = card(phase: .live(.waiting(.permission)),
+        let c = card(phase: .live(.init(turnStatus: .running, humanNeed: .permission)),
                      pendingQuestion: PendingQuestion(text: "q", declaredAt: t0),
                      ctxPct: 91)
         let r = reasons(c, now: late)
-        #expect(r.map(\.reason) == [.permission, .question, .ctxCritical])
+        #expect(r.map(\.reason) == [.humanRequired, .ctxCritical])
     }
 
     @Test func quietCard_hasNoReasons() {
@@ -318,8 +320,8 @@ import Foundation
 
     @Test func chipText_topLabelThenOverflow() {
         #expect(Attention.chipText([]) == nil)                                   // quiet ⇒ nothing renders
-        #expect(Attention.chipText([.init(.permission, "permission")]) == "permission")
-        #expect(Attention.chipText([.init(.permission, "permission"),
+        #expect(Attention.chipText([.init(.humanRequired, "permission")]) == "permission")
+        #expect(Attention.chipText([.init(.humanRequired, "permission"),
                                     .init(.ctxCritical, "ctx 91%")]) == "permission +1")
     }
 

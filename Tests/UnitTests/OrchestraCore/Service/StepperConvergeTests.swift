@@ -187,23 +187,21 @@ struct LaunchStepperTests {
         }
         #expect(seed == "SEED")
 
-        // A real (non-provisional) card with NO transcript → blank, initialPrompt submitted, landing .running.
+        // A real (non-provisional) card with NO transcript → blank, with the initial prompt submitted.
         let blankReal = try #require(await env.svc.store.get(
             try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "do it", repo: repo, branch: "c")).id))
-        guard case .blank(let land, let prompt) = deriveLaunchFlavor(blankReal, env.adapter) else {
+        guard case .blank(let prompt) = deriveLaunchFlavor(blankReal, env.adapter) else {
             Issue.record("expected .blank"); return
         }
         #expect(prompt == "do it")
-        #expect(land == .running)
 
-        // A never-prompted (provisional) card → blank with NO positional, landing .waiting.
+        // A never-prompted (provisional) card → blank with no positional prompt.
         let provisional = try #require(await env.svc.store.get(
             try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "d")).id))
-        guard case .blank(let land2, let prompt2) = deriveLaunchFlavor(provisional, env.adapter) else {
+        guard case .blank(let prompt2) = deriveLaunchFlavor(provisional, env.adapter) else {
             Issue.record("expected .blank"); return
         }
         #expect(prompt2 == nil)
-        #expect(land2 == .waiting(.humanTurn))
     }
 
     @Test("test_launchStepReachesLiveOnReady_immediate")   // .relaunchLiveness (stub) lands on ensure
@@ -243,7 +241,7 @@ struct LaunchStepperTests {
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)
     }
 
-    @Test("test_launchStepReachesLiveOnReady_codex")   // .rolloutMeta awaits; the ready signal resolves it
+    @Test("test_launchStepReachesLiveOnReady_codex")
     func test_launchStepReachesLiveOnReady_codex() async throws {
         let env = TestEnv.make(grace: 10, capabilities: ReadinessSignalTests.codexStubCaps, proc: cfgFake())
         let card = try await seedLaunchingAwaited(env, branch: "b")
@@ -353,7 +351,7 @@ struct TeardownStepperTests {
         #expect(after.archived)                                              // companion Bool mirror
         #expect(env.sessions.killed.contains(env.sessions.sessionName(parent.id)))   // session killed
         #expect(env.worktrees.removedForce.contains { $0.path == parent.cwd && $0.force == true })  // reclaim (release cleared ⇒ forced)
-        let nudges = await ctx.inbox.peek(child.id)                          // deterministic child nudged
+        let nudges = try await env.svc.inboxPeek(child.id)                   // deterministic child nudged
         #expect(nudges.count == 1)
         #expect(nudges.first?.text.contains("parent") == true)
     }
@@ -406,7 +404,7 @@ struct TeardownStepperTests {
         let fresh2 = try #require(await env.svc.store.get(parent.id))
         try await TeardownStepper().step(fresh2, ctx)
 
-        #expect(await ctx.inbox.peek(child.id).count == 1)   // dedupKey ⇒ nudged only once
+        #expect(try await env.svc.inboxPeek(child.id).count == 1)   // dedupKey ⇒ nudged only once
         #expect(try #require(await env.svc.store.get(parent.id)).phase.kind == .archivedComplete)
     }
 }

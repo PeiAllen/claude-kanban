@@ -28,7 +28,7 @@ struct SpawnSeedTests {
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "fk2", seed: "SLICE"))
         #expect(t.awaitingFirstPrompt == false)
-        #expect(t.phaseDisplay == .running)
+        #expect(t.turnStatus == .unavailable)  // the seed selects argv only
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(try #require(argv.last).contains("SLICE"))
     }

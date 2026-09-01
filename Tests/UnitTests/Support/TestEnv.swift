@@ -75,11 +75,10 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
-        // Share ONE `now` provider across the Inbox and the service so lease/stuck stamping and the
-        // arm's expiry math read a single timeline — a TestClock advance then moves both.
+        // Share one time source across the Inbox and the service so persistence assertions use a
+        // deterministic timeline.
         let nowProvider: @Sendable () -> Date = now ?? { Date() }
-        let inbox = Inbox(path: base + "/inbox.json",
-                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
+        let inbox = Inbox(path: base + "/inbox.json", now: nowProvider)
         let extras = extraAgents.map {
             StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities,
                         id: $0.id, name: $0.id, modelIds: $0.models)
@@ -101,6 +100,7 @@ enum TestEnv {
     /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
     /// itself a realistic "fresh daemon" trait.
     static func remake(base: String, capabilities: AgentCapabilities = .stub,
+                       registry: AgentRegistry? = nil,
                        clock: any Clock<Duration> = ContinuousClock(),
                        now: (@Sendable () -> Date)? = nil,
                        proc: (any ProcRunning)? = nil)
@@ -117,10 +117,9 @@ enum TestEnv {
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let nowProvider: @Sendable () -> Date = now ?? { Date() }
-        let inbox = Inbox(path: base + "/inbox.json",
-                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
+        let inbox = Inbox(path: base + "/inbox.json", now: nowProvider)
         let svc = OrchestraService(config: config, store: store,
-                                   registry: AgentRegistry(adapters: [adapter]),
+                                   registry: registry ?? AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
                                    clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),
@@ -155,7 +154,7 @@ enum TestEnv {
     /// now record the intent (`→ .relaunching` or `→ .creatingWorktree`) and RETURN; the reconciler's steppers
     /// drive the walk to `.live`. This drives `reconcile()` until `id` is `.live`, hand-delivering the agent's
     /// readiness signal each transitional tick when `inject` is set (needed for AWAITING caps —
-    /// `.sessionStartHook`/`.rolloutMeta`; harmless for the immediate `.relaunchLiveness` stub). Returns the
+    /// `.sessionStartHook`; harmless for the immediate `.relaunchLiveness` stub). Returns the
     /// live card.
     @discardableResult
     /// A `ControlClient` pointed at an IN-PROCESS test daemon, with deadlines sized for the test machine.
@@ -246,7 +245,7 @@ enum TestEnv {
     ///
     /// Readiness-cap contract: the DEFAULT stub adapter is `.relaunchLiveness` (readiness = a successful
     /// `ensure`, immediate — the reconcile ticks alone suffice). For an AWAITING cap
-    /// (`.sessionStartHook`/`.rolloutMeta`) the N=3 `launchReadyTicks` fallback (now `inFlightSteps`-
+    /// (`.sessionStartHook`) the N=3 `launchReadyTicks` fallback (now `inFlightSteps`-
     /// independent, per Task 2 finding 2) resolves the launch waiter within three ticks, so this STILL
     /// converges with no hand-delivered signal. Use `spawnAwaited` when a test must exercise the agent's
     /// OWN readiness signal deterministically (it injects `report(sessionSource:)`).
@@ -274,7 +273,7 @@ enum TestEnv {
     /// Spawn through the AWAITING launch path and reach `.live` by hand-delivering the agent's readiness
     /// signal. `spawn` persists the card at `.creatingWorktree`; this drives `reconcile()` (Materialize →
     /// Launch), and each tick the card is `.launching` with a pending waiter it delivers
-    /// SessionStart(startup) so an awaiting cap (`.sessionStartHook`/`.rolloutMeta`) confirms on its OWN
+    /// SessionStart(startup) so an awaiting cap (`.sessionStartHook`) confirms on its OWN
     /// signal (not the N=3 fallback). Returns the live card. Use for resume/relaunch-mechanics tests that
     /// need `.claudeCode`/`.codex` but still want a deterministically-live card first.
     @discardableResult
@@ -299,9 +298,7 @@ enum TestEnv {
     }
 
     /// Drive being-born cards to `.live` via the reconciler: repeatedly run `reconcile()` (steps
-    /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live. Used by Codex
-    /// (`.rolloutMeta`) spawn setups whose fixture rollout cannot bind during launch. A fallback card keeps
-    /// its durable launch cutoff until discovery binds one unambiguous, post-cutoff rollout for telemetry.
+    /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live.
     static func reconcileUntilLive(_ svc: OrchestraService, count: Int) async throws {
         try await pollUntil {
             await svc.reconcile()

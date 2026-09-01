@@ -13,6 +13,14 @@ import Foundation
 /// unrelated MCP servers stay untouched while the launch-local `orchestra` server uses the profile's
 /// normal same-name precedence — and argv shrinks to just `-p <name>`.
 enum CodexLaunchConfiguration {
+    struct AppServerLaunch: Equatable {
+        let socketPath: String
+        let logPath: String
+        let serverArgv: [String]
+        let clientArgv: [String]
+        let argv: [String]
+    }
+
     /// Argv that selects this launch's profile file. `prepareToLaunch` must have written the matching
     /// `profilePath` first; codex resolves `-p <name>` to `$CODEX_HOME/<name>.config.toml`.
     static func flags(cwd: String) -> [String] {
@@ -37,6 +45,51 @@ enum CodexLaunchConfiguration {
     /// own `config.toml`/auth, which it never touches.
     static func profilePath(cwd: String, codexHome: String) -> String {
         "\(codexHome)/\(profileName(cwd: cwd)).config.toml"
+    }
+
+    /// Wrap the stock TUI and a launch-local app-server in one tmux-owned process tree. The large
+    /// developer instructions remain in the TUI profile and are forwarded by `thread/start`; only the
+    /// small server-owned hook/trust/MCP values ride `-c`, keeping the tmux argv far below its limit.
+    static func appServerLaunch(binary: String, context: AdapterContext, agentId: String,
+                                clientArguments: [String], positional: [String]) -> AppServerLaunch? {
+        guard let socketPath = context.observationEndpoint?.unixSocketPath,
+              let launcher = Bundle.module.path(forResource: "codex-app-server-launcher", ofType: "sh")
+        else { return nil }
+
+        let endpoint = "unix://\(socketPath)"
+        let serverArgv = [binary, "app-server", "--listen", endpoint]
+            + serverConfigurationFlags(context: context, agentId: agentId)
+        let clientArgv = [binary] + clientArguments
+            + ["--remote", endpoint, "-C", context.cwd]
+            + positional
+        let logPath = socketPath + ".log"
+        let argv = ["/bin/bash", launcher, socketPath, logPath, String(serverArgv.count)]
+            + serverArgv + clientArgv
+        return AppServerLaunch(socketPath: socketPath, logPath: logPath,
+                               serverArgv: serverArgv, clientArgv: clientArgv, argv: argv)
+    }
+
+    /// Values the app-server itself must load. Remote TUI thread parameters forward model, permissions,
+    /// and developer instructions, but they intentionally do not forward hooks, project trust, or MCP
+    /// server tables, so those compact values are repeated on the server command line.
+    private static func serverConfigurationFlags(context: AdapterContext, agentId: String) -> [String] {
+        var overrides: [String] = []
+        if let hooks = HooksRenderer.codexHooks(orchestraBin: context.orchestraBin, agentId: agentId) {
+            for event in hooks.keys.sorted() {
+                guard let value = hooks[event], let encoded = TOMLOverride.value(value) else { continue }
+                overrides.append("hooks.\(TOMLOverride.key(event))=\(encoded)")
+            }
+        }
+
+        let trust = context.trustCwd ? "trusted" : "untrusted"
+        overrides.append("projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level=\(TOMLOverride.string(trust))")
+        overrides.append("mcp_servers.orchestra.command=\(TOMLOverride.string(context.orchestraMCPBin))")
+        overrides.append("mcp_servers.orchestra.args=[]")
+        overrides.append("mcp_servers.orchestra.default_tools_approval_mode=\(TOMLOverride.string("approve"))")
+        if context.access == .readOnly {
+            overrides.append("mcp_servers.orchestra.disabled_tools=[\(TOMLOverride.string("exec"))]")
+        }
+        return overrides.flatMap { ["-c", $0] }
     }
 
     /// The profile body as TOML: the SAME hooks, per-project trust, and developer instructions the launch

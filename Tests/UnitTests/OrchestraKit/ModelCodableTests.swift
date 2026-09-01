@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
-@Suite("Model Codable — Phase / RunState / Task lifecycle fields")
+@Suite("Model Codable — Phase / AgentState / Task lifecycle fields")
 struct ModelCodableTests {
 
     @Test("Phase round-trips every case incl. associated values")
@@ -10,9 +10,11 @@ struct ModelCodableTests {
         let cases: [Phase] = [
             .creatingWorktree,
             .launching,
-            .live(.running),
-            .live(.waiting(.permission)),
-            .live(.waiting(.humanTurn)),
+            .live(.init(turnStatus: .running,
+                        activity: .init(text: "Running tests"),
+                        humanNeed: .permission)),
+            .live(.init(turnStatus: .waiting(.init(resume: .init())))),
+            .live(.init(turnStatus: .unavailable)),
             .relaunching,
             .dead(.spawnFailed),
             .dead(.agentExited),
@@ -41,12 +43,19 @@ struct ModelCodableTests {
             #expect(o["name"] as? String == name)
             #expect(o["detail"] == nil)
         }
-        // Nested enums encode recursively: live → {name:live, detail:{name:waiting, detail:permission}}.
-        let live = try obj(.live(.waiting(.permission)))
+        // Live carries the complete provider-neutral AgentState snapshot.
+        let live = try obj(.live(.init(
+            turnStatus: .waiting(.init(resume: .init())),
+            activity: .init(text: "Waiting for a timer"),
+            humanNeed: .input
+        )))
         #expect(live["name"] as? String == "live")
-        let run = live["detail"] as? [String: Any]
-        #expect(run?["name"] as? String == "waiting")
-        #expect(run?["detail"] as? String == "permission")
+        let state = live["detail"] as? [String: Any]
+        let turn = state?["turnStatus"] as? [String: Any]
+        #expect(turn?["name"] as? String == "waiting")
+        #expect((turn?["detail"] as? [String: Any])?["resume"] is [String: Any])
+        #expect((state?["activity"] as? [String: Any])?["text"] as? String == "Waiting for a timer")
+        #expect(state?["humanNeed"] as? String == "input")
         // DeadReason stays a raw String in `detail`.
         let dead = try obj(.dead(.agentExited))
         #expect(dead["name"] as? String == "dead")
@@ -61,7 +70,7 @@ struct ModelCodableTests {
     func test_phaseKindAndTerminal() {
         #expect(Phase.creatingWorktree.kind == .creatingWorktree)
         #expect(Phase.launching.kind == .launching)
-        #expect(Phase.live(.running).kind == .live)
+        #expect(Phase.live(.init(turnStatus: .running)).kind == .live)
         #expect(Phase.relaunching.kind == .relaunching)
         #expect(Phase.dead(.agentExited).kind == .dead)
         #expect(Phase.archived(teardownComplete: false).kind == .archivedPending)
@@ -70,7 +79,7 @@ struct ModelCodableTests {
         #expect(Phase.dead(.agentExited).isTerminal)
         #expect(Phase.archived(teardownComplete: false).isTerminal)
         #expect(Phase.archived(teardownComplete: true).isTerminal)
-        #expect(!Phase.live(.running).isTerminal)
+        #expect(!Phase.live(.init(turnStatus: .running)).isTerminal)
         #expect(!Phase.launching.isTerminal)
     }
 
@@ -94,7 +103,12 @@ struct ModelCodableTests {
         var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
                      model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                      order: 0, initialPrompt: "go")
-        t.phase = .live(.waiting(.permission))
+        let state = AgentState(
+            turnStatus: .running,
+            activity: .init(text: "Running Bash"),
+            humanNeed: .permission
+        )
+        t.phase = .live(state)
         t.sessionEpoch = 3
         t.phaseChangedAt = epochDate
         let cutoff = epochDate.addingTimeInterval(60.123_456)
@@ -103,7 +117,7 @@ struct ModelCodableTests {
 
         let data = try OrchestraJSON.wire.encode(t)
         let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
-        #expect(back.phase == .live(.waiting(.permission)))
+        #expect(back.phase == .live(state))
         #expect(back.sessionEpoch == 3)
         #expect(back.phaseChangedAt == epochDate)
         let restoredCutoff = try #require(back.sessionDiscoverySince)
@@ -118,36 +132,14 @@ struct ModelCodableTests {
         #expect(back.pendingSeed == "carried context")
     }
 
-    @Test("Task round-trips deliveryStuckSince; a record without the key decodes to nil")
-    func test_taskCarriesDeliveryStuckSince() throws {
-        let stuckAt = Date(timeIntervalSince1970: 1_700_000_500)   // whole-second → exact ISO-8601 round-trip
-        var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
-                     model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                     order: 0, initialPrompt: "go")
-        #expect(t.deliveryStuckSince == nil)   // defaults to nil, like pendingSeed
-        t.deliveryStuckSince = stuckAt
-
-        let data = try OrchestraJSON.wire.encode(t)
-        let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
-        #expect(back.deliveryStuckSince == stuckAt)
-
-        // Additive-optional forward-compat: a legacy record lacking the key decodes to nil, never throws.
-        var shape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        shape.removeValue(forKey: "deliveryStuckSince")
-        let legacy = try OrchestraJSON.decoder.decode(
-            Task.self, from: JSONSerialization.data(withJSONObject: shape))
-        #expect(legacy.deliveryStuckSince == nil)
-    }
-
     @Test("Task round-trips pendingQuestion; a record without the key decodes to nil")
     func test_taskCarriesPendingQuestion() throws {
         var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
                      model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                      order: 0, initialPrompt: "go")
         #expect(t.pendingQuestion == nil)          // defaults to nil, like note
-        // A FRACTIONAL declaredAt — the fence compares sub-second times, so this must survive disk. A
-        // whole-second value would round-trip even through `.iso8601` and hide the bug; the fraction is
-        // the point.
+        // A fractional declaredAt keeps question age stable across persistence rather than rounding it
+        // to the whole second through the store's default ISO-8601 strategy.
         let declaredAt = Date(timeIntervalSince1970: 1_700_000_500.123_456)
         t.pendingQuestion = PendingQuestion(text: "ship to main or hold for PR 4?", declaredAt: declaredAt)
 

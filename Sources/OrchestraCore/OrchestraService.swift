@@ -10,13 +10,8 @@ public actor OrchestraService {
     /// off-actor closures can capture it.
     nonisolated let clock: any Clock<Duration>
 
-    /// Wall-clock stamping for DELIVERY decisions (lease expiry, stuck age) and for the
-    /// `createdAt` the Inbox persists on enqueue — NOT `leasedAt`, which B1 deliberately takes from
-    /// `claim`'s explicit `now:` so one instant governs both the expiry decision and the stamp it
-    /// writes. Separate from `clock`, which schedules: `Clock` has no notion of a `Date`, and
-    /// lease/stuck math is expressed in absolute persisted instants. Tests inject a provider on the
-    /// TestClock's own timeline, so ONE `advance` moves scheduling and stamping together (B4 — B2
-    /// left `payloadForStop` on a bare `Date()` pending this seam).
+    /// Wall-clock stamping for durable records such as inbox `createdAt`. Separate from `clock`, which
+    /// schedules durations; tests inject a provider when they need deterministic timestamps.
     nonisolated let now: @Sendable () -> Date
     /// The subprocess seam for the components the hidden-integration suites reach git through
     /// (BranchLineage, RemoteParents, tree/parent-ref probes). Tests inject a FakeProc.
@@ -53,7 +48,7 @@ public actor OrchestraService {
     /// Daemon-side rollout TRANSPORT for `fileTail` agents (Codex). Tracks a per-card byte offset; the
     /// poll loop hands its lines to `adapter.parse`. Claude (`hooksPush`) never touches it.
     let tailer = RolloutTailer()
-    /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
+    /// Durable per-card message inbox. `send` enqueues and a live provider sender accepts rows.
     let inbox: Inbox
     /// Registered APNs device tokens (N1). The daemon's `PushNotifier` reads this to deliver attention
     /// pushes; the phone populates it over the `registerDevice` RPC.
@@ -80,6 +75,8 @@ public actor OrchestraService {
     /// the deliberate exceptions are `inFlightSteps`/`stepAttempts` (reconciler driving state) and
     /// `watchRegistry` (persisted relational state).
     var runtime: [UUID: CardRuntime] = [:]
+    /// One global Claude snapshot at a time; the actor may re-enter while the subprocess is running.
+    var claudeIdleReconcileInFlight = false
     /// Process-monotonic token mint for the arming fences (`CardRuntime.Armed`). Never reused, never
     /// reset — uniqueness across archive→reopen within one process is the fence guarantee.
     var runtimeTokenSeq: UInt64 = 0
@@ -96,7 +93,7 @@ public actor OrchestraService {
     /// prodding. A parent that ignored 8 reminders will not act on the 9th.
     var mergeRequestNudgeCap: Int = 8
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
-    /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
+    /// conclusion enqueues into every watching parent's inbox and arms its live sender. Write-through
     /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
     /// watcher survives a daemon restart.
     var watchRegistry: [UUID: Set<UUID>] = [:]
@@ -112,20 +109,6 @@ public actor OrchestraService {
     /// Durable backing for `watchRegistry`. Reloaded at boot (`reloadWatchRegistry`), written through on
     /// every mutation. Injected in tests so each temp dir gets its own file.
     let watchStore: WatchRegistryStore
-    /// Break a runaway Stop→inject→Stop loop after this many consecutive auto-injects (reset by a real
-    /// prompt). The per-card count lives in `CardRuntime.injectCount`.
-    public let maxConsecutiveInjects = 25
-
-    // MARK: - Delivery tracking (declared here with `confirmDelivery`, the first reference — first-reference
-    // rule). The reconciler arm (B4) READS/writes these; the surfacing (B5b) reads `Task.deliveryStuckSince`.
-    // Nothing but `confirmDelivery` touches them in B2, so the busy path flips whole and stays green.
-
-    /// Per-card delivery retry accounting for the arm (B4): attempts charged + when the next is eligible
-    /// (backoff). Reset to nil ONLY on a confirmed delivery (`deliveryConfirmed`) and by `send` (B5a).
-    /// Lives in `CardRuntime.deliveryAttempt`; the outstanding-token shadow and the ref-counted re-arm
-    /// fence (see `CardRuntime.reArming` for the rationale) live there too.
-    struct DeliveryAttempt: Sendable { var count: Int = 0; var nextEligible: Date = .distantPast }
-
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
     /// Mirror of the last board rev an event carried; stamped onto ephemeral events (which never bump
@@ -231,10 +214,8 @@ public actor OrchestraService {
         self.resolver = r
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
-        // The Inbox holds no Config — the lease timeout is injected here, at its one build site.
-        // Share the service's `now` provider so lease/stuck stamping and the arm's expiry math read
-        // one timeline (a TestClock advance moves both).
-        self.inbox = inbox ?? Inbox(leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: now)
+        // Share the service's clock with inbox persistence so tests and durable timestamps use one timeline.
+        self.inbox = inbox ?? Inbox(now: now)
         self.devices = devices ?? DeviceTokenStore()
         self.mediaStore = mediaStore ?? MediaStore(root: "\(config.runtimeStateDir)/media")
         self.grantResolver = grantResolver
@@ -386,16 +367,10 @@ public actor OrchestraService {
         for t in tasks where !t.archived && t.phase.kind != .dead && t.phase.kind != .creatingWorktree {
             guard let adapter = try? registry.get(t.agentId),
                   adapter.capabilities.telemetry == .fileTail else { continue }
-            // Resolve the rollout path from the adapter (uses the tracked id, else discovers it). An
-            // unbound discovered-session card keeps its launch cutoff through an N=3 fallback, so delayed
-            // metadata can bind its own rollout while stale cwd history stays excluded. Multiple primary
-            // matches remain ambiguous at every phase and are never guessed.
-            let beingBorn = t.phase.kind == .launching || t.phase.kind == .relaunching
+            // Metadata is tailed only after the provider-native session identity has bound. The rollout
+            // carries presentation detail; it never discovers or replaces Codex's app-server thread id.
             let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
-                                     name: t.title, access: t.access,
-                                     since: t.agentSessionId == nil
-                                        ? (t.sessionDiscoverySince ?? (beingBorn ? t.phaseChangedAt : nil))
-                                        : nil)
+                                     name: t.title, access: t.access)
             let a = adapter
             let sessionId = t.agentSessionId
             let priorSessionIds = t.priorSessionIds
@@ -507,8 +482,8 @@ public actor OrchestraService {
             let s = (seedText?.isEmpty == false) ? seedText : nil
             let p = promptText.isEmpty ? nil : input.prompt
             switch (s, p) {
-            case let (s?, p?): return String((s + "\n\n" + p).prefix(StopDrain.maxPayloadChars))
-            case let (s?, nil): return String(s.prefix(StopDrain.maxPayloadChars))
+            case let (s?, p?): return String((s + "\n\n" + p).prefix(Inbox.maxMessageChars))
+            case let (s?, nil): return String(s.prefix(Inbox.maxMessageChars))
             case let (nil, p?): return p
             case (nil, nil):    return nil
             }
@@ -529,15 +504,16 @@ public actor OrchestraService {
             prompt: input.prompt)
         let title = explicitTitle ?? derived.title
         let titleSource: TitleSource = explicitTitle != nil ? .explicit : derived.source
-        // A provisional card is idle awaiting the user's first prompt, so it lands `.waiting`; a real
-        // prompt/seed means the agent is working immediately, so `.running`. The launch gets no positional
-        // when provisional (a whitespace-only prompt must not be submitted to the agent).
+        // A provisional card is idle awaiting the user's first prompt; a real prompt/seed supplies the
+        // launch positional. Provider observation, not this launch choice, establishes live turn status.
+        // The launch gets no positional when provisional (a whitespace-only prompt must not be submitted
+        // to the agent).
         // NON-BLOCKING FLIP (PR4b Task 3): the card is CREATED at `.creatingWorktree, sessionEpoch: 1`
         // carrying `spawnBase` (creation IS spawn's single generation bump — no `transition(→.creatingWorktree)`),
         // then spawn RETURNS. The reconciler's steppers (MaterializeStepper cuts/adopts the worktree + records
         // lineage → LaunchStepper brings the agent up + confirms readiness) drive it `→.launching →.live` off
-        // the poll loop. The launch's landing (.running / .waiting) + the prompt are re-derived from the
-        // persisted `awaitingFirstPrompt`/`initialPrompt` by `deriveLaunchFlavor`, so nothing is lost here.
+        // the poll loop. The launch positional is re-derived from persisted
+        // `awaitingFirstPrompt`/`initialPrompt` by `deriveLaunchFlavor`, so nothing is lost here.
         let task = Task(
             id: id,
             title: title, titleSource: titleSource, awaitingFirstPrompt: awaitingFirstPrompt, desc: "",
@@ -703,61 +679,20 @@ public actor OrchestraService {
 
     // MARK: - steer / move / status / list
 
-    /// Enqueue a message to the card's durable inbox (F3), then `wake` the card (F2) so an *idle* agent
-    /// drains it now instead of waiting for its next unprompted turn. Content is delivered by the inbox
-    /// (Stop-hook drain / resume seed) — `wake` only starts a turn, and is idempotent/non-intrusive: it
-    /// no-ops on a card that already has a turn coming (running, mid-relaunch, or subscribed through a
-    /// native background `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one
-    /// drains at its Stop.
+    /// Enqueue a message for the exact live provider handle. The durable queue remains the source of truth
+    /// while no sender is installed; endpoint reconciliation rearms it when that handle becomes available.
     @discardableResult
     public func send(_ id: UUID, _ message: String, messageId: UUID = UUID(),
                      sender: InboxMessageSource = .human) async throws -> SendResult {
         let t = try await require(id)
-        // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the
-        // inbox is a nudge channel (`StopDrain.maxMessageChars`), not a document transfer. An accepted
-        // message is guaranteed to reach the agent whole. Source provenance is UI metadata rather than
-        // model-facing payload text, so its title cannot shrink the accepted body budget.
-        guard message.count <= StopDrain.maxMessageChars else {
+        guard message.count <= Inbox.maxMessageChars else {
             throw OrchestraError.invalidParams(
-                "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars). "
+                "message is \(message.count) chars; the inbox limit is \(Inbox.maxMessageChars). "
                 + "Put large content in a file in the worktree and reference it instead.")
         }
-        // Dedup-FIRST, ATOMICALLY: `enqueueIfUnknown` checks pending ∪ the confirmed-ids ring AND appends
-        // in one actor call (the service is reentrant — a split check-then-append would let two concurrent
-        // same-id sends both enqueue). A replay (id already pending, or delivered+tombstoned) mutates NO
-        // delivery state and fires NO wake — it just re-returns the id and a card snapshot.
-        guard try await inbox.enqueueIfUnknown(t.id, message, id: messageId, source: sender) else {
+        guard try await enqueueAndArm(t.id, message, messageId: messageId, source: sender) else {
             return SendResult(messageId: messageId, card: t)
         }
-        // A fresh send re-arms the WHOLE retry budget before its opportunistic wake: reset attempts and
-        // clear any stuck flag (contract §stuck-cleared-with-owners — `send` is one of the three clear
-        // owners), else a stuck cold card would get exactly one doomed wake instead of a full retry budget.
-        runtime[t.id]?.deliveryAttempt = nil
-        await clearStuckIfSet(t.id)
-        // Who is pacing the card now (stall exemption — see `Task.humanPaced`). A human-sourced send makes
-        // it human-paced; another card/agent delivering work makes it agent-paced (and flips a card a human
-        // WAS pacing back to stall-eligible). A system (`.orchestra`) delivery — teardown nudges and the
-        // like — carries no pacing signal, so it leaves the flag untouched. `InboxMessageSource`, not
-        // `ActivitySource`, is the classifier: it is the one that actually carries a `.human` case (the
-        // transport enum has none), set at the `send` verb boundary from `senderCard`.
-        let paced: Bool?
-        switch sender {
-        case .human:     paced = true
-        case .card:      paced = false
-        case .orchestra: paced = nil
-        }
-        if let paced {
-            // Compare INSIDE the update closure (against the live card, not the pre-await snapshot `t`, which
-            // could be stale after `enqueueIfUnknown`/`clearStuckIfSet` under a concurrent send). `store.update`
-            // no-ops when nothing changes, so a redundant same-value send stays inbox-only (no rev, no emit).
-            var flipped = false
-            if let (saved, rev) = try? await store.update(t.id, { c in
-                if c.humanPaced != paced { c.humanPaced = paced; flipped = true }
-            }), flipped {
-                emit(.taskUpserted(saved), rev: rev)
-            }
-        }
-        await wake(t.id)
         return SendResult(messageId: messageId, card: await store.get(t.id) ?? t)
     }
 
@@ -770,360 +705,35 @@ public actor OrchestraService {
         try sessions.sendChord(sessions.sessionName(t.id), tokens: tokens, window: window)
     }
 
-    /// Inbox editor (UI + MCP): list a card's pending messages. Non-destructive.
-    public func inboxPeek(_ id: UUID) async throws -> [InboxMessage] {
+    /// Inbox editor (UI + MCP): list a card's advisory rows. History is explicitly opt-in.
+    public func inboxPeek(_ id: UUID, includeHistory: Bool = false) async throws -> [InboxMessage] {
         let t = try await require(id)
-        return await inbox.peek(t.id)
+        return await inbox.peek(t.id, includeHistory: includeHistory)
     }
 
-    /// Inbox editor: remove one queued message by its id. Re-arms the removed message's OWNER if it was
-    /// delivery-stuck (B5a-owed seam) — force-release alone (B1) leaves a stuck card wedged with a spent
-    /// budget; a human removing a message is an intervention that should let the arm re-drive what remains.
+    /// Inbox editor operations are owner-scoped: an id from another card cannot edit its queue.
     public func inboxRemove(_ id: UUID, messageId: UUID) async throws {
-        _ = try await require(id)
-        if let owner = try await inbox.remove(messageId) { await reArmIfStuck(owner) }
+        let card = try await require(id)
+        if try await inbox.remove(cardId: card.id, messageId: messageId) { armNativeInbox(card) }
     }
 
-    /// Inbox editor: edit the text of one queued message. Re-arms the edited message's OWNER if it was
-    /// delivery-stuck (same B5a-owed seam as `inboxRemove`).
     public func inboxUpdate(_ id: UUID, messageId: UUID, text: String) async throws {
-        _ = try await require(id)
-        let owner = try await inbox.update(messageId, text: text)
-        await reArmIfStuck(owner)
+        let card = try await require(id)
+        if try await inbox.edit(cardId: card.id, messageId: messageId, text: text) { armNativeInbox(card) }
     }
 
     /// Inbox editor: reorder a card's queued messages (ids = full new order).
     public func inboxReorder(_ id: UUID, orderedIds: [UUID]) async throws {
         let t = try await require(id)
         try await inbox.reorder(t.id, orderedIds: orderedIds)
+        armNativeInbox(t)
     }
 
-    // MARK: - delivery confirm funnel
-
-    /// Record a freshly-dispatched delivery token as outstanding for `cardId`. Called at every dispatch
-    /// (`payloadForStop`'s Stop-drain claim; the relaunch-seed claim). The arm charges expiry once
-    /// per token by intersecting this set with the inbox's live leases; `deliveryConfirmed` prunes it.
-    func markDispatched(_ cardId: UUID, token: UUID) {
-        runtime[cardId]?.outstandingTokens.insert(token)
-    }
-
-    /// Test-only: how many delivery tokens are outstanding for a card (the arm's expiry-charge set). Used to
-    /// pin that a handoff-only (0-message) batch leaves NO phantom token behind.
-    func outstandingTokenCountForTest(_ cardId: UUID) -> Int { runtime[cardId]?.outstandingTokens.count ?? 0 }
-
-    /// Test-only: charged delivery attempts for a card (the arm's retry budget).
-    func deliveryAttemptCountForTest(_ cardId: UUID) -> Int { runtime[cardId]?.deliveryAttempt?.count ?? 0 }
-
-    /// Test-only: re-arm a card's retry budget the way `send`/`deliveryConfirmed` do.
-    func resetDeliveryAttemptsForTest(_ id: UUID) { runtime[id]?.deliveryAttempt = nil }
-
-    /// Test seam: pin the delivery-retry backoff (mirrors `stepBackoffOverrideSeconds`) so an arm
-    /// test's window is load-proof.
-    var deliveryBackoffOverrideSeconds: Double? = nil
-
-    /// Test seam: a pause point INSIDE `chargeExpiredTokens`, between the token-liveness scan and the
-    /// ledger re-read, so a race test can land a confirm/dispatch in that exact window. A closure (not
-    /// a `Gate`, which lives in TestSupport that OrchestraCore cannot import); nil in production.
-    var deliveryExpiryScanPause: (@Sendable () async -> Void)? = nil
-    func setExpiryScanPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
-        deliveryExpiryScanPause = pause
-    }
-
-    /// Test seam: a pause point in the arm's direct-dead bypass, AFTER `isResumable` and before the
-    /// stuck flip, so a race test can land a reviving `restart` in exactly that window and prove the
-    /// flip's generation fence aborts. Nil in production.
-    var deliveryDeadBypassPause: (@Sendable () async -> Void)? = nil
-    func setDeadBypassPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
-        deliveryDeadBypassPause = pause
-    }
-
-    /// Test seam: a pause point in `payloadForStop`, AFTER the stopDrain claim and before the post-claim
-    /// epoch re-guard, so a race test can land a `restart` (epoch bump) in exactly that window and prove
-    /// the re-guard releases the stale-epoch lease instead of injecting into the superseded pane. Nil in
-    /// production.
-    var stopClaimPause: (@Sendable () async -> Void)? = nil
-    func setStopClaimPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
-        stopClaimPause = pause
-    }
-
-    /// Test seam: a pause point in `reArmIfStuck`, AFTER `clearStuckIfSet` commits `deliveryStuckSince =
-    /// nil` and BEFORE the attempt budget is zeroed — the exact window where the durable flag is nil while
-    /// the budget is still spent. A race test lands a concurrent `flipStuckIfExhausted` here and proves the
-    /// `reArmingCards` fence keeps it from re-stamping stuck. Nil in production.
-    var reArmPause: (@Sendable () async -> Void)? = nil
     /// Test seam: pause teardown's child-nudge loop between its enqueue/wake awaits and the child
     /// side-effect trio, so a test can land a reopen in exactly that window. Nil in production.
     var teardownNudgePause: (@Sendable () async -> Void)? = nil
     func setTeardownNudgePauseForTest(_ pause: @escaping @Sendable () async -> Void) {
         teardownNudgePause = pause
-    }
-    func setReArmPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
-        reArmPause = pause
-    }
-
-    /// The token-based confirm chokepoint — every delivery path (Stop confirm, channel ack, stepper
-    /// signal-readiness) funnels a receipt through here, so the archive guard and the attempt/stuck resets
-    /// can't be forgotten at one site. A message leaves the durable inbox ONLY here.
-    func confirmDelivery(token: UUID, cardId: UUID) async {
-        // Fresh archived read immediately before the branch — the tightest window the actor model allows.
-        // The residual "archive wins during the inbox await" race is backstopped by teardown's releaseAll
-        // (B4): a released lease makes `confirm` a token-no-op, so the message is retained. "Archived
-        // mid-wake" is a two-part design (this check + B4's releaseAll); B4 owns the race test.
-        let archived = await store.get(cardId)?.archived ?? true
-        let didConfirm: Bool
-        if archived {
-            try? await inbox.release(token: token)              // retain for a reopen's relaunch
-            didConfirm = false
-        } else {
-            didConfirm = (try? await inbox.confirm(token: token)) ?? false   // real removal + ring?
-        }
-        await deliveryConfirmed(cardId: cardId, token: token, didConfirm: didConfirm)
-    }
-
-    /// Completion-only delivery bookkeeping. B3's report-path held-relaunch confirm funnels here too, via
-    /// `confirmDelivery` (peek the held lease token → `confirmDelivery`, which calls this) so the archive
-    /// guard is never bypassed. The token is pruned from the outstanding set on EITHER a confirm or a
-    /// release (it is no longer in flight); but a stale-token no-op / archive release must NOT reset the
-    /// retry budget or clear the stuck flag — that happens only on a genuine confirmation.
-    func deliveryConfirmed(cardId: UUID, token: UUID, didConfirm: Bool) async {
-        runtime[cardId]?.outstandingTokens.remove(token)
-        guard didConfirm else { return }
-        runtime[cardId]?.deliveryAttempt = nil                  // a real confirm re-arms the whole retry budget
-        // Clear any stuck flag (contract: every confirmed delivery clears deliveryStuckSince). A FRESH read
-        // catches a flip that landed during the inbox await; skip-if-nil avoids a spurious emit on the hot
-        // path. The narrow get-vs-update window is closed from the OTHER side by B4's arm: a stuck flip
-        // re-validates deliveryAttempts on the actor immediately before its write, and this confirm just
-        // reset that to nil — so the arm aborts a flip on a just-confirmed card (contract §attempt-accounting).
-        if await store.get(cardId)?.deliveryStuckSince != nil,
-           let (saved, rev) = try? await store.update(cardId, { $0.deliveryStuckSince = nil }) {
-            emit(.taskUpserted(saved), rev: rev)
-        }
-    }
-
-    /// Clear a card's `deliveryStuckSince` if set, and report whether THIS call performed the set→nil
-    /// transition. The prior-value read and the clear happen in ONE atomic `store.update` closure, so the
-    /// `true`/`false` answer can't be stale: a concurrent confirm that already unstuck the card makes the
-    /// closure observe `nil` → returns `false` (and, by `TaskStore.update`'s no-op rule, bumps no rev and
-    /// emits nothing). The leading `store.get` is a cheap early-out only. Shared by `send`'s re-arm (which
-    /// ignores the result — a new message always re-arms) and the editor stuck-reset (which gates the
-    /// attempt-budget reset on it — see `reArmIfStuck`).
-    @discardableResult
-    func clearStuckIfSet(_ cardId: UUID) async -> Bool {
-        guard await store.get(cardId)?.deliveryStuckSince != nil else { return false }
-        var wasSet = false
-        guard let (saved, rev) = try? await store.update(cardId, { task in
-            wasSet = task.deliveryStuckSince != nil
-            task.deliveryStuckSince = nil
-        }), wasSet else { return false }
-        emit(.taskUpserted(saved), rev: rev)
-        return true
-    }
-
-    /// B5a-owed editor seam: re-arm a card a human edited/removed a message on — but ONLY if it is
-    /// actually delivery-stuck. A stuck card whose message is edited force-releases the lease (B1) yet
-    /// keeps `deliveryStuckSince` + its spent budget, so the arm short-circuits and never re-drives it
-    /// (`+DeliveryArm.swift`). Resetting a HEALTHY card's budget on every edit would instead mask a
-    /// genuinely-failing delivery, so the reset is gated on the stuck flag. Called with the edited
-    /// message's true OWNER (from `inbox.remove`/`update`), never the caller's ref — a cross-card or
-    /// nonexistent message id therefore leaves the caller's card untouched.
-    ///
-    /// The reset is gated on `clearStuckIfSet`'s ATOMIC transition, not a separate pre-read: a bare
-    /// `get(stuck?) → reset` would erase a healthy generation's freshly-charged attempts if a confirm
-    /// unstuck-and-recharged the card while this continuation was parked on the read (the value the guard
-    /// sees would be stale by the time the synchronous reset runs — the same reentrancy hazard the arm's
-    /// `flipStuckIfExhausted` guards with on-actor revalidation).
-    ///
-    /// FENCE across BOTH mutations. `clearStuckIfSet` commits `deliveryStuckSince = nil` through a
-    /// suspending TaskStore hop; the attempt-budget reset is a separate service-local write. Between them
-    /// the durable flag is nil while attempts are still ≥5, and a concurrent `flipStuckIfExhausted` would
-    /// re-stamp stuck (nil-flag + spent budget + a claimable message) → the card wedges stuck with attempts
-    /// 0 that the arm's stuck short-circuit never re-drives. Holding `reArmingCards` from BEFORE the clear
-    /// until AFTER the reset makes the flip's `budgetSpent()` no-op for the entire window — and since the
-    /// flag is nil ONLY inside that window, the flip can never observe the vulnerable state. (The prior
-    /// "no `await` between helper-return and reset" only covered the reset gap, NOT the TaskStore hop
-    /// inside `clearStuckIfSet` where the flag actually flips.)
-    func reArmIfStuck(_ cardId: UUID) async {
-        // The fence must ENGAGE even when this is the daemon's first touch of the card: `stuck` is a
-        // persisted field, so a human inbox edit can land in the post-restart window before the first
-        // reconcile tick has ensured the entry — an update-if-present increment would silently no-op
-        // and leave the clear→reset window unprotected (the payloadForStop class of migration bug).
-        guard let card = await store.get(cardId) else { return }   // unknown card: nothing to re-arm
-        ensureRuntime(for: card)
-        // Epoch-scoped count: the fence belongs to THIS card generation. A stale re-arm whose entry
-        // was detached and recreated mid-op (archive→reopen) must neither decrement a successor's
-        // held fence nor drive the count negative — the epoch mismatch makes its defer a no-op.
-        let fenceEpoch = card.sessionEpoch
-        if let cur = runtime[cardId]?.reArming, cur.epoch == fenceEpoch {
-            runtime[cardId]?.reArming = (fenceEpoch, cur.count + 1)
-        } else {
-            runtime[cardId]?.reArming = (fenceEpoch, 1)   // stale-epoch residue is discarded, not inherited
-        }
-        defer {
-            if let cur = runtime[cardId]?.reArming, cur.epoch == fenceEpoch {
-                runtime[cardId]?.reArming = cur.count > 1 ? (fenceEpoch, cur.count - 1) : nil
-            }
-        }
-        guard await clearStuckIfSet(cardId) else { return }
-        await reArmPause?()   // test seam: land a concurrent flip in the flag-cleared, budget-not-yet-reset window
-        runtime[cardId]?.deliveryAttempt = nil
-    }
-
-    /// Claim the cold-delivery `relaunchSeed` batch for a relaunch (the RelaunchStepper's `ctx.claimSeed`):
-    /// the card's `pendingSeed` (handoff) composed with its pending inbox under ONE budget, leased at
-    /// `epoch`. `nil` when there is nothing to seed (no handoff AND no claimable message). `markDispatched`
-    /// is recorded ONLY for a MESSAGE-BEARING batch (`ids` non-empty): a handoff-only 0-id batch persists no
-    /// lease, so tracking its token would leak a phantom outstanding token and mischarge the arm (B3 — the
-    /// handoff-only case is a fire-and-forget re-seat, per the contract, with no durable receipt).
-    func claimSeed(_ cardId: UUID, epoch: Int) async -> ClaimedBatch? {
-        guard let card = await store.get(cardId) else { return nil }
-        let handoff = card.pendingSeed
-        guard let batch = try? await inbox.claim(
-            cardId, route: .relaunchSeed, epoch: epoch, budget: StopDrain.maxPayloadChars,
-            render: { HandoffSeed.compose(handoff: handoff, messages: $0, budget: $1) }, now: now())
-        else { return nil }
-        if !batch.ids.isEmpty { markDispatched(cardId, token: batch.token) }
-        return batch
-    }
-
-    // MARK: - inbox / F3 (Stop-drain)
-
-    /// The Stop-hook delivery payload — claim-then-confirm (replaces the old remove-before-inject
-    /// `drainForStop`). Returns the `decision:block` continuation text, or `nil` when nothing is delivered
-    /// (fence tripped / nothing claimable / loop guard tripped), leaving messages durable.
-    ///
-    /// Ordering (per the L2 contract):
-    ///  1. **Epoch fence FIRST** — a confirm/claim requires the Stop to come from the card's CURRENT
-    ///     session (`observedEpoch == sessionEpoch`). A mismatched or nil epoch (a pre-upgrade session
-    ///     lacking `ORCH_EPOCH`) returns nil with NO confirm and NO claim, so a superseded session's Stop
-    ///     never leases fresh messages into a dead pane — the arm's idle routes deliver instead. Because
-    ///     the fence reads `sessionEpoch`, this now REQUIRES the card in the store (production Stop hooks
-    ///     always have a live card), unlike the old store-independent drain.
-    ///  2. **Confirm** the prior continuation's stopDrain lease iff `stopHookActive` proves it ran.
-    ///  3. **Live-lease guard** — refuse a second claim while an unexpired same-epoch lease is outstanding,
-    ///     so at most one stopDrain batch is in flight and step 2's `.first` confirm is unambiguous.
-    ///  4. **Claim** the next batch. `injectCounts`/`maxConsecutiveInjects` loop-guard semantics are
-    ///     preserved from `drainForStop` (the empty-reset keys on `peek`, which now sees held leases — see
-    ///     the guard in step 3, which means peek is only non-empty-with-leases transiently).
-    public func payloadForStop(_ cardId: UUID, observedEpoch: Int?, stopHookActive: Bool) async -> String? {
-        // 1. Epoch fence.
-        guard let card = await store.get(cardId), let epoch = observedEpoch, epoch == card.sessionEpoch
-        else { return nil }
-        // The inject loop-guard MUST persist its count: an update-if-present write against a missing
-        // entry (daemon restarted mid-session; this transport path may be the card's first touch) would
-        // silently pin the count at 0 and the maxConsecutiveInjects breaker would never trip.
-        ensureRuntime(for: card)
-        // 2. Confirm the prior continuation's stopDrain lease iff THIS Stop proves it ran.
-        if stopHookActive,
-           let token = await inbox.peek(cardId).first(where: {
-               $0.lease?.route == .stopDrain && $0.lease?.epoch == epoch })?.lease?.token {
-            await confirmDelivery(token: token, cardId: cardId)
-        }
-        // 3. Claim the next batch — with `blockIfLiveLease` so the "at most one outstanding stopDrain lease"
-        //    check is ATOMIC with the lease inside the single Inbox actor call. A prior batch still
-        //    outstanding at this epoch → the claim returns nil (its own continuation's Stop confirms it, or
-        //    it expires for the arm to re-drive). This must be atomic: a separate `hasLiveLease` await would
-        //    let two concurrent same-epoch Stops both pass the check and lease different batches, and a later
-        //    stopHookActive Stop's `.first` confirm would then remove the WRONG (older) batch, dropping it.
-        //    Loop-guard (injectCounts/maxConsecutiveInjects) semantics preserved from drainForStop.
-        let pending = await inbox.peek(cardId)
-        if pending.isEmpty { runtime[cardId]?.injectCount = 0; return nil }   // natural end → reset
-        let count = runtime[cardId]?.injectCount ?? 0
-        if count >= maxConsecutiveInjects { return nil }              // loop guard tripped; keep counter high
-        guard let batch = try? await inbox.claim(cardId, route: .stopDrain, epoch: epoch,
-                                                 budget: StopDrain.maxPayloadChars,
-                                                 render: { StopDrain.fit($0, budget: $1) },
-                                                 now: now(), blockIfLiveLease: true)
-        else { return nil }   // `try?` flattens ClaimedBatch? — nil = threw / nothing claimable / live lease
-        // POST-CLAIM EPOCH RE-GUARD. The step-1 entry fence is STALE across the peek/confirm/claim awaits:
-        // the service actor is reentrant, so a concurrent restart/resume can persist epoch e+1 during them,
-        // and `blockIfLiveLease` does NOT catch it (it is epoch-e-scoped — the e+1 lease is a different
-        // generation). Minting an epoch-e lease now would hand fresh payload to the SUPERSEDED Stop's pane
-        // (about to be killed by the relaunch) AND lease messages the e+1 relaunch then re-owns and
-        // re-delivers — the stale-pane injection + duplicate the locked Stop fence forbids. Mirrors the wake
-        // ladder's post-await epoch re-guard (`+Wake.swift`): re-read, and if the card raced away / archived / lost e,
-        // RELEASE the just-claimed batch and abandon so the e+1 relaunch's `claimSeed` delivers instead. The
-        // message stays durable throughout — fail-safe. (`markDispatched` runs only past the guard, so an
-        // abandoned claim leaves no phantom outstanding token.)
-        await stopClaimPause?()   // test seam: land a restart (epoch bump) in this exact window
-        guard let cur = await store.get(cardId), !cur.archived, cur.sessionEpoch == epoch else {
-            try? await inbox.release(token: batch.token)
-            return nil
-        }
-        markDispatched(cardId, token: batch.token)
-        // Handing back a continuation IS the agent's next turn starting — it resumes the live session with
-        // this payload — so a declared `needs-input` question is retired here. This is the seam that covers
-        // Claude: a continuation turn fires no `UserPromptSubmit`, and a prose-only reply calls no tool, so
-        // the card reports `.running` never and crosses no phase edge.
-        //
-        // Keyed to the CLAIM and deliberately not to the receipt (`confirmDelivery`). The receipt for this
-        // batch arrives on the Stop that ENDS the continuation turn — both agents set `stop_hook_active` on
-        // it (HookRPC.stopHookActive) — which is exactly when an agent that ran out of road declares its
-        // question. Clearing there erased the declaration a beat after it was made, on both backends: the
-        // dominant case, and the one the verb exists for. Claiming is safe in the other direction too — if
-        // this Stop claims nothing, no clear happens and the question survives into the idle the human sees.
-        //
-        // The "receipt, not dispatch" rule still holds where it came from: `claimSeed` leases a relaunch
-        // batch BEFORE `finishLaunch`, so a failed launch must not clear. That path needs nothing here —
-        // its `.live` landing out of `.relaunching` is a completed session replacement, which `transition`
-        // already treats as proof.
-        await clearPendingQuestion(cardId)
-        runtime[cardId]?.injectCount = count + 1
-        return batch.payload
-    }
-
-    /// Reset a card's consecutive-inject guard — called on a genuine user prompt (UserPromptSubmit).
-    func resetInjectCount(_ cardId: UUID) { runtime[cardId]?.injectCount = 0 }
-
-    // MARK: - SessionStart orientation
-
-    /// The agent-agnostic SessionStart orientation for a card — which column it's in, whether it's
-    /// read-only, and its own id — so an agent knows where it was opened and starts on that footing
-    /// without being told (the open-time counterpart to `payloadForStop`). Read **live** so a reopened or
-    /// dragged card reflects its CURRENT lane, not the launch-time `startIn`. `nil` if the card is gone.
-    public func sessionBrief(_ cardId: UUID) async -> String? {
-        guard let task = await store.get(cardId) else { return nil }
-        return SessionBrief.sentence(column: task.column, access: task.access, shortId: task.shortId,
-                                     origin: task.origin, titlePinned: task.titleSource == .explicit)
-    }
-
-    /// The core-owned hook-channel dispatch — the single place both directions of the hook channel meet,
-    /// and it is ADAPTER-FREE (dispatch keys on `HookEvent`, never on agent identity). The `_report` edge
-    /// has already converted the raw payload into a typed event: it applies any telemetry `report` to the
-    /// store (send direction) and composes the existing `sessionBrief`/`payloadForStop` content into a
-    /// neutral `HookResponse` (receive direction) for the adapter to encode. `nil` on unknown ref or when
-    /// there is nothing to send back.
-    public func handleHook(_ ref: String, event: HookEvent,
-                           report: StatusReport?, source: SessionSource?,
-                           observedEpoch: Int? = nil, stopHookActive: Bool = false) async -> HookResponse? {
-        guard let task = try? await resolveRef(ref) else { return nil }
-
-        // STOP: claim/confirm the stopDrain BEFORE applying the Stop's own report. A real Claude Stop
-        // report lands `.live(.waiting(.humanTurn))`, whose wake-on-live (+Lifecycle step 7) would else
-        // cold-relaunch a `nativeReinvoke` card with no active CLI wait — bumping the epoch out from under
-        // this same-epoch claim, so `payloadForStop`'s entry fence then fails and a HEALTHY session is
-        // needlessly restarted on every send. The Stop hook IS the reinvoke, so its same-epoch stopDrain
-        // claim must win over a cold relaunch: claiming first mints a live same-epoch lease, and the
-        // subsequent waiting-landing wake then DEFERS on `hasLiveLease` (deliver rung 3) instead of
-        // relaunching. Applying the report afterward still lands the phase; the epoch fence's real purpose
-        // is untouched — a genuinely stale Stop (observedEpoch ≠ sessionEpoch) still no-ops in payloadForStop.
-        if event == .stop {
-            let continuation = await payloadForStop(task.id, observedEpoch: observedEpoch, stopHookActive: stopHookActive)
-            if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
-            return continuation.map { HookResponse(continuation: $0) }
-        }
-
-        if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
-        if event == .sessionStart, let source, source != .startup, source != .compact,
-           report?.event?.sessionSource == nil {
-            try? await self.report(task.id, StatusReport(sessionSource: source.rawValue), observedEpoch: observedEpoch)
-        }
-        switch event {
-        case .sessionStart where source != .compact:
-            // Skip re-orienting on a mid-turn compact (the agent already has its bearings).
-            return await sessionBrief(task.id).map { HookResponse(additionalContext: $0) }
-        default:
-            return nil
-        }
     }
 
     @discardableResult
@@ -1299,7 +909,6 @@ public actor OrchestraService {
                 // the hit branch is skipped and an early-life card live-shells every snapshot.
                 let ctx = AdapterContext(cwd: card.cwd, model: card.model.id, sessionId: card.agentSessionId,
                                          name: card.title, orchestraBin: orchestraBin,
-                                         since: card.agentSessionId == nil ? card.sessionDiscoverySince : nil,
                                          orchestraMCPBin: orchestraMCPBin)
                 let a = try? registry.get(card.agentId)
                 let agent = (try? await offActor { a?.sessionInfo(ctx, current: card.agentSessionId, prior: card.priorSessionIds) }) ?? nil
@@ -1326,7 +935,6 @@ public actor OrchestraService {
         let running = !targets.isEmpty
         let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
                                  name: t.title, orchestraBin: orchestraBin,
-                                 since: t.agentSessionId == nil ? t.sessionDiscoverySince : nil,
                                  orchestraMCPBin: orchestraMCPBin)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
@@ -1605,7 +1213,7 @@ public actor OrchestraService {
     /// `transition` closure re-enters this actor so the funnel stays the sole `phase` writer.
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
-            store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
+            store: store, worktrees: worktrees, sessions: sessions, adapters: registry,
             scratchRoot: config.scratchRoot,
             transition: { [self] id, to, epoch, expecting, mutate in
                 await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
@@ -1618,9 +1226,7 @@ public actor OrchestraService {
             emitActivity: { [self] id, kind, text in
                 let task = await store.get(id)
                 await emitActivity(kind, task, .daemon, text)
-            },
-            confirmDelivery: { [self] token, id in await confirmDelivery(token: token, cardId: id) },
-            claimSeed: { [self] id, epoch in await claimSeed(id, epoch: epoch) })
+            })
     }
 
     // (column display names live on `Column.displayName`)

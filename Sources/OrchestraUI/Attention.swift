@@ -34,9 +34,8 @@ public enum Attention {
     /// hard-blocked. The L1 chip renders the first one and folds the rest into a "+N".
     public enum Reason: Int, CaseIterable, Sendable, Equatable, Hashable {
         case dead = 0        // the session is gone — nothing proceeds until it's recovered
-        case permission      // blocked mid-turn on a tool-approval prompt
+        case humanRequired   // either provider observation or a durable declared question needs a person
         case mergeRequested  // merge-requested into a branch NO card owns ⇒ only a human can merge it
-        case question        // the agent declared an open question (`needs-input`)
         case stalled         // quiescent past T, or a pre-computed merge give-up
         case ctxCritical     // context near-full — hand off soon
     }
@@ -55,15 +54,13 @@ public enum Attention {
 
     // MARK: - quiescence primitives
 
-    /// The agent finished its turn and is waiting on a human. The ONLY phase that can stall: a running
-    /// card is working, and dead/transient phases have their own rows or are mid-flight.
-    public static func isIdle(_ t: Task) -> Bool { t.waitReason == .humanTurn }
+    /// The provider owns no further work: an ordinary wait with no automatic resume. Running,
+    /// unavailable, and auto-resuming waits cannot satisfy the quiet predicate.
+    public static func isIdle(_ t: Task) -> Bool { t.workInFlight == false }
 
-    /// "Nothing more is going to happen here on its own": concluded or dead, AND with no queued work.
-    /// A card with a pending delivery is imminently active even while it reads idle, which is why the
-    /// delivery bit belongs in this predicate rather than beside it.
+    /// "Nothing more is going to happen here on its own": concluded or dead.
     public static func isSettled(_ t: Task) -> Bool {
-        (isIdle(t) || t.phase.kind == .dead) && !t.hasPendingDelivery
+        isIdle(t) || t.phase.kind == .dead
     }
 
     // MARK: - the fold
@@ -87,20 +84,12 @@ public enum Attention {
         var out: [AttentionSignal] = []
 
         if c.phase.kind == .dead { out.append(.init(.dead, "dead")) }
-        if c.waitReason == .permission { out.append(.init(.permission, "permission")) }
+        if c.requiresHuman {
+            out.append(.init(.humanRequired, humanRequiredLabel(for: c)))
+        }
         if c.treeStat?.state == .mergeRequested, !parentOwned {
             out.append(.init(.mergeRequested, "merge-requested"))
         }
-        // Row 4, DECLARED rung. The DETECTED sibling — an in-terminal choices box (AskUserQuestion),
-        // which blocks mid-turn exactly like a permission wait and self-clears by state — funnels to
-        // this SAME amber and belongs right here as one more `||`. Deferred because the DAEMON can't yet
-        // detect an open box (the tool exists on bridged sessions, but whether it fires a hook the
-        // control plane sees, and whether it renders in the tmux pane, are unverified — see docs/09),
-        // not because none exists. Codex's approval prompt is already row 2.
-        // TODO(orchestra://task/897d75 — agent-channels/status redesign): add the detected rung here
-        // once that work makes an open box detectable.
-        if c.pendingQuestion != nil { out.append(.init(.question, "question")) }
-
         if canStall, let stall = isStalled(c, attached: attached, descendants: descendants,
                                            descendantHoldsAttention: descendantHoldsAttention,
                                            now: now, humanPaced: humanPaced, config: config) {
@@ -111,6 +100,15 @@ public enum Attention {
         }
 
         return out.sorted { $0.reason.rawValue < $1.reason.rawValue }
+    }
+
+    private static func humanRequiredLabel(for task: Task) -> String {
+        switch task.agentState?.humanNeed {
+        case .permission: return "permission"
+        case .input: return "input needed"
+        case .unspecified: return "action needed"
+        case nil: return "question"
+        }
     }
 
     // MARK: - chip text (pure, so the strings are testable without a view)
@@ -159,12 +157,13 @@ public enum Attention {
         //    into an owned parent wears a grey ⏱ and is the owning agent's business (rot there is
         //    step 2's job, not this row's). A pending question likewise — and if the agent forgets to
         //    re-declare, the question clears and the card falls through to the net next pass.
-        guard c.pendingQuestion == nil, c.treeStat?.state != .mergeRequested else { return nil }
+        guard !c.requiresHuman,
+              c.treeStat?.state != .mergeRequested
+        else { return nil }
 
         // 4. The constellation (the card + its attached agents) must be quiet, and nothing in the
         //    subtree may still be moving. Descendants gate by ACTIVITY only — their timestamps never
         //    move this card's clock (step 6).
-        guard !c.hasPendingDelivery else { return nil }
         guard attached.allSatisfy(isSettled) else { return nil }
         guard descendants.allSatisfy(isSettled) else { return nil }
 

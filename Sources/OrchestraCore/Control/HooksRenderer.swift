@@ -59,12 +59,6 @@ public enum HooksRenderer {
       "hooks": {
         "SessionStart": [
           { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" } ] }
-        ],
-        "PermissionRequest": [
-          { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event permission --agent __AGENT_ID__" } ] }
-        ],
-        "Stop": [
-          { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" } ] }
         ]
       }
     }
@@ -73,29 +67,38 @@ public enum HooksRenderer {
     /// Render the template into `dest`, substituting the orchestra binary path. Returns the dest path.
     @discardableResult
     public static func render(orchestraBin: String, agentId: String, to dest: String = Config.hooksPath) throws -> String {
-        let template: String
+        let rendered: String
         if let p = templatePath, let s = try? String(contentsOfFile: p, encoding: .utf8) {
-            template = s
+            rendered = s
+                .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
+                .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
         } else {
-            template = fallbackTemplate
+            rendered = renderedFallbackTemplate(orchestraBin: orchestraBin, agentId: agentId)
         }
-        let rendered = template
-            .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
-            .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
         let dir = (dest as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try rendered.write(toFile: dest, atomically: true, encoding: .utf8)
         return dest
     }
 
+    static func renderedFallbackTemplate(orchestraBin: String, agentId: String) -> String {
+        fallbackTemplate
+            .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
+            .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
+    }
+
     private static let fallbackTemplate = """
     {
+      "crossSessionInbound": "accept",
       "statusLine": { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event statusline --agent __AGENT_ID__" },
       "hooks": {
         "SessionStart": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" }] }],
         "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt --agent __AGENT_ID__" }] }],
+        "MessageDisplay": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event messagedisplay --agent __AGENT_ID__" }] }],
         "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event pretool --agent __AGENT_ID__" }] }],
         "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttool --agent __AGENT_ID__" }] }],
+        "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttoolfailure --agent __AGENT_ID__" }] }],
+        "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event permission --agent __AGENT_ID__" }] }],
         "Notification": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notification --agent __AGENT_ID__" }] }],
         "TaskCompleted": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event taskcompleted --agent __AGENT_ID__" }] }],
         "Stop": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" }] }],

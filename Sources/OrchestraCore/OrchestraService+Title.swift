@@ -78,8 +78,7 @@ extension OrchestraService {
     /// `needs-input` — the agent DECLARES that it is blocked on a decision only the card's owner can make.
     /// Set/replace only: there is deliberately no clear form, because a declaration an agent could retract
     /// is one it would forget to retract. The daemon retires it instead, at the only events that prove the
-    /// question is moot — the agent's next turn demonstrably starting, or a completed session replacement
-    /// (see `transition` and `confirmDelivery`).
+    /// question is moot — the agent's next turn demonstrably starting, or a completed session replacement.
     ///
     /// Empty is REJECTED, unlike `set-note`: an empty note means "no note", but an empty question would be
     /// an amber with nothing to answer.
@@ -90,10 +89,9 @@ extension OrchestraService {
         guard !clean.isEmpty else {
             throw OrchestraError.invalidParams("needs-input requires a question — one line stating what you need decided")
         }
-        // Stamp WHEN via the injected clock (`now`), so the fileTail turn-start fence has a declaration
-        // time to compare a Codex rollout line's own write time against — and so the whole thing is
-        // testable without wall-clock. Hoisted out of the `@Sendable` store.update closure so it doesn't
-        // capture the actor's `now`.
+        // Stamp WHEN via the injected clock (`now`) so clients can show how long the question has been
+        // open and tests need no wall clock. Hoisted out of the `@Sendable` store.update closure so it
+        // doesn't capture the actor's `now`.
         let declaredAt = now()
         guard let (saved, rev) = try? await store.update(t.id, {
             $0.pendingQuestion = PendingQuestion(text: clean, declaredAt: declaredAt)
@@ -103,13 +101,4 @@ extension OrchestraService {
         return saved
     }
 
-    /// Retire a declared question. Called from the daemon's proof-of-turn seams ONLY (never from a verb):
-    /// `transition`'s turn-start / session-landing edges and `confirmDelivery`'s receipt. Idempotent and
-    /// delta-gated — a card with no question costs one store read and writes nothing.
-    func clearPendingQuestion(_ id: UUID) async {
-        guard let t = await store.get(id), t.pendingQuestion != nil else { return }
-        if let (saved, rev) = try? await store.update(id, { $0.pendingQuestion = nil }) {
-            emit(.taskUpserted(saved), rev: rev)
-        }
-    }
 }

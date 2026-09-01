@@ -58,8 +58,8 @@ phase boundary, not on every step.
   **`set-planned <ref> <n>`** declares how many child cards your wave will fan out — the target the
   progress bar fills toward (dashed until they spawn). Set it once your plan is approved and update it
   when the plan changes; `0` clears it. Same authored-narration family as `set-note`.
-- **`handoff <ref> <context…> [--model <id>]`** — clean-context resume: restart the SAME session seeded
-  with `context` (folded with the card's pending inbox). Same worktree, same branch, fresh context. Hand
+- **`handoff <ref> <context…> [--model <id>]`** — clean-context resume: restart the SAME session with the
+  authored `context`. Same worktree, same branch, fresh context; ordinary inbox rows stay independent. Hand
   off to a *new* card instead by spawning with the context as the seed.
 - **`--model <id>` on `handoff` / `restart` / `resume`** — **re-seat** the card onto a different model
   *in place*: same card, same worktree, same session lineage. `handoff --model` **carries the context
@@ -68,8 +68,8 @@ phase boundary, not on every step.
   The id must come from your **own agent's** model list — a Codex card cannot re-seat onto a Claude model
   (the session transcript pins the agent), and an unknown id is rejected outright rather than silently
   ignored.
-- **`send <ref> <message>`** — enqueue a message into a card's durable inbox; it is delivered at the card's
-  next turn.
+- **`send <ref> <message>`** — durably enqueue a message into a card's inbox. The live native harness may
+  later accept it; queued or handed-off state never proves the model read or acted on it.
 - **`wait <ref…>`** — subscribe to a watched card's **real conclusion** — a merge/archive (done) or a
   death (exited) — so you are woken when it fires. A delegate that merely **ends its turn does NOT conclude**
   (a read-only reviewer/fork idles `.live(.waiting)` and `wait` will hang on it forever); get its result via
@@ -99,16 +99,16 @@ tightly-coupled work.
 - **Fork** — *you want an independent exploration or side-discussion of a slice, and you'll want the
   result back.* Default to a **lightweight read-only freeform card in the same directory**: `spawn` with
   `cwd` = your working dir, `access: readOnly`, and the slice as the `seed` — no worktree, no branch,
-  nothing to clean up. It explores and reports back via a wake + your inbox. Ideal for *"while planning,
+  nothing to clean up. It explores independently and can report its result through the normal card tools. Ideal for *"while planning,
   go over components A, B, and C separately without clogging this context, then pull their conclusions
   back."* Only cut a **worktree fork** (`spawn` with `repo` + `branch`) when the fork will change files
   and you want its own branch/PR.
 - **Fan-out** — *N independent pieces of work to run in parallel*, each in its own worktree. `batch-spawn`
   them. There's no come-back wiring unless you also `wait`. Good for a stacked-PR forest or N independent
   tasks.
-- **Wait** — *after spawning children, react when they finish.* Subscribe with `wait <refs>`; you are woken
-  when any child concludes. Drain your inbox for the conclusions and act (e.g. spawn the next PR in the
-  stack). Several children concluding at once coalesce in the inbox and drain together — none is lost.
+- **Wait** — *after spawning children, react when they finish.* Subscribe with `wait <refs>`; it returns
+  when any child concludes. Treat that conclusion as the return signal and act (e.g. spawn the next PR in
+  the stack). It is a lifecycle subscription, separate from ordinary inbox delivery.
 
   Choose one completion return channel for each child. If you subscribe with `wait`, treat the wait wake
   as that child's completion signal; do not also ask those same children to `send` a completion/result to
@@ -139,5 +139,5 @@ synthesize the answer now → keep it **in-context** (a native subagent if you h
 ## The reactive orchestration loop
 
 The headline pattern: spawn the stack head → subscribe with `wait` → your turn ends → the child concludes
-→ Orchestra resumes you with durable inbox context → spawn the next-in-stack off the merged branch. Repeat.
-That is how one card orchestrates a whole PR forest without polling.
+→ the subscription returns a conclusion → spawn the next-in-stack off the merged branch. Repeat. That is
+how one card orchestrates a whole PR forest without polling.

@@ -15,6 +15,13 @@ import Foundation
         #expect(store.toasts.contains { $0.color == .red })     // needs ToastColor: Equatable
     }
 
+    @Test func test_sendReturnsFalseWhenTheDaemonRejectsIt() async {
+        let store = BoardStore(platform: .noop)   // un-started → client.call fails fast
+        let sent = await store.send(UUID(), "keep this draft")
+        #expect(sent == false)
+        #expect(store.toasts.contains { $0.title == "Couldn't send message" && $0.color == .red })
+    }
+
     // The in-flight guard makes a second spawn (while one is "in flight") a genuine no-op: it returns nil
     // WITHOUT dispatching (no failure toast) and WITHOUT clearing the flag. Simulate the first spawn being
     // in flight by pre-setting isSpawning; a regression that dropped `guard beginSpawn()` from spawn()

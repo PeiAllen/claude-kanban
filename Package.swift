@@ -69,6 +69,7 @@ let package = Package(
                 .copy("Resources/embedded.conf"),
                 .copy("Resources/claude-hooks.json"),
                 .copy("Resources/codex-hooks.json"),
+                .copy("Resources/codex-app-server-launcher.sh"),
                 .copy("Resources/claude-code-models.json"),
                 .copy("Resources/codex-models.json"),
                 .copy("Resources/com.orchestra.daemon.plist"),

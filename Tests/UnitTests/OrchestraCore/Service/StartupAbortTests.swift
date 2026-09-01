@@ -259,11 +259,11 @@ struct StartupAbortTests {
         #expect(after.deadReason == .spawnExitedImmediately)
     }
 
-    /// A read-only card that reports a completed turn (`.live(.waiting(.humanTurn))`) DURING the capture
+    /// A read-only card that reports a completed turn (`.live(.waiting)`) DURING the capture
     /// await gets NO exemption from the bounded startup abort: an idle phase is indistinguishable between
     /// "finished a turn" and "fresh provisional launch", so the abort path retries it exactly as it would a
     /// blank launch whose pane died. (Turn-completion is no longer a terminal "done" — success is
-    /// agent-signalled, never inferred from an idle phase.) Sends `run: .waiting(.humanTurn)` as the real
+    /// agent-signalled, never inferred from an idle phase.) Sends `run: .waiting` as the real
     /// adapters do; a bare `turnCompleted` would leave the phase `.running`.
     @Test("a completed-turn report during the capture await does not exempt the card from the bounded abort")
     func completedTurnReportDuringCaptureStillAborts() async throws {
@@ -278,7 +278,7 @@ struct StartupAbortTests {
         async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, parks in capture
         await gate.reached()                                       // provably inside the capture window
         env.sessions.captureGate = nil                             // only the scheduled capture parks
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))  // idles live, does NOT conclude
+        await env.svc.testCompleteTurn(t.id)  // idles live, does NOT conclude
         gate.release()
         await reconciled
 
@@ -295,7 +295,7 @@ struct StartupAbortTests {
         // The card must still be startup-pending when the send lands (see `spawnStartupPending`).
         let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
         try await env.svc.send(t.id, "hello during grace")
-        // A running card queues the send for its Stop-drain — the point is it is NOT lost at the wake gate.
+        // The durable row remains available until a live provider sender accepts it.
         #expect(try await env.svc.inboxPeek(t.id).map(\.text) == ["hello during grace"])
     }
 
@@ -306,7 +306,7 @@ struct StartupAbortTests {
     func agentAgnostic(_ caps: AgentCapabilities) async throws {
         let env = TestEnv.make(grace: 1, capabilities: caps)
         let repo = TestEnv.repo(env.base)
-        // Awaiting caps (`.sessionStartHook`/`.rolloutMeta`): drive to live by hand-delivering the readiness
+        // Awaiting caps (`.sessionStartHook`): drive to live by hand-delivering the readiness
         // signal (arm is already in place — finishLaunch armed regardless of cap). The grace is raised BEFORE
         // the spawn arms it for the same reason as `spawnStartupPending` — this path arms identically, so both
         // the Claude- and the Codex-shaped adapter must be immune to the spawn outliving its own deadline.

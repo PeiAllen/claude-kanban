@@ -9,9 +9,8 @@ import TestSupport
 ///
 /// The verb is set/replace only; the daemon owns retirement, and everything below pins the same rule from
 /// a different angle: a question is cleared ONLY by proof that it is moot — the next turn demonstrably
-/// starting, or a session replacement that actually completed. Every case drives the real seams
-/// (`report()` → `transition()`, `handleHook`) rather than seeding phase directly: `seedPhase` bypasses
-/// the funnel, so a test built on it would pass while production leaked.
+/// starting. Every case drives the real observation, lifecycle, or hook seam rather than seeding phase
+/// directly, so the tests exercise the production transition funnel.
 @Suite("needs-input — declare a block, cleared only by proof of the next turn")
 struct NeedsInputTests {
 
@@ -73,12 +72,17 @@ struct NeedsInputTests {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
+        await env.svc.receiveAgentSignals(
+            cardId: t.id,
+            signals: [.init(sessionEpoch: epoch, turnID: "old-turn", kind: .turnStarted)]
+        )
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true),
-                                 observedEpoch: epoch)
+        await env.svc.receiveAgentSignals(
+            cardId: t.id,
+            signals: [.init(sessionEpoch: epoch, turnID: "old-turn", kind: .turnCompleted())]
+        )
 
-        #expect(await card(env.svc, t.id)?.phase == Phase.live(.waiting(.humanTurn)))
+        #expect(await card(env.svc, t.id)?.phase == Phase.live(.waiting))
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // armed, waiting on the human
     }
 
@@ -86,18 +90,15 @@ struct NeedsInputTests {
     func permissionResumeDoesNotClear() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
-        try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: epoch)
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")   // declared mid-turn
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)), observedEpoch: epoch)
-        try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: epoch)
+        await env.svc.testSetHumanNeed(t.id, .permission)
+        await env.svc.testSetHumanNeed(t.id, nil)
 
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
-    @Test("a relaunch INTENT does not clear it — only a landing does")
-    func relaunchIntentDoesNotClear() async throws {
+    @Test("a relaunch intent and failed landing both preserve it")
+    func relaunchIntentAndFailurePreserve() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
@@ -125,233 +126,104 @@ struct NeedsInputTests {
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
-    /// The Codex-only race the fence exists for. Codex turn-start reaches the daemon by a POLLED rollout
-    /// tail, so a `.running` line WRITTEN before a declaration can be APPLIED after it. Such a stale line
-    /// must not retire the question — only a turn-start whose evidence is newer than the declaration does.
-    /// A `.stub`-with-fileTail card + a fixed clock lets this run without a real Codex or wall-clock.
-    @Test("a stale fileTail turn-start keeps the question; the next genuine one clears it")
-    func fileTailTurnStartFence() async throws {
-        let declaredAt = Date(timeIntervalSince1970: 2_000_000)   // the fixed instant `needs-input` stamps
-        let env = TestEnv.make(capabilities: .fileTailStub, now: { declaredAt })
-        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
-        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-
-        // A rollout line written one second BEFORE the declaration, delivered now by the lagging poll.
-        let staleSeq = UInt64((declaredAt.timeIntervalSince1970 - 1) * 1_000_000)
-        try await env.svc.report(t.id, StatusReport(seq: staleSeq, run: .running), observedEpoch: epoch)
-        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // predates the ask → kept
-        #expect(await card(env.svc, t.id)?.phase == Phase.live(.running))            // …but the phase did move
-
-        // The turn ends; the human answers; the NEXT turn's line is written AFTER the declaration.
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
-        let freshSeq = UInt64((declaredAt.timeIntervalSince1970 + 1) * 1_000_000)
-        try await env.svc.report(t.id, StatusReport(seq: freshSeq, run: .running), observedEpoch: epoch)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)                   // a genuine new turn → cleared
-    }
-
-    /// A fileTail `.running` with no evidence timestamp (`seq == 0` — a rollout line whose timestamp was
-    /// absent/unparseable) cannot prove the turn-start is fresh, so it must KEEP the question rather than
-    /// fall through to an unconditional clear that silently disables the fence for that line. (Claude's
-    /// seq-less `.running` still clears — it is hooksPush, not lag-prone.)
-    @Test("a fileTail turn-start with no evidence timestamp keeps the question")
-    func fileTailUnstampedTurnStartKeeps() async throws {
+    @Test("legacy rollout status cannot clear a question")
+    func legacyRolloutStatusDoesNotClear() async throws {
         let env = TestEnv.make(capabilities: .fileTailStub)
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
 
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        await env.svc.testCompleteTurn(t.id)
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-        // seq defaults to 0 → no evidence time on a lag-prone agent → unprovable → keep.
-        try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: epoch)
+        try await env.svc.report(
+            t.id,
+            StatusReport(seq: 2_000_000_000_000, desc: "legacy rollout activity"),
+            observedEpoch: epoch
+        )
 
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
-        #expect(await card(env.svc, t.id)?.phase == Phase.live(.running))   // phase still advanced
+        #expect(await card(env.svc, t.id)?.turnStatus == .waiting())
     }
 
-    /// The persistence regression: after a daemon restart the tailer replays from offset 0, so a stale
-    /// pre-declaration line is re-applied against a RELOADED declaration. If `declaredAt` lost its
-    /// sub-second part on disk (the `.iso8601` rounding trap), a line written 50 ms BEFORE the declaration
-    /// would compare as after it and wrongly clear. Round-tripping the card through the real codec here
-    /// makes the fractional-encoding fix load-bearing: with rounding, this test's stale line clears.
-    @Test("a fractional declaredAt survives a persist/reload, so a stale replay is still kept")
-    func fractionalDeclaredAtSurvivesReload() async throws {
-        let declaredAt = Date(timeIntervalSince1970: 2_000_000.100)   // .100 — lost entirely by ISO rounding
-        let env = TestEnv.make(capabilities: .fileTailStub, now: { declaredAt })
+    @Test("a repeated running reconciliation is not a new turn")
+    func midTurnRunningReconciliationDoesNotClear() async throws {
+        let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
-        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-
-        // Force the declaration through disk exactly as a restart would — encode, decode, write back.
-        let stored = try #require(await card(env.svc, t.id))
-        let reloaded = try OrchestraJSON.decoder.decode(
-            Task.self, from: try OrchestraJSON.wire.encode(stored))
-        _ = try await env.svc.store.update(t.id) { $0.pendingQuestion = reloaded.pendingQuestion }
-
-        // A rollout line written at .050 — 50 ms BEFORE the declaration — replayed by the fresh tailer.
-        let staleSeq = UInt64(2_000_000.050 * 1_000_000)
-        try await env.svc.report(t.id, StatusReport(seq: staleSeq, run: .running), observedEpoch: epoch)
-        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // .050 < .100 → kept
-    }
-
-    /// The phase-edge guard (the answer to "fileTail `.running` isn't uniquely a turn-start — a
-    /// function_call line reports `.running` too"). A mid-turn line has `before == .live(.running)`, so
-    /// `isTurnStart` is false and it can't clear — only the genuine idle→running edge does.
-    @Test("a mid-turn fileTail running line does not clear a question")
-    func midTurnRunningLineDoesNotClear() async throws {
-        let base = Date(timeIntervalSince1970: 3_000_000)
-        let env = TestEnv.make(capabilities: .fileTailStub, now: { base })
-        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
-        // The turn starts (no question yet), card → running.
-        try await env.svc.report(t.id, StatusReport(seq: UInt64(3_000_001 * 1_000_000), run: .running),
-                                 observedEpoch: epoch)
-        // Declared mid-turn (card already running), then a function_call line — another `.running`.
         _ = try await env.svc.needsInput(ref: t.shortId, question: "mid-turn question?")
-        try await env.svc.report(t.id, StatusReport(seq: UInt64(3_000_002 * 1_000_000), run: .running),
-                                 observedEpoch: epoch)
+        await env.svc.testSetTurnStatus(t.id, .running)
 
-        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "mid-turn question?")   // not a turn-start edge
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "mid-turn question?")
     }
 
     // MARK: - what DOES clear it
 
-    @Test("the next turn starting clears it")
+    @Test("the next identified turn starting clears it")
     func turnStartClears() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
+        await env.svc.testCompleteTurn(t.id)
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
-        try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: epoch)
+        await env.svc.receiveAgentSignals(
+            cardId: t.id,
+            signals: [.init(sessionEpoch: epoch, turnID: "next-turn", kind: .turnStarted)]
+        )
 
         #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
     }
 
-    /// The regression this seam exists for. A Claude card handed an injected answer at Stop resumes the
-    /// SAME session with no `UserPromptSubmit`; if that turn is pure prose it calls no tool either, so the
-    /// card reports `.running` never and crosses no phase edge. Handing back the continuation IS the turn
-    /// starting, so the claim is what retires a question declared in the turn BEFORE it.
-    @Test("a delivery-caused turn with no tool call clears it")
-    func deliveryTurnClears() async throws {
+    @Test("an identified next turn clears the question even when status is already running")
+    func distinctRunningTurnClears() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)),
-                                 observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch)
-
-        // Declared at the end of turn N — the agent asked, and went idle.
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-        try await env.svc.send(t.id, "the answer is: base it on main")
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+        await env.svc.testSetTurnStatus(t.id, .running)
+        let oldPhaseDate = Date(timeIntervalSince1970: 1)
+        await env.svc.seedPhase(t.id, .live(.running), phaseChangedAt: oldPhaseDate)
 
-        // The Stop hands the answer back as a continuation: turn N+1 is starting, so the question it was
-        // waiting on is retired — with the card never having been `.running`.
-        let handed = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
-                                              observedEpoch: epoch, stopHookActive: false)
-        #expect(handed?.continuation?.contains("base it on main") == true)
-        #expect(await card(env.svc, t.id)?.phase != Phase.live(.running))
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+        await env.svc.receiveAgentSignals(
+            cardId: t.id,
+            signals: [.init(sessionEpoch: epoch, turnID: "next-turn", kind: .turnStarted)]
+        )
+
+        let after = try #require(await card(env.svc, t.id))
+        #expect(after.pendingQuestion == nil)
+        #expect(after.phaseChangedAt > oldPhaseDate)
     }
 
-    /// The regression that made the first version of this seam wrong. The clear used to hang off
-    /// `confirmDelivery`, and a stop-drain batch is confirmed on the Stop that ENDS the continuation turn
-    /// (both agents set `stop_hook_active` there, `HookRPC.stopHookActive`) — which is exactly when an
-    /// agent that has run out of road declares its question. The declaration was erased a beat after it
-    /// was made, on both backends, and the card went idle with nothing to show the human.
-    @Test("a question declared DURING a continuation turn survives that turn's Stop")
-    func declaredDuringContinuationSurvives() async throws {
-        let env = TestEnv.make()
-        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)),
-                                 observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch)
-        try await env.svc.send(t.id, "here is the context you asked for")
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
-        // Stop #1 hands the message back as a continuation — turn N+1 begins.
-        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
-                                     observedEpoch: epoch, stopHookActive: false)
-
-        // The agent works through turn N+1, gets blocked, and declares at the END of it.
-        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-
-        // Stop #2 ends the continuation: `stopHookActive` is true, so it CONFIRMS the batch turn N+1 ran.
-        // Nothing new is queued, so no fresh continuation is handed back — no turn is starting, and the
-        // question must still be there for the human to see on the idle card.
-        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
-                                     observedEpoch: epoch, stopHookActive: true)
-        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
-    }
-
-    /// The full re-declare cycle the guidance promises, end to end: ask, get answered, ask again. Q1 is
-    /// retired by the delivery that answers it, and Q2 — raised while working through that answer — must
-    /// outlive the Stop that closes the same turn. The two clears are one beat apart, which is exactly why
-    /// keying them to the claim rather than the receipt matters.
-    @Test("Q1 → delivery → Q2 → Stop: Q1 is retired and Q2 stands")
-    func reDeclareCycleKeepsTheNewQuestion() async throws {
-        let env = TestEnv.make()
-        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)),
-                                 observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch)
-
-        _ = try await env.svc.needsInput(ref: t.shortId, question: "Q1: which base?")
-        try await env.svc.send(t.id, "answer: base it on main")
-        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-
-        // The claim opens the answering turn → Q1 is moot.
-        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
-                                     observedEpoch: epoch, stopHookActive: false)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
-
-        // Working through the answer raises a NEW block, declared before that turn ends.
-        _ = try await env.svc.needsInput(ref: t.shortId, question: "Q2: squash or keep history?")
-
-        // The Stop closing that turn confirms Q1's delivery. It must not touch Q2.
-        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
-                                     observedEpoch: epoch, stopHookActive: true)
-        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "Q2: squash or keep history?")
-    }
-
-    @Test("a landed relaunch clears it — the session that asked is gone")
-    func landedRelaunchClears() async throws {
+    @Test("a same-session relaunch preserves it")
+    func sameSessionRelaunchPreserves() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
         _ = try await env.svc.resume(t.id)
 
-        // The bring-up lands. A blank/resumed launch lands `.waiting(.humanTurn)`, so the turn-start arm
-        // alone would miss this — the session-replacement arm is what covers it.
-        _ = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)),
+        // This is a resumed provider session, not a completed replacement.
+        _ = await env.svc.transition(t.id, to: .live(.waiting),
                                      observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch,
                                      expecting: .relaunching)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
-    @Test("/clear replaces the session context and clears it")
-    func sessionClearClears() async throws {
+    @Test("/clear without a replacement session ID preserves it")
+    func sessionClearPreserves() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
 
         try await env.svc.report(t.id, StatusReport(sessionSource: "clear"), observedEpoch: epoch)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
-    @Test("a current-generation session rollover clears it")
-    func rolloverClears() async throws {
+    @Test("a current-generation session rollover alone preserves it")
+    func rolloverAlonePreserves() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
 
         try await env.svc.report(t.id, StatusReport(sessionId: "fresh-session"), observedEpoch: epoch)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 }

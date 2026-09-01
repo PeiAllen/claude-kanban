@@ -5,10 +5,10 @@ import OrchestraUI
 
 /// The **Needs You** attention queue (design §6), re-homed (BT slice 5) onto the 3b `ownAttention` fold —
 /// the SAME definition of "needs you" the card L1/L4 chips, peek rows, and eye tint use. Each row shows
-/// the card's own reasons with their labels; the top (most hard-blocked) reason drives the row's section,
-/// color, and primary action — Approve/Deny (🔐), a quick reply (🙋 `send`), Recover (💀), or Open (the
-/// rest). Background-waiting cards never appear (they hold no reason). Membership is time-derived (a card
-/// stalls with no daemon traffic), so the tab ticks a `now`.
+/// the card's own reasons with their labels; the top reason drives the row's section, color, and primary
+/// action — Open Harness for every live need, Recover for a dead card. Background-waiting cards never
+/// appear (they hold no reason). Membership is time-derived (a card stalls with no daemon traffic), so the
+/// tab ticks a `now`.
 struct NeedsYouTab: View {
     @EnvironmentObject private var model: BoardModel
     @EnvironmentObject private var snooze: NeedsYouSnooze
@@ -129,9 +129,8 @@ extension Attention.Reason {
     var emoji: String {
         switch self {
         case .dead:           return "💀"
-        case .permission:     return "🔐"
+        case .humanRequired:  return "🙋"
         case .mergeRequested: return "🔀"
-        case .question:       return "🙋"
         case .stalled:        return "⏱"
         case .ctxCritical:    return "◔"
         }
@@ -140,9 +139,8 @@ extension Attention.Reason {
     var bucketName: String {
         switch self {
         case .dead:           return "Died"
-        case .permission:     return "Permission"
+        case .humanRequired:  return "Needs you"
         case .mergeRequested: return "Merge"
-        case .question:       return "Question"
         case .stalled:        return "Stalled"
         case .ctxCritical:    return "Context"
         }
@@ -150,9 +148,8 @@ extension Attention.Reason {
     func sem(_ theme: Theme) -> SemColor {
         switch self {
         case .dead:           return theme.red
-        case .permission:     return theme.amber
+        case .humanRequired:  return theme.amber
         case .mergeRequested: return theme.amber
-        case .question:       return theme.blue
         case .stalled:        return theme.amber
         case .ctxCritical:    return theme.indigo
         }
@@ -195,21 +192,15 @@ private struct ReasonHeader: View {
 // MARK: - One attention row
 
 /// A single queue row: the top reason chip + all reason labels, title, `repo/branch`, last activity,
-/// waiting age, and the inline action(s) matched to the top reason. Its own `View` so the reply field /
-/// in-flight state stay local to the row.
+/// waiting age, and the action matched to the top reason.
 private struct AttentionRow: View {
     let item: NeedsYouRow
     let onOpen: () -> Void
     let onRecover: () -> Void
 
-    @EnvironmentObject private var model: BoardModel
     @EnvironmentObject private var snooze: NeedsYouSnooze
     @Environment(\.theme) private var theme: Theme
 
-    @State private var replying = false
-    @State private var draft = ""
-    @State private var busy = false          // guards the async gate/reply so a double-tap can't double-fire
-    @FocusState private var replyFocused: Bool
     @Environment(\.animationsActive) private var animationsActive
 
     private var task: Task { item.task }
@@ -243,7 +234,6 @@ private struct AttentionRow: View {
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             actions
-            if replying { replyField }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -278,9 +268,10 @@ private struct AttentionRow: View {
     /// Honest age prefix per status — a context-full card is still *running*, not waiting.
     private var waitingLabel: String {
         switch task.phaseDisplay {
-        case .dead:    return "Died "
-        case .running: return "Running "
-        default:       return "Waiting "
+        case .dead:        return "Died "
+        case .running:     return "Running "
+        case .unavailable: return "Unavailable "
+        default:           return "Waiting "
         }
     }
 
@@ -289,28 +280,17 @@ private struct AttentionRow: View {
     @ViewBuilder private var actions: some View {
         HStack(spacing: 8) {
             switch top {
-            case .permission:
-                ActionButton("Approve", systemImage: "checkmark", tint: theme.green, filled: true, busy: busy) {
-                    run { await model.approvePermission(task.id) }
-                }
-                ActionButton("Deny", systemImage: "xmark", tint: theme.red) {
-                    run { await model.denyPermission(task.id) }
-                }
-            case .question:
-                ActionButton("Reply", systemImage: "text.bubble", tint: theme.blue) {
-                    withAnimation { replying.toggle() }
-                    if replying { replyFocused = true }
-                }
+            case .humanRequired:
+                ActionButton("Open Harness", systemImage: "arrow.up.forward.square", tint: theme.amber,
+                             filled: true) { onOpen() }
             case .dead:
                 ActionButton("Recover", systemImage: "cross.case", tint: theme.red, filled: true) { onRecover() }
             case .mergeRequested, .stalled, .ctxCritical:
-                // Look at the card — no gate/reply fits (approve a merge, nudge a stall, hand off context).
-                ActionButton("Open", systemImage: "arrow.up.forward.square", tint: sem) { onOpen() }
+                ActionButton("Open Harness", systemImage: "arrow.up.forward.square", tint: sem) { onOpen() }
             }
             Spacer(minLength: 0)
             overflow
         }
-        .disabled(busy)
     }
 
     /// The always-present secondary menu: open the card, snooze, dismiss.
@@ -330,49 +310,6 @@ private struct AttentionRow: View {
                 .frame(width: 32, height: 28)
         }
         .accessibilityLabel("More actions")
-    }
-
-    // MARK: inline reply (question rows) — drives the `send` RPC
-
-    private var replyField: some View {
-        HStack(spacing: 8) {
-            TextField("Reply to the agent…", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...4)
-                .focused($replyFocused)
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 10).fill(theme.chip))
-                .onSubmit(sendReply)
-            Button(action: sendReply) {
-                Image(systemName: "arrow.up.circle.fill").font(.title2)
-                    .foregroundStyle(draft.trimmed.isEmpty ? theme.text3 : theme.blue.dot)
-            }
-            .disabled(draft.trimmed.isEmpty || busy)
-        }
-        .padding(.top, 2)
-    }
-
-    private func sendReply() {
-        let text = draft.trimmed
-        guard !text.isEmpty else { return }
-        run {
-            await model.send(task.id, text)
-        } then: {
-            draft = ""
-            withAnimation { replying = false }
-        }
-    }
-
-    /// Run an async action guarded by `busy` (so the button can't double-fire), then an optional
-    /// main-actor completion.
-    private func run(_ action: @escaping () async -> Void, then done: (() -> Void)? = nil) {
-        guard !busy else { return }
-        busy = true
-        _Concurrency.Task {
-            await action()
-            busy = false
-            done?()
-        }
     }
 }
 
@@ -407,18 +344,16 @@ private struct ActionButton: View {
     let systemImage: String
     let tint: SemColor
     var filled = false
-    var busy = false
     let action: () -> Void
     init(_ title: String, systemImage: String, tint: SemColor,
-         filled: Bool = false, busy: Bool = false, action: @escaping () -> Void) {
+         filled: Bool = false, action: @escaping () -> Void) {
         self.title = title; self.systemImage = systemImage; self.tint = tint
-        self.filled = filled; self.busy = busy; self.action = action
+        self.filled = filled; self.action = action
     }
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                if busy { ProgressView().controlSize(.mini) }
-                else { Image(systemName: systemImage) }
+                Image(systemName: systemImage)
                 Text(title)
             }
             .font(.footnote.weight(.semibold))

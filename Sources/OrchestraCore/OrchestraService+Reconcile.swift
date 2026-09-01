@@ -16,9 +16,6 @@ extension OrchestraService {
     /// Test seam: pin the step-backoff delay so the backoff test's window is load-proof (see the field's doc).
     func setStepBackoff(_ seconds: Double) { stepBackoffOverrideSeconds = seconds }
 
-    /// Test seam: pin the delivery-retry backoff so an arm test's window is load-proof.
-    func setDeliveryBackoff(_ seconds: Double) { deliveryBackoffOverrideSeconds = seconds }
-
     /// Test/introspection: the worktree registry's conservative-mode flag (post-corrupt-boot).
     func worktreeConservativeMode() async -> Bool { await worktrees.conservativeMode }
 
@@ -160,14 +157,11 @@ extension OrchestraService {
                     let probedEpoch = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
                     if let probed = probedEpoch ?? nil, probed == t.sessionEpoch {
                         runtime[t.id]?.launchReadyTicks = 0
-                        // Land in the flavor the LaunchStepper WOULD have used (mirror its rule) rather than a
-                        // hardcoded `.humanTurn`: a prompted first launch lands `.running`, a provisional/resumed
-                        // card `.waiting`. Adopt jumps `.launching→.live` WITHOUT the LaunchStepper, so nothing
-                        // downstream corrects it — it must derive the landing here. Falls back to `.waiting` if
-                        // the adapter is momentarily unavailable (never worse than the old hardcode).
+                        // Adopt jumps `.launching→.live` without an observation source ready to report a
+                        // provider state, so it must land unavailable. Flavor remains useful solely for argv
+                        // semantics and the human-paced marker below.
                         let adopted = try? registry.get(t.agentId)
                         let adoptFlavor = adopted.map { deriveLaunchFlavor(t, $0) }
-                        let land = adoptFlavor.map { landing(of: $0) } ?? .waiting(.humanTurn)
                         // Adopt jumps `.launching→.live` WITHOUT a stepper, so it must also mark a seeded
                         // opening turn the report path would otherwise read as human — the same COMPANION
                         // duty as the `pendingSeed` clear below. (Done before the clear, which reads it not.)
@@ -180,7 +174,7 @@ extension OrchestraService {
                         // `pendingModel` is consumed here for the same reason as `pendingSeed`: adopt lands
                         // `.live` without the stepper, so leaving it set would replay the re-seat onto a
                         // later launch (and leave `model` showing whatever a stale report last wrote).
-                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) {
+                        _ = await transition(t.id, to: .live(.init(turnStatus: .unavailable)), observedEpoch: probed) {
                             $0.pendingSeed = nil
                             consumeModelReseat(&$0, adopted)   // consumed even if the adapter didn't resolve
                         }
@@ -224,11 +218,6 @@ extension OrchestraService {
                 stepAttempts[t.id] = nil              // dead cards have no stepper — the backoff is dead weight (the .dead-path leak)
             }
 
-            // The delivery arm (B4) — level-triggered, AFTER the phase switch so it reads this tick's
-            // settled phase (it re-reads the card itself, since `.live`'s `markDead` path does not
-            // `continue`). The `continue`s above (startup-abort, orphan pane) deliberately skip it:
-            // those cards are converging to dead and are picked up next tick.
-            await reconcileDelivery(t)
         }
 
         // (5) orphan-session sweep — after the per-card pass so a just-transitioned card isn't misread.
@@ -280,7 +269,7 @@ extension OrchestraService {
         guard runtime[id]?.readinessWaiter != nil else { runtime[id]?.launchReadyTicks = 0; return }
         let n = (runtime[id]?.launchReadyTicks ?? 0) + 1
         if n >= launchReadyTickThreshold { runtime[id]?.launchReadyTicks = 0; resolveReadiness(id, true, via: .ticks) }
-        else { runtime[id]?.launchReadyTicks = n }   // liveness fallback → HOLD the seed lease (B3; production tick path)
+        else { runtime[id]?.launchReadyTicks = n }
     }
 
     // MARK: - orphan-session sweep (fresh off-actor probe, fail-safe)
@@ -364,6 +353,16 @@ extension OrchestraService {
                 // (older/mismatched) epoch means the session isn't ours → relaunch to reclaim identity.
                 let e = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
                 if (e ?? nil) == t.sessionEpoch {
+                    ensureRuntime(for: t)
+                    // AgentState is a current observation, not historical progress. A daemon restart
+                    // invalidates the persisted snapshot; Codex restores it from its attach response,
+                    // while Claude remains unavailable until its next live hook/span.
+                    if t.turnStatus == .unavailable {
+                        await reconcileAgentObservation(t)
+                    } else {
+                        await invalidateAgentObservation(t)
+                    }
+                    reconcileAgentMessageHandle(t)
                     continue                                // adopt — leave `.live`
                 }
                 _ = await transition(t.id, to: .relaunching,

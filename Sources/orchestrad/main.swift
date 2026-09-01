@@ -18,6 +18,7 @@ do {
     // new sessions can still report their launch failure through the normal lifecycle path.
     log("warning: unable to reload terminal configuration: \(error)")
 }
+
 let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath), sessions: terminalSessions,
                                proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
 
@@ -66,7 +67,6 @@ _Concurrency.Task {
     await service.sweepCardFiles()         // reap orphaned per-card launch-config files (backlog + crash residue)
     await service.redriveArchivedWorktreeReleases()   // finish interrupted removals for archivedComplete cards
     await service.reloadWatchRegistry()    // carry #4: durable watch registry + terminal-at-reload delivery
-    await service.refreshAllPendingDelivery()   // slice 4: re-derive hasPendingDelivery from the reloaded inbox
     await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage
     await service.rebuildMergeRequestNudges()   // re-arm merge-request re-nudge timers from live cards' state
 }
@@ -78,6 +78,15 @@ _Concurrency.Task {
         try? await _Concurrency.Task.sleep(for: .seconds(service.reconcilePollInterval))
         await service.reconcile()
         await service.pollTelemetry()   // tail fileTail (Codex) rollouts → parse → report
+    }
+}
+
+// Claude hooks have no Ctrl-C terminal event. One global provider snapshot repairs only unchanged
+// running sessions; the service coalesces overlapping calls and otherwise leaves hook state untouched.
+_Concurrency.Task {
+    while true {
+        try? await _Concurrency.Task.sleep(for: .seconds(10))
+        await service.reconcileClaudeIdle()
     }
 }
 

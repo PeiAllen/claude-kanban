@@ -14,134 +14,26 @@ struct ReportTests {
     }
     typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
 
-    // MARK: - waitReason (notification classification)
-
-    private func parse(_ kind: String, _ json: String) -> StatusReport? {
-        let p = (try? JSONValue.parse(Data(json.utf8))) ?? .object([:])
-        return ClaudeCodeAdapter().parse(.hooksPush(kind: kind, payload: p))
-    }
-
-    @Test("Task encodes/decodes waitReason round-trip; absent decodes to nil")
-    func waitReasonCodable() async throws {
+    @Test("Task encodes and decodes AgentState human need independently of turn status")
+    func agentStateCodable() async throws {
         let (_, t) = try await spawned()
         var card = t
-        card.phase = .live(.waiting(.permission))
+        card.phase = .live(.init(turnStatus: .running, humanNeed: .permission))
         let data = try JSONEncoder().encode(card)
         let back = try JSONDecoder().decode(Task.self, from: data)
-        #expect(back.waitReason == .permission)
-        let legacy = try JSONEncoder().encode(t)          // t.waitReason is nil already
-        #expect(try JSONDecoder().decode(Task.self, from: legacy).waitReason == nil)
-    }
-
-    @Test("StatusReport routes waitReason into the snapshot bucket")
-    func waitReasonRoutes() {
-        let r = StatusReport(run: .waiting(.permission))
-        #expect(r.snapshot?.run == .waiting(.permission))
-        #expect(r.snapshot?.run != nil)
-    }
-
-    @Test("StatusReport routes provider-neutral turn completion into the snapshot bucket")
-    func turnCompletedRoutes() {
-        let r = StatusReport(run: .waiting(.humanTurn), turnCompleted: true)
-        #expect(r.snapshot?.run != nil)
-        #expect(r.snapshot?.run == .waiting(.humanTurn))
-        #expect(r.snapshot?.turnCompleted == true)
-    }
-
-    @Test("report sets waitReason on a waiting snapshot and clears it when status leaves waiting")
-    func waitReasonLifecycle() async throws {
-        let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)))
-        var after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.waitReason != nil)
-        #expect(after.waitReason == .permission)
-        try await env.svc.report(t.id, StatusReport(run: .running))
-        after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.waitReason == nil)
-    }
-
-    @Test("fileTail permission hook fences a late stale .running rollout line (#10 C1 race)")
-    func fileTailPermissionFence() async throws {
-        // A fileTail agent (Codex): telemetry == .fileTail, so the permission fence is active.
-        let env = TestEnv.make(capabilities: .codex)
-        let repo = TestEnv.repo(env.base)
-        // .codex is `.rolloutMeta` → the blank spawn awaits; drive its launch-ready signal (spawnAwaited).
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "Task", repo: repo, branch: "b"))
-
-        // The PermissionRequest hook arrives as a seq==0 push → the card blocks on permission.
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)))
-        var after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.waitReason != nil)
-        #expect(after.waitReason == .permission)
-
-        // The tool-call rollout line the agent wrote µs BEFORE it blocked (→ .running, seq = its
-        // timestamp) is delivered a poll-tick LATER by the tailer. Its seq is far below "now", so the
-        // fence (cursor advanced to now-µs by the hook) drops it — the permission wait survives. Pre-fix
-        // this seq (> 0) sailed past the gate and flipped the card back to .running: no Needs-You, no push.
-        try await env.svc.report(t.id, StatusReport(seq: 1_000, run: .running))
-        after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.waitReason != nil, "a late pre-block .running line must not un-block the permission wait")
-        #expect(after.waitReason == .permission)
-
-        // A genuinely-later line (timestamp AFTER the fence, i.e. post-approval work) still applies.
-        let future = UInt64(Date().timeIntervalSince1970 * 1_000_000) + 5_000_000
-        try await env.svc.report(t.id, StatusReport(seq: future, run: .running))
-        after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.phaseDisplay == .running, "a genuinely-later line still advances the card past permission")
-    }
-
-    @Test("Notification permission_prompt → waiting/.permission")
-    func classifyPermission() {
-        let r = parse("notification", #"{"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#)
-        #expect(r?.snapshot?.run != nil)
-        #expect(r?.snapshot?.run == .waiting(.permission))
-        #expect(r?.snapshot?.desc == "Claude needs your permission to use Bash")
-    }
-
-    @Test("Notification idle_prompt → waiting/.humanTurn")
-    func classifyIdle() {
-        let r = parse("notification", #"{"notification_type":"idle_prompt","message":"Claude is waiting for your input"}"#)
-        #expect(r?.snapshot?.run != nil)
-        #expect(r?.snapshot?.run == .waiting(.humanTurn))
-    }
-
-    @Test("Stop with no background work → waiting/.humanTurn")
-    func classifyStopIdle() {
-        let r = parse("stop", #"{"background_tasks":[],"session_crons":[]}"#)
-        #expect(r?.snapshot?.run != nil)
-        #expect(r?.snapshot?.run == .waiting(.humanTurn))
-        #expect(r?.snapshot?.turnCompleted != true)
-    }
-
-    @Test("TaskCompleted → waiting/.humanTurn with turn-completion signal")
-    func classifyTaskCompleted() {
-        let r = parse("taskcompleted", #"{"task_id":"task-1","task_subject":"answer"}"#)
-        #expect(r?.snapshot?.run != nil)
-        #expect(r?.snapshot?.run == .waiting(.humanTurn))
-        #expect(r?.snapshot?.turnCompleted == true)
-    }
-
-    @Test("Stop with pending background_tasks → nil (no status change)")
-    func classifyStopBackgroundTasks() {
-        let r = parse("stop", #"{"background_tasks":[{"id":"t1","type":"shell","status":"running"}],"session_crons":[]}"#)
-        #expect(r == nil)
-    }
-
-    @Test("Stop with pending session_crons → nil (no status change)")
-    func classifyStopCrons() {
-        let r = parse("stop", #"{"background_tasks":[],"session_crons":[{"id":"c1","schedule":"*/5 * * * *"}]}"#)
-        #expect(r == nil)
+        #expect(back.turnStatus == .running)
+        #expect(back.agentState?.humanNeed == .permission)
     }
 
     @Test("merges only present fields; ctxPct/desc/model update in place")
     func mergeFields() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(ctxPct: 42, modelId: "m2", desc: "Editing Foo.swift", run: .running))
+        try await env.svc.report(t.id, StatusReport(ctxPct: 42, modelId: "m2", desc: "Editing Foo.swift"))
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.ctxPct == 42)
         #expect(after.desc == "Editing Foo.swift")
         #expect(after.model.id == "m2")   // a reported launch id updates the model (never a display label)
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // metadata reports never manufacture provider status
     }
 
     @Test("a reported display label updates modelDisplay only — never the launch id")
@@ -164,7 +56,7 @@ struct ReportTests {
         #expect(after.agentSessionId == "brand-new-id")
         #expect(after.priorSessionIds.contains(oldId))
         #expect(after.awaitingFirstPrompt == true)   // clear sets provisional
-        #expect(after.waitReason != nil)          // clear → idle
+        #expect(after.turnStatus == .unavailable)   // replacement session awaits fresh observation
     }
 
     /// A genuine in-session `/rename` — a reported name that DIFFERS from the one the launch pushed —
@@ -229,7 +121,7 @@ struct ReportTests {
         var after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Now do something else")
         #expect(after.awaitingFirstPrompt == false)
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // a prompt report is metadata, not a turn observation
         // a later prompt does NOT re-title
         try await env.svc.report(t.id, StatusReport(promptText: "And another thing"))
         after = try #require(await env.svc.list().first { $0.id == t.id })
@@ -321,7 +213,7 @@ struct ReportTests {
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.awaitingFirstPrompt == false)
         #expect(after.title == "a normal turn")
-        #expect(after.phaseDisplay == .running)
+        #expect(after.turnStatus == .unavailable)  // current provider observation owns live status
     }
 
     @Test("no-delta report = no persist, no event (idempotent)")
@@ -384,7 +276,14 @@ struct ReportTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
         try await env.svc.report(t.id, StatusReport(ctxPct: 5))                      // no activity
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))              // transition
+        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
+        await env.svc.receiveAgentSignals(
+            cardId: t.id,
+            signals: [
+                .init(sessionEpoch: epoch, turnID: "activity-turn", kind: .turnStarted),
+                .init(sessionEpoch: epoch, turnID: "activity-turn", kind: .turnCompleted()),
+            ]
+        )
         try await pollUntil("statusChanged activity delivered") {
             await collector.activities.contains { $0.kind == .statusChanged }
         }
@@ -400,39 +299,59 @@ struct ReportTests {
         (await svc.list().first { $0.id == id })?.humanPaced ?? false
     }
 
+    private func turn(_ kind: AgentSignal.Kind, on task: Task, in service: OrchestraService) async {
+        let epoch = (await service.store.get(task.id))?.sessionEpoch ?? task.sessionEpoch
+        let turnID = UUID().uuidString
+        let signals: [AgentSignal]
+        switch kind {
+        case .turnCompleted(let resume):
+            // A terminal only describes a known current provider turn. Give the test a real pair
+            // rather than relying on the old uncorrelated completion compatibility path.
+            signals = [
+                .init(sessionEpoch: epoch, turnID: turnID, kind: .turnStarted),
+                .init(sessionEpoch: epoch, turnID: turnID, kind: .turnCompleted(resume: resume)),
+            ]
+        case .turnStarted:
+            signals = [.init(sessionEpoch: epoch, turnID: turnID, kind: kind)]
+        default:
+            signals = [.init(sessionEpoch: epoch, turnID: turnID, kind: kind)]
+        }
+        await service.receiveAgentSignals(
+            cardId: task.id,
+            signals: signals
+        )
+    }
+
     /// A prompt typed into an idle-WAITING session is a direct human turn and marks the card human-paced;
     /// the launch's own seed prompt does not, because it lands while the card is `.running` (prompt in
-    /// flight) — never through `.waiting(.humanTurn)`. That split is what keeps an agent-work card's
+    /// flight) — never through `.waiting`. That split is what keeps an agent-work card's
     /// safety-net stall alive while exempting a card a human is actually pacing.
     @Test("a prompt on an idle-waiting card sets humanPaced; a prompt while running does not")
     func humanPacedSetOnlyByAnIdleHumanTurn() async throws {
         let (env, t) = try await spawned()
         #expect(t.humanPaced == false)                                   // a fresh spawn seed ⇒ agent-paced
         // A prompt echoed while the card is RUNNING (the launch seed being submitted) is not a fresh human
-        // turn: the card never sat in `.waiting(.humanTurn)`, so it stays agent-paced.
-        try await env.svc.report(t.id, StatusReport(run: .running))
+        // turn: the card never sat in `.waiting`, so it stays agent-paced.
         try await env.svc.report(t.id, StatusReport(promptText: "seed echo"))
         #expect(await humanPaced(env.svc, t.id) == false)
         // Once the turn concludes and the card idle-waits, a prompt IS a direct human turn.
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        await turn(.turnCompleted(), on: t, in: env.svc)
         try await env.svc.report(t.id, StatusReport(promptText: "human follow-up"))
         #expect(await humanPaced(env.svc, t.id) == true)
     }
 
-    /// The launch's own MACHINE opening turn — a spawn/handoff seed, or a wake-delivered inbox batch —
-    /// reaches the report path as a `promptText`, and a resume lands `.waiting(.humanTurn)`, so without the
-    /// seed marker it would wrongly mark agent work human-paced (breaking the safety-net stall). The FIRST
-    /// stamped prompt of the launch generation is consumed as that machine turn; only the NEXT is human.
+    /// A system-supplied launch seed reaches the report path as a `promptText`. The first stamped prompt
+    /// for that generation consumes the marker; only a later prompt is classified as human.
     @Test("the launch's machine seed prompt is not human-paced; a later human prompt is")
     func humanPacedSkipsTheMachineSeedTurn() async throws {
         let (env, t) = try await spawned()      // spawns WITH a prompt → finishLaunch owes a machine turn at this epoch
         let epoch = t.sessionEpoch
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        await turn(.turnCompleted(), on: t, in: env.svc)
         // Stamped with the launch epoch: this IS the seed's own prompt, even though it lands on the idle wait.
         try await env.svc.report(t.id, StatusReport(promptText: "the machine seed"), observedEpoch: epoch)
         #expect(await humanPaced(env.svc, t.id) == false)
         // Marker consumed → the next prompt (after the turn concludes) is a genuine human turn.
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        await turn(.turnCompleted(), on: t, in: env.svc)
         try await env.svc.report(t.id, StatusReport(promptText: "a real human follow-up"), observedEpoch: epoch)
         #expect(await humanPaced(env.svc, t.id) == true)
     }
@@ -450,39 +369,13 @@ struct ReportTests {
 
         // A human-paced card handed a seed (a handoff) becomes agent-paced.
         let (env2, t2) = try await spawned()
-        try await env2.svc.report(t2.id, StatusReport(run: .waiting(.humanTurn)))
+        await turn(.turnCompleted(), on: t2, in: env2.svc)
         try await env2.svc.report(t2.id, StatusReport(promptText: "human"))
         #expect(await humanPaced(env2.svc, t2.id) == true)
         let handed = try await env2.svc.resume(t2.id, seed: "handoff context")   // seed → agent-driving
         #expect(handed.humanPaced == false)
     }
 
-    /// A promptless "New agent" spawn is human-paced by construction (the human's first move is pending).
-    /// The BLOCKER-2 case: an agent (`.card`) send delivering work flips it agent-paced, so it is NOT
-    /// permanently exempt — even though `awaitingFirstPrompt` stays set (which on Codex never clears).
-    @Test("a promptless spawn is human-paced; a card send to it makes it agent-paced")
-    func humanPacedPromptlessSpawnFlipsOnAgentDelivery() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
-        #expect(t.awaitingFirstPrompt == true)   // promptless ⇒ awaiting the human's first move
-        #expect(t.humanPaced == true)            // …and human-paced by construction
-        try await env.svc.report(t.id, StatusReport(run: .running))   // keep the opportunistic wake a no-op
-        _ = try await env.svc.send(t.id, "do the work", sender: .card(id: UUID(), title: "orchestrator"))
-        #expect(await humanPaced(env.svc, t.id) == false)             // agent delivery ⇒ stall-eligible again
-    }
-
-    /// The `send` path classifies by delivery provenance: a human-sourced send makes the card human-paced;
-    /// another card (an agent/orchestrator) delivering work flips it back to agent-paced.
-    @Test("a human send marks the card human-paced; a card send clears it")
-    func humanPacedBySendProvenance() async throws {
-        let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(run: .running))      // keep the opportunistic wake a no-op
-        _ = try await env.svc.send(t.id, "hey", sender: .human)
-        #expect(await humanPaced(env.svc, t.id) == true)
-        _ = try await env.svc.send(t.id, "delivering work", sender: .card(id: UUID(), title: "orchestrator"))
-        #expect(await humanPaced(env.svc, t.id) == false)
-    }
 }
 
 @Suite("report field-delta") struct ReportDeltaTests {

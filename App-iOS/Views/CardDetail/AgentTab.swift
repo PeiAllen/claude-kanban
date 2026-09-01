@@ -9,12 +9,12 @@ import OrchestraUI
 ///
 ///   • **Read** — a `capture`-backed scroll render of the agent pane (D1: a non-attaching, size-capped
 ///     `capture-pane` scrape; ugly but zero-attach and sizing-safe) plus the live status pill / context
-///     gauge / `waitReason` from the board event stream (the header already carries status+ctx; this tab
-///     surfaces the *waiting* reason as an actionable banner).
-///   • **Steer** — a "Message the agent" bar → `send` (queued to the inbox, drained at turn-end) with a
+///     gauge / agent state from the board event stream (the header already carries status+ctx; this tab
+///     surfaces an ordinary wait or human-needed state as an actionable banner).
+///   • **Steer** — a "Message the agent" bar → `send` (queued for native harness delivery) with a
 ///     constrained key row → `send-keys` (D2: Esc/↵/arrows/y/n/^C — no live attach, no resize pressure).
-///   • **Gates** — surfaced as Needs-You (M3), not here: a waiting-on-permission card shows a banner
-///     pointing at that queue. This tab deliberately does NOT reimplement approve/deny.
+///   • **Gates** — surfaced as Needs-You (M3), not here: any human-needed card shows a banner pointing
+///     at that queue. Provider prompts are resolved in the harness itself.
 ///   • **Take Over** — the explicit **Take Over Agent Terminal** button (the ONLY attach path) presents
 ///     T4's `AgentTakeoverView` full-screen under the exclusive owner lease.
 ///
@@ -35,8 +35,8 @@ struct AgentTab: View {
             RecoveryView(task: task)
         } else {
             VStack(spacing: 0) {
-                if let reason = task.waitReason {
-                    WaitBanner(reason: reason, theme: theme)
+                if let bannerKind {
+                    WaitBanner(kind: bannerKind, theme: theme)
                 }
                 CaptureRender(cardId: task.id, onOpenImage: onOpenImage)
                     // Tap-off + swipe-down dismissal for the composer keyboard. Additive container-level
@@ -55,6 +55,10 @@ struct AgentTab: View {
                 }
             }
         }
+    }
+
+    private var bannerKind: AgentBannerKind? {
+        agentBannerKind(for: task)
     }
 
     /// The one attach path (T4). Everything above is non-attaching; this is the deliberate, explicit door
@@ -80,21 +84,62 @@ struct AgentTab: View {
     }
 }
 
-// MARK: - Wait banner (status → Needs You)
+// MARK: - Agent banner (status + human need)
 
-/// A compact banner surfacing *why* the card is waiting. Gates live in the Needs-You queue (M3); this only
-/// points there — it never renders approve/deny.
+/// A compact banner surfacing why the card needs attention or is waiting. Gates live in the Needs-You
+/// queue (M3); this only points there and does not answer provider prompts directly.
+/// This is an ephemeral display classification. `Task.requiresHuman` remains the sole membership fact;
+/// a provider subtype only refines the copy after that membership decision.
+enum AgentBannerKind: Equatable { case permission, input, humanRequired, waiting }
+
+func agentBannerKind(for task: Task) -> AgentBannerKind? {
+    if task.requiresHuman {
+        switch task.agentState?.humanNeed {
+        case .permission?: return .permission
+        case .input?: return .input
+        case .unspecified?, nil: return .humanRequired
+        }
+    }
+    return task.workInFlight == false ? .waiting : nil
+}
+
 private struct WaitBanner: View {
-    let reason: WaitReason
+    let kind: AgentBannerKind
     let theme: Theme
 
-    private var sem: SemColor { reason == .permission ? theme.amber : theme.blue }
-    private var icon: String { reason == .permission ? "lock.shield.fill" : "person.crop.circle.badge.questionmark" }
-    private var title: String { reason == .permission ? "Needs your approval" : "Waiting on you" }
+    private var sem: SemColor {
+        switch kind {
+        case .permission, .input, .humanRequired: return theme.amber
+        case .waiting: return theme.blue
+        }
+    }
+    private var icon: String {
+        switch kind {
+        case .permission: return "lock.shield.fill"
+        case .input: return "text.bubble.fill"
+        case .humanRequired: return "person.crop.circle.badge.exclamationmark"
+        case .waiting: return "person.crop.circle.badge.questionmark"
+        }
+    }
+    private var title: String {
+        switch kind {
+        case .permission: return "Needs your approval"
+        case .input: return "Needs your input"
+        case .humanRequired: return "Needs your attention"
+        case .waiting: return "Waiting"
+        }
+    }
     private var detail: String {
-        reason == .permission
-            ? "The agent is blocked on a permission — approve or deny it in Needs You."
-            : "The agent finished its turn and is waiting. Steer it below, or take over."
+        switch kind {
+        case .permission:
+            return "The agent is blocked on a permission. Open Harness to resolve it."
+        case .input:
+            return "The agent opened an interactive question. Open Harness to answer it."
+        case .humanRequired:
+            return "A response is waiting for you. Open Harness to review and respond."
+        case .waiting:
+            return "The agent finished its turn and is waiting. Steer it below, or take over."
+        }
     }
 
     var body: some View {
@@ -303,10 +348,10 @@ private struct CapturePaneText: UIViewRepresentable {
     }
 }
 
-// MARK: - Steer bar (send = queued · send-keys = constrained keys)
+// MARK: - Steer bar (send = native inbox · send-keys = constrained keys)
 
-/// The "Message the agent" bar. The text field **queues** a message via `send` (inbox, drained at the
-/// agent's next turn-end) — no attach. The key row sends **constrained keys** via `send-keys` for TUI
+/// The "Message the agent" bar queues a message via `send` for native harness delivery — no attach. The
+/// key row sends **constrained keys** via `send-keys` for TUI
 /// prompts (y/n, a menu, Esc-to-cancel) without attaching or resizing. Both are D1/D2 primitives; neither
 /// joins the tmux window.
 private struct SteerBar: View {
@@ -319,6 +364,7 @@ private struct SteerBar: View {
 
     @State private var draft = ""
     @State private var justQueued = false
+    @State private var isQueueing = false
 
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -337,6 +383,7 @@ private struct SteerBar: View {
                     .submitLabel(.send)
                     .focused($composerFocused)
                     .onSubmit(queue)
+                    .disabled(isQueueing)
                     // Explicit dismissal from the keyboard accessory bar — the field is `.vertical`, so
                     // Return inserts a newline rather than closing; "Done" gives a guaranteed way out.
                     .toolbar {
@@ -351,14 +398,14 @@ private struct SteerBar: View {
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 40, height: 38)
                         .foregroundStyle(.white)
-                        .background(trimmed.isEmpty ? theme.text3 : theme.accent,
+                        .background(trimmed.isEmpty || isQueueing ? theme.text3 : theme.accent,
                                     in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(trimmed.isEmpty)
+                .disabled(trimmed.isEmpty || isQueueing)
             }
-            Text(justQueued ? "Queued — the agent drains it at its next turn-end."
-                            : "Queues a message to the agent’s inbox — no live attach.")
+            Text(justQueued ? "Queued with Orchestra."
+                            : "Queues a message for native harness delivery — no terminal attach.")
                 .font(.caption2)
                 .foregroundStyle(justQueued ? theme.green.text : theme.text3)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -402,10 +449,16 @@ private struct SteerBar: View {
 
     private func queue() {
         let msg = trimmed
-        guard !msg.isEmpty else { return }
-        draft = ""
-        flashQueued()
-        _Concurrency.Task { await model.send(cardId, msg) }
+        guard !msg.isEmpty, !isQueueing else { return }
+        isQueueing = true
+        _Concurrency.Task {
+            let accepted = await model.send(cardId, msg)
+            if accepted {
+                draft = ""
+                flashQueued()
+            }
+            isQueueing = false
+        }
     }
 
     private func send(_ chord: [KeyToken]) {

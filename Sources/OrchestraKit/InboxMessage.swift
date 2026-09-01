@@ -18,6 +18,14 @@ public enum InboxMessageSource: Codable, Sendable, Equatable {
     }
 }
 
+/// Local advisory delivery state. `handedOff` means the provider-native harness accepted the request;
+/// it deliberately does not claim that the model read or acted on the message.
+public enum InboxMessageState: String, Codable, Sendable, Equatable {
+    case queued
+    case handedOff
+    case failed
+}
+
 /// One durable inbox message. Conclusions/sends ride the inbox; artifacts ride git.
 ///
 /// Client-safe value type: it lives in OrchestraKit (not OrchestraCore) because the shared `BoardModel`
@@ -36,16 +44,29 @@ public struct InboxMessage: Codable, Sendable, Equatable {
     /// absent on legacy records ⇒ nil ⇒ never dedups.
     public let dedupKey: String?
     public let createdAt: Date
-    /// In-flight delivery lease, or nil when the message is pending. Additive-optional Codable: legacy
-    /// rows decode leaseless. Set only by `Inbox.claim`, cleared by `release`; the message is REMOVED
-    /// (never merely unleased) by `confirm`.
-    public let lease: DeliveryLease?
+    /// Additive state: rows persisted before native advisory delivery decode as `.queued`.
+    public var state: InboxMessageState
     public init(id: UUID = UUID(), cardId: UUID, text: String,
                 source: InboxMessageSource? = .orchestra, dedupKey: String? = nil,
-                createdAt: Date = Date(), lease: DeliveryLease? = nil) {
+                createdAt: Date = Date(), state: InboxMessageState = .queued) {
         self.id = id; self.cardId = cardId; self.text = text
         self.source = source
-        self.dedupKey = dedupKey; self.createdAt = createdAt; self.lease = lease
+        self.dedupKey = dedupKey; self.createdAt = createdAt; self.state = state
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, cardId, text, source, dedupKey, createdAt, state
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        cardId = try container.decode(UUID.self, forKey: .cardId)
+        text = try container.decode(String.self, forKey: .text)
+        source = try container.decodeIfPresent(InboxMessageSource.self, forKey: .source)
+        dedupKey = try container.decodeIfPresent(String.self, forKey: .dedupKey)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        state = try container.decodeIfPresent(InboxMessageState.self, forKey: .state) ?? .queued
     }
 
     public var sourceLabel: String {

@@ -9,7 +9,7 @@ read-only barrier, process and path safety, and crash/reboot recovery. These liv
 ## Worktrees
 
 Each `.worktree` card owns **exactly one git worktree** — a 1:1 relationship (see
-[Design decisions](09-design-decisions.md#11-worktree-card-ownership)). The **`WorktreeRegistry`** actor
+[Design decisions](09-design-decisions.md#11-worktree--card-ownership)). The **`WorktreeRegistry`** actor
 (`Sources/OrchestraCore/WorktreeRegistry.swift`) is the **sole owner** of worktree and borrow lifecycle:
 the concrete `WorktreeManager` — the struct that actually shells out to `git worktree add`/`remove` — is
 `fileprivate` inside the same file, a compile-time guarantee that nothing outside the registry can touch
@@ -112,27 +112,18 @@ each shell therefore stay independently viewable.
 variables injected — `ORCHESTRA_TASK_ID` and `ORCHESTRA_SOCK` — which is exactly what the `_report`
 helper needs to find the daemon and attribute its reports. Other operations: `isAlive` (a `has-session`
 check — the liveness authority), `newShellWindow`, `closeShellWindow` (refuses to touch the `agent`
-window; also kills the window's view session), `capture` (`capture-pane`, the status fallback),
+window; also kills the window's view session), `capture` (`capture-pane`, a bounded terminal-render fallback),
 `sendKeys` (literal text then Enter; `--` guards messages starting with `-`), and `kill`.
 
 ## Agent adapters
 
 The agent provider is abstracted behind the **`Adapter`** protocol so Orchestra isn't wedded to Claude
-Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md)) — a per-agent **capability
-descriptor** the core degrades on, plus a Codex adapter as the second conformer. The
-**seam-contract root has landed** — PR A1 froze the complete capability descriptor and moved core onto
-it, **PR A2** added the adapter's own **`parse`** (below), and **PRs B1–B2** have since landed the
-**Codex adapter** as the second conformer — its launch/session/trust and its rollout-tail telemetry (see
-[the Codex adapter](#the-codex-adapter), below) — and **PR C3** has landed **F1 resume-in-card**: the
-`seed` now rides `resume` as the session's opening positional turn (see the resume argv under
-[the Claude Code adapter](#the-claude-code-adapter), below), and **PR C4** has landed the **Codex
-send-keys wake** (the `.sendKeys` `wakeTransport`; see [the Codex adapter](#the-codex-adapter) and
-[chapter 9](09-design-decisions.md#shipped-feature-history)); **PR D1** has since surfaced that F1 seam
-as the [`handoff` Command](05-command-reference.md#registry-commands) (MCP tool + CLI verb), and **PR D3**
-has since landed the new-card **Fork/Fan-out** board/CLI start-actions (a `spawn`/`batch-spawn` carrying a
-new `SpawnInput.seed`) plus the Handoff/Send card actions — completing the agent-provider forest. An
-adapter declares its `id`,
-`name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
+Code. Each adapter owns launch/session behavior, a capability descriptor, metadata parsing, and
+provider-to-`AgentSignal` normalization. Claude uses strictly correlated current-session hooks plus a
+narrow provider-native idle repair for hook-silent Ctrl-C; Codex uses a rollout metadata tail for metadata
+and a launch-local app-server observer for live state. Core consumes only the shared capabilities and
+normalized signals. An adapter declares its `id`, `name`, `icon`, `bin`, `models()`, and its `capabilities`,
+and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
 - **`resume(ctx)`** — argv to reattach an existing session (or `nil` if unsupported),
@@ -143,10 +134,8 @@ plus `newSessionId()`, `sessionInfo(...)`, `prepareToLaunch(ctx)` (side-effectin
 The `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
 the agent-agnostic `orchestraBin` (the `orchestra` path the agent's hooks call — each adapter renders its
 own hook file from it in `prepareToLaunch`), the card's `access`, `trustCwd` (the core's `resolveTrust` decision, `.trusted`
-→ `true` — see [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
-`additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) and whose per-agent
-*injection* has now shipped (PR C3): each adapter appends `ctx.seed` as the resumed session's opening
-positional turn (see the resume argv under [the Claude Code adapter](#the-claude-code-adapter) below).
+→ `true` — see [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context for an
+explicit spawn or handoff. Inbox rows are independent of this context carrier.
 `AgentRegistry`
 holds the adapters (default: `[ClaudeCodeAdapter(), CodexAdapter()]`) and looks one up by id — or by
 model: **`adapter(forModel:)`** returns the enabled adapter whose catalog contains a given model id
@@ -164,37 +153,20 @@ the **configured default agent**. The [Spawn sheet](07-app-ui.md#the-spawn-sheet
 `orchestra spawn --agent` param (parsing the previously-unwired `SpawnInput.agentId`) are the surfaces
 this backs.
 
-**Capabilities — core degrades on the descriptor, never on identity.** Every adapter must supply a frozen
-**`AgentCapabilities`** value (a required protocol member with *no* default, so a new adapter can't
-silently inherit Claude's shape). It is seven enum-typed flags — `sessionId ∈ {seeded, discovered}`,
-`telemetry ∈ {hooksPush, fileTail, ptyScrape}`, `contextUsage ∈ {percent, tokens, none}`,
-`wakeTransport ∈ {nativeReinvoke, controlChannel, sendKeys, relaunch}`, `inboxDrain ∈ {stopHook,
-sessionSeed, none}`, `readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`, and
-`authMode ∈ {subscription, apiKey}` — with **every variant spelling frozen now** (A1), including cases no
-adapter exercises yet, so later PRs implement behavior behind a shape that can't drift. Claude advertises
-`seeded / hooksPush / percent / nativeReinvoke / stopHook / sandboxed / subscription` — the
-`subscription` `authMode` is now read by the [authMode soft-warn](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)
-to advise (never cap) on heavy fan-out, the `stopHook` `inboxDrain` is now *realized* by the C1
-[F3 Stop-drain](09-design-decisions.md#shipped-feature-history) (the Claude Stop hook drains the durable
-[inbox](03-data-model.md#the-inbox-store-f3) into the agent at its turn-end), and the `nativeReinvoke`
-`wakeTransport` is now read by the C2 [F2 wake / merge-watch](09-design-decisions.md#shipped-feature-history).
-For Claude that transport has **two** mechanisms, chosen by whether a wait is live: a card watching children
-rides its background [`orchestra wait`](05-command-reference.md#notes-on-key-commands) process exiting (the
-harness re-invokes it in-session), while a genuinely idle `.waiting` card with **no** live wait is woken by
-[resume-seed](09-design-decisions.md#shipped-feature-history) — a `claude --resume` relaunch with the pending
-inbox folded into its opening turn (the `send-wakes-idle-card` fix). Core reads this
-descriptor instead of branching on `agentId`: session-seeding switches on `capabilities.sessionId` (a
-`.seeded` agent like Claude mints its id pre-launch via `newSessionId()`; a `.discovered` agent is left
-unseeded to read its id back from its own output post-launch), and `isResumable` asks the adapter's
-`sessionInfo` for a state path keyed on that capability rather than assuming a `~/.claude` transcript
-exists. Claude's behavior is byte-for-byte unchanged by this gating. The now-shipped
-[Codex adapter](#the-codex-adapter) advertises a different frozen set — `discovered / fileTail / tokens /
-sendKeys / sessionSeed / sandboxed / subscription` — and core routes on those flags alone: `.discovered`
-leaves its session unseeded, `.fileTail` puts it on the rollout-tail transport (never the push endpoint),
-`tokens` `contextUsage` drives the compute-ctxPct-from-a-model-table path below, and the `sendKeys`
-`wakeTransport` is now realized by the C4 [detect-and-defer wake](09-design-decisions.md#shipped-feature-history)
-(an idle Codex card is woken by a fixed content-free TUI nudge, gated on an idle, empty composer read
-just-in-time from `capture-pane`).
+**Capabilities — core degrades on the descriptor, never on identity.** Every adapter must supply an
+**`AgentCapabilities`** value (a required protocol member with no default, so a new adapter can't silently
+inherit Claude's shape). The axes cover session-id acquisition, metadata transport, context usage, read-only
+enforcement, authentication, terminal image paste, and launch readiness. Core reads that descriptor rather
+than branching on `agentId`: a `.seeded` agent such as Claude mints its id pre-launch; a `.discovered` agent
+such as Codex exposes it through a provider-native observation source after launch; and `isResumable` asks the adapter for its own state path rather than
+assuming a Claude transcript exists.
+
+Runtime status and ordinary message submission are separate provider facilities. A live card owns a
+per-session native sender handle in `CardRuntime`; the sender consumes queued inbox rows without deciding
+whether the card is running or waiting, and it never emits an `AgentSignal`. Claude's hook endpoint/token
+is ephemeral sender metadata and its Stop hook is status-only. Codex's app-server observer is its only
+runtime-status authority, while a separate app-server peer submits messages. Neither path clears a declared
+question or changes `wait` semantics.
 
 ### The Claude Code adapter
 
@@ -205,8 +177,8 @@ Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
   <uuid>] --settings <one file> [--name <title>] [<prompt>]`. The session id is
   *seeded* at spawn so Orchestra knows it before the agent reports.
 - **resume**: `claude --resume <sid> --settings <one file> [--name] [--model] [--permission-mode auto for
-  plan] [read-only flags] [<seed>]` — no `--session-id`, no prompt re-handed; when a handoff/fork **seed**
-  is present (F1, PR C3) it rides as the trailing positional opening turn. The **launch posture is now
+  plan] [read-only flags] [<seed>]` — no `--session-id`, no prompt re-handed; an explicit authored handoff
+  or fork seed rides as the trailing positional opening turn. The **launch posture is now
   identical whether a session starts or continues**: the shared `.resume` `AdapterContext` used to omit the
   card's `access`, so a read-only card came back *writable* — an **agent-agnostic** bug, since Codex emits
   its lockdown flags from `ctx.access` on resume too, so read-only Codex cards were equally affected and are
@@ -225,22 +197,12 @@ Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
   — the merge-into-one invariant is the fix (befad61), and `settingsOverlays(_:)` is the single seam any
   future per-card setting appends to.
 
-**F1 resume-in-card & the seed** (PR C3): `OrchestraService.resumeInCard(_:seed:)` reloads a card into a
-fresh process with **clean context while keeping its session id** — a *resume, not a blank `restart`*, so the
-transcript carries forward and the authored seed only adds the new instruction. It does **not** drain the
-inbox. Instead, the RelaunchStepper calls `claimSeed`, which atomically calls `Inbox.claim` with
-`HandoffSeed.compose(handoff:messages:)`: handoff first, then the inbox in FIFO order under the same
-operator-relayed header the Claude Stop-drain uses (`StopDrain.inboxHeader`, `[k/N]`-numbered when batched).
-The compose runs inside the claim under the single 10 000-character budget, so only the messages actually
-rendered into the opening turn are leased; the overflow remains durable for the next delivery. A claimed
-message stays in the inbox until its token-confirmed receipt, preventing the old drain-then-crash loss and
-the old fold-after-drain truncation path. A pure handoff still seeds even with zero message ids.
-`resumeInCard` is the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1, MCP
-tool + CLI verb) calls; forks instead `spawn` a new card with a `SpawnInput.seed` (a *new-card* seed
-distinct from this resume-only `pendingSeed`; [chapter 9](09-design-decisions.md#shipped-feature-history)).
-The D3 Handoff/Fork buttons that also drove these seams were later removed (the *agent-buttons
-simplification*), leaving the natural-language → MCP path. (See
-[One seed, four topologies](09-design-decisions.md#one-seed-four-topologies).)
+**Handoff and seeds.** `OrchestraService.resumeInCard(_:seed:)` reloads a card into a fresh process with
+**clean context while keeping its session id** — a *resume, not a blank `restart`*. The seed is authored
+handoff context only; it is never a vehicle for ordinary inbox rows. `resumeInCard` backs the
+[`handoff` command](05-command-reference.md#registry-commands); forks instead `spawn` a new card with its
+own `SpawnInput.seed`. The former board Handoff/Fork controls were removed in favor of the
+natural-language → MCP path.
 
 **Trust — apply the core's decision** (`prepareToLaunch`): Claude prompts for directory trust on first
 use of a path, which would block an autonomous agent. **The adapter does not decide trust** — the core
@@ -278,14 +240,23 @@ guidance.
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,
 with a newest-matching-`.jsonl` fallback used only when no id was tracked.
 
-**Telemetry parse** (`parse(_:)`): because Claude's telemetry is `hooksPush`, the adapter owns the
-conversion of each pushed hook event into a `StatusReport`. `ClaudeCodeAdapter.parse` takes a
-`RawTelemetry.hooksPush(kind:payload:)` and switches on the event kind (`statusline` / `session` /
-`prompt` / `tool` / `notify` / `sessionend`) exactly as the CLI's former `ReportHelper.map` did — this
-logic was **relocated verbatim** out of the `orchestra` CLI target by [PR A2](#agent-adapters) so the
-transport/parse boundary is per-adapter, while Claude telemetry stays byte-identical. A non-`hooksPush`
-raw (e.g. a `fileTail` line) returns `nil` — Claude has no tail transport. See
+**Telemetry mapping**: Claude's adapter splits each `hooksPush` event at the edge. `parse(_:)` extracts
+only lifecycle/display metadata into `StatusReport`, while `hookObservationPayload` projects the small
+provider fields needed for `agentSignals(from:context:)` without forwarding large tool bodies. Prompt and
+Stop become top-level turn edges; a known permission or input prompt updates the optional provider
+`humanNeed` only when it belongs to the current session. A current-turn resolution clears that aggregate
+need. Subagent activity cannot change the main turn, but its human-needed hook still rolls up. Exact main
+`MessageDisplay` or `PreToolUse` activity reactivates the same prompt after a blocked Stop; when no turn is
+active, a different prompt identity establishes the distinct queued turn whose submit edge was not
+observable. A non-`hooksPush` metadata input (for example a
+`fileTail` line) returns `nil` — Claude has no tail transport. See
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
+
+Claude omits `Stop` on Ctrl-C. The daemon therefore runs one global, non-overlapping
+`claude agents --json` snapshot every ten seconds only while an exact Claude session remains locally
+running with no provider human gate. An `idle` result becomes waiting only if the Card epoch, provider
+session, lifecycle, and observation generation are unchanged after the subprocess returns. Busy, missing,
+malformed, failed, or superseded results are no-ops; the snapshot never creates unavailable or running.
 
 ### The Codex adapter
 
@@ -298,22 +269,20 @@ core handles the difference purely through the descriptor:
   card launches with **Codex's own default permissioning** (no `-s`/`-a` clamp), and only a
   **read-only** card applies Codex's read-only preset `-s read-only -a never` (`accessFlags`). `-s
   read-only` selects Codex's own OS-sandboxed read-only mode; `-a never` disables approvals. `resume`
-  (`codex resume <sid> [-s read-only -a never] [-m <model>] [<seed>]`) also appends the F1 `seed` as a
-  trailing positional turn when present (PR C3) — and because Codex has **no Stop hook**
-  (`inboxDrain == .sessionSeed`), this folded seed is the *only* channel its queued inbox messages ride
-  (see [the resume argv](#the-claude-code-adapter) above).
-- **Discovered session id + native rollout path.** Codex can't be handed a session id, so `newSessionId()`
-  returns `nil` (`.discovered`, not Claude's `.seeded --session-id`); `sessionInfo`/`discover()` instead
-  read the id back from Codex's normal state location, normally
-  `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is the filename tail). Orchestra does **not**
+  (`codex resume <sid> [-s read-only -a never] [-m <model>] [<seed>]`) accepts an explicit authored
+  handoff seed as its trailing positional turn. Normal inbox delivery does not use resume or the Stop hook.
+- **App-server thread id + native rollout path.** Codex can't be handed a session id, so `newSessionId()`
+  returns `nil` (`.discovered`, not Claude's `.seeded --session-id`). Its launch-local app server is the
+  sole authority for the durable thread id; only after that id binds does `sessionInfo` locate the matching
+  `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` for metadata and resume information. Orchestra does **not**
   export `CODEX_HOME`: Codex keeps its native authentication, plugins, configuration, and session state.
-  The adapter retains an injectable home resolver only for hermetic rollout-discovery tests.
+  The adapter retains an injectable home resolver only for hermetic metadata tests. SessionStart's hook
+  `session_id` and rollout `session_meta` are deliberately identity-silent.
 - **Launch-scoped hooks, trust, and guidance — via a per-launch profile file.** `prepareToLaunch` writes a
   per-cwd Codex profile (`$CODEX_HOME/orch-<hash>.config.toml`), and `start`/`resume` select it with a tiny
   `-p <name>`. The profile carries the same three things the first cut inlined as `-c` overrides: the
-  rendered `codex-hooks.json` handlers as `hooks.<event>` (SessionStart — the
-  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel) — PermissionRequest,
-  and Stop; telemetry remains the rollout tail below), the explicit `projects."<cwd>".trust_level`
+  rendered `codex-hooks.json` handlers as `hooks.<event>` (including SessionStart for the
+  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel)), the explicit `projects."<cwd>".trust_level`
   (`trusted`/`untrusted`, so a stale native setting can't silently grant trust), and one
   `developer_instructions` value from the shared `AgentGuidance` delegation/tree sections. The move off inline
   `-c` is **load-bearing, not cosmetic**: the developer instructions alone are ~16KB, and a session is
@@ -336,11 +305,9 @@ core handles the difference purely through the descriptor:
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*
   (tokens ÷ window), because the Codex TUI reports no percentage of its own.
 
-**Telemetry parse + the rollout tailer** (`parse(_:)` + `RolloutTailer` + `pollTelemetry`, PR **B2**).
-Codex's telemetry capability is `fileTail`, not `hooksPush`: the agent's TUI emits no push events, but it
-appends a JSONL **rollout** file, so the *daemon tails the file* and the *adapter parses each line* —
-the same `adapter.parse` seam A2 drew, reached from a different transport. The two halves stay strictly
-separated (the tailer never inspects JSON; the parse never touches files):
+**Metadata tail plus structured agent state.** Codex has two deliberately separate observation paths.
+The rollout tail supplies context usage, model, and coarse description after binding; the launch-local app
+server is the sole source for thread identity, turn state, and provider human need.
 
 - **Transport — `RolloutTailer`** (`RolloutTailer.swift`, a `public actor`): tracks a **per-card byte
   offset** into the rollout file and, on each poll, returns only the **newline-terminated** lines appended
@@ -348,97 +315,59 @@ separated (the tailer never inspects JSON; the parse never touches files):
   shorter than the stored offset (rotation/truncation) resets the cursor to 0; `forget(cardId)` drops a
   cursor on death/archive. It owns nothing Codex-specific — the only things crossing the seam are a
   `String` line in and a `StatusReport?` out.
-- **Parse — `CodexAdapter.parse(.fileTail(line:))`**: converts one rollout line into a `StatusReport`,
-  and is **rename-tolerant** because Codex's rollout schema drifts — it normalizes both the top-level and
-  `payload.type` (lower-cased, `_`-stripped) and matches on substrings, so `TaskComplete` /
-  `turn_complete` / `TurnComplete` all mean a natural turn completion (`run: .waiting(.humanTurn)`,
-  `turnCompleted: true`), and token totals read from a
-  nested `total_token_usage.total_tokens` **or** a flat `total_tokens`/`tokens`. A `token_count` line
-  yields `ctxPct` (tokens ÷ the **offline** model window above, never the rollout's own reported window)
-  plus `modelId`; a turn/task start or a mid-turn `function_call` → `.running` (with a coarse
-  `desc: "Running <name>"`); anything unrecognized (including `session_meta`) or non-JSON → `nil`
-  (dropped). `seq` is the line's RFC3339 `timestamp` in microseconds since epoch (monotonic in file
-  order), so a duplicate or out-of-order line loses to the freshest snapshot at
+- **Parse — `CodexAdapter.parse(.fileTail(line:))`** converts metadata into `StatusReport`. Token totals
+  read from `last_token_usage.total_tokens`, with cumulative/flat fallbacks, and yield `ctxPct` (tokens ÷
+  the offline model window) plus `modelId`; a function call may contribute `desc`. Historical
+  task/turn-start and completion spellings are ignored for status. `seq` is the line's RFC3339 timestamp
+  in microseconds since epoch, so a duplicate or out-of-order metadata line loses at
   [`report`'s seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel).
-- **Claude completion signal**: Claude uses the separate `TaskCompleted` hook for the same
-  `turnCompleted` signal. Claude `Stop` stays a waiting/Stop-drain event and does not by itself conclude
-  a delegated card.
-- **Driver — `OrchestraService.pollTelemetry()`**: one tick per card, called from the daemon's existing
-  **2-second poll loop** next to `reconcileLiveness`. For every live card whose
-  `capabilities.telemetry == .fileTail` it resolves the rollout path via `sessionInfo`, feeds each new
-  line through `adapter.parse` into the seq-gated `report`, and merges the result onto the card — so a
-  Codex card shows live context %, running/idle status, and model, fully offline. Claude (`hooksPush`) is
-  never tailed, so its push path stays byte-identical.
+- **Structured observer — `CodexAppServerObserver`**: every Codex launch runs the stock remote TUI and a
+  launch-local `codex app-server` in one tmux-owned process tree. For a known thread, Core connects over the
+  per-card Unix socket and calls `thread/resume`. For an unbound fresh launch, it reads the app-server's
+  in-memory thread ids and their `thread/read` snapshots, filtered by exact cwd, launch cutoff, root
+  ownership, and non-ephemeral lifetime. Exactly one candidate binds, while zero or several remain
+  unavailable and listen for a filtered
+  `thread/started`. The bound `thread/resume` snapshot also identifies its sole in-progress turn, so an
+  observer attached mid-turn can correlate the later completion. After binding it consumes `turn/started`,
+  `turn/completed`, and `thread/status/changed` notifications. Codex reports idle before the matching
+  completion; the coordinator retains the just-closed turn id across that snapshot so the completion is a
+  harmless duplicate rather than observation loss. The adapter maps these messages into
+  provider-neutral `AgentSignal`s. It never answers app-server approval/input requests, because those are
+  shared first-response-wins requests also owned by the TUI.
+- **Availability and restart:** the observer is fenced by Card epoch and exact Codex thread id. A socket
+  disconnect enters `TurnStatus.unavailable` and reconnects with bounded backoff; the attach response
+  restores running or waiting without periodic status polling. The existing two-second rollout tick may
+  still refresh metadata, but it cannot change `AgentState`.
 
-**Send-keys wake** (`CodexComposer` + `OrchestraService.sendKeysWake`, PR **C4**). Because Codex
-advertises `wakeTransport == .sendKeys`
-(no `nativeReinvoke` push, no Stop hook), [F2 wake](09-design-decisions.md#shipped-feature-history) can't
-just ride a background process exiting — an idle Codex card is instead woken by a **fixed, content-free TUI
-nudge** (`sendKeysWakeNudge`, `"Please continue."`) typed into its composer. The nudge only *starts a turn*;
-the inbox payload never rides the keystroke — it arrives via the `.sessionSeed` drain on resume (F3/C3). It
-is **detect-and-defer**: `sendKeysWake` reads the agent pane just-in-time via `capture` (`capture-pane`) and
-asks the adapter's `canNudge(pane:)` gate — for Codex, the pure `CodexComposer` heuristic — whether the TUI
-is **idle and composer-empty**; a draft, an in-flight turn, an unparseable pane, or a dead session all
-*defer* (drop the nudge, leave the inbox durable for a later event-driven wake). No retry timer (that would
-risk the F3 inject cap); focus is not a gate. `CodexComposer` is a pure, isolated heuristic — its prompt
-markers, empty-composer placeholders, and "working" cues are the only Codex-specific knobs and the documented
-place to tune when the TUI drifts. It is reached only through `CodexAdapter.canNudge(pane:)` (the defaulted
-`Adapter.canNudge`, which returns `false` for every non-send-keys agent), so core's generic wake never names
-a Codex type; keyed on the `.sendKeys` transport, never `agentId`; see
-[chapter 9](09-design-decisions.md#shipped-feature-history).
+Claude uses the same normalized contract from live hooks: a distinct `UserPromptSubmit` starts a turn,
+`Stop` tentatively ends the exact current turn, and exact main activity either reopens the same prompt after
+a blocked Stop or establishes a different queued prompt when no turn is active. Known permission/input
+prompts update the aggregate `humanNeed`, including those
+from a subagent, without letting subagent activity mutate the main turn. Claude hook observations are not
+read from transcripts or replayed after daemon restart; the state is unavailable until the next
+current-session hook, while the narrow global idle snapshot repairs only hook-silent Ctrl-C.
+
+**Codex native sender.** A queued message never rides a synthetic TUI keystroke. The app-server observer
+continues to own Codex status; a fresh, separate app-server peer uses the current live session handle to
+submit the message. The sender is best effort and bounded. It may record native acceptance as `handedOff`,
+but it never claims that the model processed the text or changes `AgentState` or `pendingQuestion`.
 
 ## The orchestration seam (handoff · fork · fan-out · send · wait)
 
-Agents orchestrating agents is not a fifth feature bolted on beside the other four — **all of it
-composes from one live-delivery seam** with three functions: **F1 seed** (authored context folded into
-a session's opening turn), **F2 wake** (getting a live-but-idle agent to take a turn), and **F3 inbox**
-(a durable per-card queue drained at the agent's natural turn-end).
+These collaboration moves share durable board state, but they are not one delivery protocol:
 
-```mermaid
-sequenceDiagram
-    participant O as Orchestrator card
-    participant D as orchestrad · OrchestraService
-    participant X as Inbox — durable, per card
-    participant C as Child cards
+- **`spawn --seed`** is a *fork*: a new card begins with the parent's authored context.
+- **`batch-spawn`** is *fan-out*: the same idea for several cards.
+- **`handoff`** resumes the same card with authored context and clean context space; it does not carry its
+  ordinary inbox rows.
+- **`send`** admits a durable local row and lets the provider's live native sender attempt it later.
+- **`wait`** subscribes to a real conclusion — archive or death — read from card lifecycle, never
+  `git merge-base`. It is not a delivery acknowledgement. A child that merely ends its turn remains
+  `waiting` until its parent archives it after consuming its result.
 
-    O->>D: batch-spawn  (fan-out) / spawn --seed  (fork)
-    D->>C: one Task per prompt, phase = creatingWorktree<br/>SpawnInput.seed rides the opening turn  [F1]
-    O->>D: wait refs...  (watcher = $ORCHESTRA_TASK_ID)
-    D->>D: MergeWatch.register — the call parks, no polling, no git
-
-    Note over C: a child works, then concludes —<br/>archived (Done) or a clean agent exit
-
-    C->>D: transition() into a terminal phase
-    D->>D: concludeCard → Conclusion(cardId, ref, kind = done / exited)
-    D->>X: coalesce the conclusion into the watcher's inbox  [F3]
-    D-->>O: wait returns that Conclusion and the process exits
-    D->>O: wake  [F2] — Claude: nativeReinvoke on wait-exit;<br/>Codex: relaunch / send-keys
-    O->>D: drains its inbox, re-issues wait on the cards that remain
-
-    Note over O,X: send ref "..." is the same seam —<br/>enqueue to the Inbox [F3], then wake [F2]
-    Note over O,D: handoff thisCard "..." is F1 alone — resumeInCard persists the handoff;<br/>RelaunchStepper claims + composes the inbox seed, then resumes
-```
-
-Read the verbs against that seam and each one collapses into a composition of the three:
-
-- **`spawn --seed`** is a *fork*: a new card whose `SpawnInput.seed` (the parent's slice of context)
-  rides its opening turn — F1.
-- **`batch-spawn`** is *fan-out*: the same thing, one card per prompt.
-- **`handoff`** is F1 applied to the card *itself* — `resumeInCard` persists the authored context and
-  resumes with clean context but the same session identity; the RelaunchStepper atomically claims and
-  composes the pending inbox with that context before launch.
-- **`send`** is F3 + F2: enqueue durably, then wake.
-- **`wait`** is the reactive half. It parks on `MergeWatch` and resolves off **real card state — never
-  `git merge-base`** — because [`transition()`](#the-transition-funnel--the-sole-writer-of-phase) is the
-  sole concluder, so a `Conclusion` fires exactly once per child on *any* terminal phase, a crash as
-  surely as a clean Done. Fan-out **coalesces rather than barriers**: watching N children yields one
-  conclusion per child, as each concludes. A child that merely *finishes talking* has not concluded: a
-  worktree card that `send`s its result and ends its turn sits in `waiting`, holding its session and
-  worktree, until its parent `archive`s it.
-
-The two agents differ only *behind* the `AgentCapabilities` seam (`wakeTransport`, `inboxDrain`) — core
-never branches on the agent id. This is the machinery the README's fan-out demo is exercising: the
-orchestrator there is an ordinary Claude card calling the ordinary `spawn` and `wait` MCP tools.
+The sender and status observer are provider-specific behind the adapter boundary, while core keeps one
+provider-neutral lifecycle and status reducer. This is the machinery the README's fan-out demo exercises:
+an ordinary card calling the ordinary `spawn` and `wait` tools.
 
 ## The read-only barrier
 
@@ -515,10 +444,11 @@ Nothing else writes `phase`. The funnel, in order:
 3. **Legal-edge check.** The edge is validated against the pure `isLegalEdge(from:to:viaSignal:)` machine
    (below); anything outside the set is `.rejected` and the stored phase is untouched. Verbs map
    `.rejected` → a typed RPC error and `.noop` → idempotent success; async signals ignore the result.
-4. **One field-delta patch.** `phase` + `phaseChangedAt` + the epoch bump + the caller's `mutate` closure
-   are applied inside a **single** `store.update` patch, so companion writes land atomically with the
-   phase change (restart clears `agentSessionId`, resume clears dead metadata, `markDead` writes the
-   reason/detail, spawn-fail writes `deadDetail`). This is the **same-patch hook**.
+4. **One field-delta patch.** `phase` + any lifecycle/turn-status `phaseChangedAt` stamp + the epoch bump
+   + the caller's `mutate` closure are applied inside a **single** `store.update` patch, so companion
+   writes land atomically with the phase change (restart clears `agentSessionId`, resume clears dead
+   metadata, `markDead` writes the reason/detail, spawn-fail writes `deadDetail`). Live activity/request
+   detail persists without resetting the displayed status age. This is the **same-patch hook**.
 5. **Conclusions.** The funnel is the **sole concluder**: only the entry into a terminal phase *from a
    non-terminal one* fires `concludeCard`; `dead → archived` (terminal → terminal) is guarded out, so a
    card never double-concludes. The wire `Conclusion` carries `{kind, deadReason?}` — `.done` is
@@ -526,16 +456,16 @@ Nothing else writes `phase`. The funnel, in order:
    reason, so a suspended `wait` resolves on **every** terminal death (crash/reboot/resume-fail), not only
    a clean exit (the bug-#2 fix). `isConcluded(_:)` is exactly "phase is terminal" (archived, or any
    `.dead`; archived → `.done`, any `.dead` reason → `.exited`), kept in step with `concludedReason`.
-6. **Wake-on-live.** Entering `.live` runs `wakeIfPending` — the single structural release point for a
-   message parked (via `send`/inbox) while the card was being born. It no-ops unless the card is now
-   `.live(.waiting)` with a non-empty inbox.
+6. **Runtime handles.** A session replacement retires its old `CardRuntime` sender handle before the new
+   live session can expose a new one. Inbox rows stay durable across that lifecycle work, but they do not
+   choose a phase transition or wake a session.
 
 ### The phase machine (`isLegalEdge`)
 
 The legal edges (spec §P1) are a pure function of the two `Phase.Kind`s plus a `viaSignal` gate:
 
 - provisioning: `creatingWorktree → launching → live`;
-- live churn + restart entry: `live → live` (run-state changes), `live → relaunching`;
+- live churn + restart entry: `live → live` (AgentState changes), `live → relaunching`;
 - relaunch: the `relaunching → relaunching` supersede self-edge, and `relaunching → live`;
 - restart of a dead card `dead → relaunching`, and the **signal-only** revival `dead → live` (admitted
   *only* when `viaSignal` — no verb may drive a revival);
@@ -568,15 +498,10 @@ A card being *born* — `launching` (blank spawn/reopen) or `relaunching` (resum
 alive by the adapter's `AgentCapabilities.readinessConfirmation`, never by agent identity (the **D1**
 resolution — one axis covers *both* being-born phases). `confirmReadiness` dispatches on it:
 
-- **`.sessionStartHook`** (Claude) — inline-await the agent's own SessionStart telemetry reaching
+- **`.sessionStartHook`** (Claude and Codex) — inline-await the agent's own SessionStart telemetry reaching
   `report()`: `startup` confirms a fresh launch, `resume` confirms a relaunch. One hook capability covers
-  both being-born phases.
-- **`.rolloutMeta`** (Codex, `.discovered` id) — also await: a fresh launch writes a rollout `session_meta`
-  line that the daemon-side tail observer resolves the waiter on (binding a discovered id mid-`launching`
-  *is* the ready signal). A `codex resume` writes **no** rollout, so nothing arrives — the **universal N=3
-  liveness-tick fallback** (`tickLaunchReady`, ~6 s, well under the 30 s launch timeout) resolves the still-
-  pending waiter within the grace, keeping the relaunch **on** the readiness gate rather than landing live
-  immediately and bypassing it.
+  both being-born phases. For Codex this hook proves lifecycle readiness and carries orientation only; its
+  `session_id` does not bind the app-server thread.
 - **`.relaunchLiveness`** — the successful tmux `ensure` *is* the confirmation (the agent emits no marker at
   all), so it must **not** wait for a signal that never comes (which would time out and fail-dangerously
   `markDead` a live card).
@@ -613,13 +538,11 @@ of being marked dead.
   a superseded attempt's finalize is a no-op. Success → `recovered` activity; failure →
   `.dead(.resumeFailed)` + a `deadDetail`. The defaulted `seed:` (PR C3) is threaded onto `ctx.seed`; every
   recovery caller passes none, so the argv is byte-identical.
-- **`resumeInCard(id, seed:, model:)` — F1 context-clearing handoff** (PR C3). Reloads the card into a fresh
-  process with **clean context while keeping its `agentSessionId`**. It persists the authored handoff/fork
-  context and calls `resume(seed:)` without draining. The RelaunchStepper then atomically claims the pending
-  inbox and composes it with that context through `HandoffSeed.compose`; messages remain durable until their
-  token-confirmed receipt. It is the seam the [`handoff` Command](05-command-reference.md#registry-commands)
-  (PR D1) drives and the idle-wake path for a resume-seed agent; forks instead `spawn` a fresh card carrying
-  a `SpawnInput.seed`.
+- **`resumeInCard(id, seed:, model:)` — context-clearing handoff.** Reloads the card into a fresh process
+  with **clean context while keeping its `agentSessionId`**. It persists only the authored handoff context
+  and calls `resume(seed:)`; normal inbox rows stay independent. It is the seam the
+  [`handoff` command](05-command-reference.md#registry-commands) drives; forks instead `spawn` a fresh card
+  carrying a `SpawnInput.seed`.
 - **`restart(id, model:)`.** Also **intent-only**: it enters `.relaunching` with the real persist block
   applied atomically (fresh `agentSessionId`, old id rolled onto `priorSessionIds`, `awaitingFirstPrompt=true`,
   cleared dead/desc) and returns; the same `RelaunchStepper` then launches a blank session in the *same*
@@ -661,16 +584,12 @@ of being marked dead.
   `.dead(.sessionVanished)`; terminal cards excluded. All deaths route through `markDead` → the funnel, so
   they conclude.
 
-### The `relaunchClaimed` atomic claim
+### Session replacement and native delivery
 
-The old `recovering` set is **deleted**; its two roles are split. Its *grace-window* role (fencing a stale
-signal against a relaunch in flight) is now covered by **epochs** — the funnel drops a superseded-epoch
-signal, and `reconcileLiveness` skips `.relaunching` by phase. Its *atomic-claim* role — ensuring a single
-winner when a wake/idle-resume fires — is now the narrow **`relaunchClaimed`** set: `resumeSeedWake` inserts
-the id synchronously *before* the detached resume hop, so a concurrent `wake` sees the claim and defers
-(otherwise two resumes race and the second drains an already-emptied inbox and kills the first's session).
-It is cleared when the relaunch settles (`clearRelaunchClaimed`), which then re-drives `wakeIfPending` for a
-message that a `send` queued *during* the claim window (nothing else would retry it).
+Epochs fence late lifecycle/status observations, while a provider's live session handle fences native inbox
+submission. Replacing a session synchronously retires the old handle; a sender that completes after that
+cannot turn an old-session result into a current one. This keeps delivery best effort without letting it
+restart, wake, or otherwise steer the card lifecycle.
 
 How a dead card is presented to you — the "why" line, the preserved-work actions, and the recover/
-restart/archive buttons — is covered in the [App UI chapter](07-app-ui.md#recovery-panel).
+restart/archive buttons — is covered in the [App UI chapter](07-app-ui.md#onboarding-settings-recovery-and-popovers).

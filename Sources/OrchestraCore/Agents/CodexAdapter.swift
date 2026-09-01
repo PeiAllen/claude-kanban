@@ -1,7 +1,7 @@
 import Foundation
 
-/// The built-in Codex adapter. It keeps Codex's native home/state untouched, discovers rollouts from the
-/// normal home (or an injected test path), and translates shared Orchestra content into Codex's per-launch
+/// The built-in Codex adapter. It keeps Codex's native home/state untouched, reads metadata for an already
+/// bound app-server thread, and translates shared Orchestra content into Codex's per-launch
 /// TOML overrides. Permission posture still mirrors Claude: a default card keeps Codex's own permissioning
 /// and a read-only card receives the OS-sandboxed read-only preset.
 public struct CodexAdapter: Adapter {
@@ -11,13 +11,12 @@ public struct CodexAdapter: Adapter {
     public let bin = "codex"
     public let enabled = true
 
-    /// Codex's capability tuple (B1 as-built). Differs from Claude on the launch-relevant axes: discovered
-    /// session id, rollout file-tail telemetry, token-based ctx. Shares Claude's live-delivery shape —
-    /// resume-seed wake (`.relaunch`) + Stop-hook drain (`.stopHook`).
+    /// Codex's capability tuple: app-server-discovered session id, rollout file-tail metadata, and token-based
+    /// context usage.
     public var capabilities: AgentCapabilities { .codex }
 
     /// Test injection for a fake binary and an isolated rollout directory. The home override is never
-    /// exported to a production Codex process; it only keeps rollout-discovery fixtures hermetic.
+    /// exported to a production Codex process; it only keeps rollout metadata fixtures hermetic.
     let binOverride: String?
     let codexHomeOverride: String?
     let userHomeOverride: String?
@@ -35,7 +34,39 @@ public struct CodexAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
-    /// Codex's normal default state location, retained only for rollout discovery.
+    public func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        .unixSocket(path: (setup.runtimeStateDir as NSString)
+            .appendingPathComponent("codex-\(setup.cardRef).sock"))
+    }
+
+    public func makeObservationSource(
+        endpoint: AgentObservationEndpoint,
+        binding: AgentObservationBinding
+    ) -> (any AgentObservationSource)? {
+        guard let socketPath = endpoint.unixSocketPath else { return nil }
+        return CodexAppServerObservationSource(socketPath: socketPath, binding: binding)
+    }
+
+    public func messageEndpoint(
+        observationEndpoint: AgentObservationEndpoint,
+        harnessSessionId: String
+    ) -> AgentMessageEndpoint? {
+        guard let socketPath = observationEndpoint.unixSocketPath,
+              !socketPath.isEmpty,
+              !harnessSessionId.isEmpty
+        else { return nil }
+        return .codexAppServer(socketPath: socketPath, threadId: harnessSessionId)
+    }
+
+    public func makeMessageSender(for endpoint: AgentMessageEndpoint) -> (any AgentMessageSender)? {
+        guard case let .codexAppServer(socketPath, threadId) = endpoint,
+              !socketPath.isEmpty,
+              !threadId.isEmpty
+        else { return nil }
+        return CodexMessageSender(socketPath: socketPath, threadId: threadId)
+    }
+
+    /// Codex's normal default state location, retained only for metadata lookup after app-server binding.
     /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }
     private var userHome: String { userHomeOverride ?? Config.home }
@@ -59,34 +90,39 @@ public struct CodexAdapter: Adapter {
         AgentModel(id: "gpt-5.5", displayName: "GPT-5.5", family: "gpt"),
     ]
 
-    /// Codex's session id is `.discovered` (read back from the rollout dir after launch), so Orchestra
-    /// mints nothing pre-launch — unlike Claude's `.seeded` `--session-id`.
+    /// Codex's thread id is `.discovered` from its app-server after launch, so Orchestra mints nothing
+    /// pre-launch — unlike Claude's `.seeded` `--session-id`.
     public func newSessionId() -> String? { nil }
 
     // MARK: telemetry parse (fileTail) — the daemon tails the rollout JSONL; THIS converts one line.
 
-    /// Codex status/detail/context telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one
-    /// rollout JSONL line at a time; this converts it to a normalized `StatusReport`. Its SessionStart hook
-    /// additionally supplies the definitive card-owned session id before discovery. AGENT-DEPENDENT (D3) —
+    /// Codex metadata telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one rollout JSONL
+    /// line at a time; this extracts context and display detail into `StatusReport`. SessionStart remains
+    /// lifecycle/orientation-only; the app-server thread is the sole provider-session identity. AGENT-DEPENDENT (D3) —
     /// the mapping lives here, never in core. Rename-tolerant (Codex's rollout schema drifts:
     /// `TaskComplete`→`TurnComplete`, nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE
     /// model table as the denominator (E1), never the rollout's own window. `seq` is the line timestamp
     /// (µs) so out-of-order/duplicate lines lose to the freshest via `report()`'s seq-gate. Any unrecognized
     /// line → nil (dropped).
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
-        // SessionStart runs under the launching tmux session, whose environment carries this card's
-        // `ORCHESTRA_TASK_ID`. Codex provides its generated `session_id` on the hook's stdin, so this is a
-        // direct card ↔ session correlation even when multiple primary rollouts share one cwd. Binding it
-        // here avoids relying on rollout discovery for the normal launch path; discovery remains a safe
-        // fallback if the hook is unavailable. PermissionRequest remains the provider-neutral wait gate.
         if case let .hooksPush(kind, payload) = raw {
             if kind == HookEvent.sessionStart.rawValue,
-               let sid = payload["session_id"]?.stringValue, !sid.isEmpty {
-                return StatusReport(sessionId: sid)
+               let source = payload["source"]?.stringValue, !source.isEmpty {
+                return StatusReport(sessionSource: source)
             }
-            return kind == HookEvent.permission.rawValue
-                ? StatusReport(run: .waiting(.permission))
-                : nil
+            return nil
+        }
+        if case let .rpcNotification(method, params) = raw,
+           method == "thread/started",
+           let threadId = params["thread"]?["id"]?.stringValue,
+           !threadId.isEmpty {
+            return StatusReport(sessionId: threadId)
+        }
+        if case let .rpcResponse(method, result) = raw,
+           method == "thread/read",
+           let threadId = result["thread"]?["id"]?.stringValue,
+           !threadId.isEmpty {
+            return StatusReport(sessionId: threadId)
         }
         guard case let .fileTail(line) = raw else { return nil }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -98,20 +134,12 @@ public struct CodexAdapter: Adapter {
             .compactMap { $0 }.map(Self.norm)
         func any(_ needles: String...) -> Bool { kinds.contains { k in needles.contains { k.contains($0) } } }
 
-        // Bind the discovered rollout id to this card as soon as the first metadata record is tailed.
         if any("sessionmeta") {
-            // Codex can start guardian/delegated agents in the same cwd. Their rollout metadata carries
-            // the child id, not the card's primary session, so it must never replace the card binding.
-            guard !Self.isSubagent(payload) else { return nil }
-            let sid = (payload["id"] ?? payload["session_id"])?.stringValue
-            guard let sid, !sid.isEmpty else { return nil }
-            return StatusReport(sessionId: sid)
+            return nil
         }
-        // Idle signal FIRST (a completed turn ends `.running`, rename-tolerant).
+        // Turn edges come from app-server notifications, never from the historical rollout tail.
         if any("turncomplete", "taskcomplete") {
-            // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
-            // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
-            return StatusReport(seq: seq, run: .waiting(.humanTurn), turnCompleted: true)
+            return nil
         }
         // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
         // rollout names a model; fall back to the rollout's explicit context window for model-less
@@ -126,18 +154,106 @@ public struct CodexAdapter: Adapter {
             guard pct != nil || mid != nil else { return nil }
             return StatusReport(seq: seq, ctxPct: pct, modelId: mid)
         }
-        // Turn start → running.
         if any("taskstarted", "turnstarted") {
-            return StatusReport(seq: seq, run: .running)
+            return nil
         }
-        // A tool/function call mid-turn → running (+ a coarse desc).
+        // A tool/function call contributes display detail only; the app-server turn stays authoritative.
         if any("functioncall", "responseitem") {
             if let name = payload["name"]?.stringValue, !name.isEmpty {
-                return StatusReport(seq: seq, desc: "Running \(name)", run: .running)
+                return StatusReport(seq: seq, desc: "Running \(name)")
             }
-            return StatusReport(seq: seq, run: .running)
+            return nil
         }
         return nil
+    }
+
+    // MARK: provider-neutral agent-state mapping
+
+    public func hookObservationPayload(event: HookEvent, payload: JSONValue) -> JSONValue? {
+        nil
+    }
+
+    public func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] {
+        guard let expectedThreadId = context.harnessSessionId, !expectedThreadId.isEmpty else { return [] }
+
+        let kinds: [AgentSignal.Kind]
+        let turnID: String?
+        switch raw {
+        case .rpcNotification(let method, let params):
+            guard params["threadId"]?.stringValue == expectedThreadId else { return [] }
+            switch method {
+            case "turn/started":
+                guard let id = params["turn"]?["id"]?.stringValue, !id.isEmpty else { return [] }
+                kinds = [.turnStarted]
+                turnID = id
+            case "turn/completed":
+                kinds = [.turnCompleted()]
+                let id = params["turn"]?["id"]?.stringValue
+                turnID = id?.isEmpty == false ? id : nil
+            case "thread/status/changed":
+                kinds = reconciliations(from: params["status"])
+                turnID = nil
+            default:
+                kinds = []
+                turnID = nil
+            }
+
+        case .rpcResponse(let method, let result):
+            guard ["thread/resume", "thread/read"].contains(method), let thread = result["thread"],
+                  thread["id"]?.stringValue == expectedThreadId
+            else { return [] }
+            kinds = reconciliations(from: thread["status"])
+            turnID = nil
+            if thread["status"]?["type"]?.stringValue == "active" {
+                let activeTurnIDs = thread["turns"]?.arrayValue?.compactMap { turn -> String? in
+                    guard turn["status"]?.stringValue == "inProgress",
+                          let id = turn["id"]?.stringValue,
+                          !id.isEmpty
+                    else { return nil }
+                    return id
+                } ?? []
+                if activeTurnIDs.count == 1 {
+                    return [.init(
+                        sessionEpoch: context.sessionEpoch,
+                        turnID: activeTurnIDs[0],
+                        kind: .turnStarted
+                    )] + kinds.map {
+                        .init(sessionEpoch: context.sessionEpoch, kind: $0)
+                    }
+                }
+            }
+
+        case .hooksPush, .fileTail:
+            kinds = []
+            turnID = nil
+        }
+
+        return kinds.map { .init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: $0) }
+    }
+
+    private func reconciliations(from status: JSONValue?) -> [AgentSignal.Kind] {
+        switch status?["type"]?.stringValue {
+        case "active":
+            let flags = status?["activeFlags"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            return [.turnReconciled(.running, humanNeed: humanNeed(for: flags))]
+        case "idle":
+            return [.turnReconciled(.waiting(), humanNeed: nil)]
+        case "notLoaded", "systemError":
+            return [.observationLost]
+        default:
+            return []
+        }
+    }
+
+    private func humanNeed(for flags: [String]) -> ProviderHumanNeed? {
+        let approval = flags.contains("waitingOnApproval")
+        let input = flags.contains("waitingOnUserInput")
+        return switch (approval, input) {
+        case (false, false): nil
+        case (true, false): .permission
+        case (false, true): .input
+        case (true, true): .unspecified
+        }
     }
 
     /// Lower-case + drop underscores so `task_complete` / `TaskComplete` / `TurnComplete` normalize alike.
@@ -174,15 +290,6 @@ public struct CodexAdapter: Adapter {
         return withFrac.date(from: value) ?? plain.date(from: value)
     }
 
-    /// Nested Codex agents write independent rollouts under the parent's cwd. Current rollouts name
-    /// them explicitly; a nonempty parent id independently identifies the same nested boundary even if
-    /// the source label is absent or changes.
-    private static func isSubagent(_ payload: JSONValue) -> Bool {
-        let source = payload["thread_source"]?.stringValue?.lowercased()
-        let parentId = payload["parent_thread_id"]?.stringValue
-        return source == "subagent" || !(parentId?.isEmpty ?? true)
-    }
-
     // Permission posture — mirrors Claude's `accessFlags` (D8 §7): a DEFAULT (read-write) card launches
     // with Codex's OWN default permissioning — NO `-s`/`-a` clamp — so `AccessPolicy .default` means
     // "the agent's native default", exactly like Claude passes no `--permission-mode`. Only a `.readOnly`
@@ -193,17 +300,15 @@ public struct CodexAdapter: Adapter {
         access == .readOnly ? ["-s", "read-only", "-a", "never"] : []
     }
 
-    // Defect 2 · Codex hook-trust. This installed Codex build gates launch-scoped hooks behind a modal
-    // Orchestra cannot answer, so the injected Stop handler would otherwise never drain the inbox. The
-    // build-probed flag applies only to hook trust; it does not change approval or sandbox policy.
+    // Some Codex builds gate launch-scoped hooks behind a modal Orchestra cannot answer. The build-probed
+    // flag applies only to hook trust; it does not change approval or sandbox policy.
     private var hookTrustFlags: [String] {
         bypassHookTrustSupported ? ["--dangerously-bypass-hook-trust"] : []
     }
 
     /// Does the installed Codex build accept `--dangerously-bypass-hook-trust`? An unknown flag would
     /// abort launch (`exit 2, unexpected argument`), so this is build-gated. The flag's presence exactly
-    /// tracks the trust gate's presence: this customized build has BOTH; a stock codex-rs build has
-    /// NEITHER — so probing the flag is the correct capability gate. Probed per binary via `--help`.
+    /// tracks the trust gate's presence. Probe it per binary via `--help`.
     /// A launch that doesn't inject `hookTrustBypass:` and runs a bin whose `--help` can't complete
     /// cleanly (absent bin, timeout) degrades to no-flag; only a definitive `exit 0` result is cached.
     private var bypassHookTrustSupported: Bool {
@@ -218,8 +323,8 @@ public struct CodexAdapter: Adapter {
     /// and confirmed for codex-cli 0.142.5). A timeout (`Proc.run` returns a SIGTERM, non-zero exit — it
     /// does NOT throw) or a spawn failure is TRANSIENT (cold first-exec under load, AV scan): return
     /// `false` for this launch but DON'T cache it, so the next launch retries. Caching a transient `false`
-    /// would silently disable the flag for the whole daemon session → the exact non-delivery bug this
-    /// fixes. (A build whose `--help` exits non-zero would re-probe every launch and never cache — safe,
+    /// would silently disable the flag for the whole daemon session. A build whose `--help` exits non-zero
+    /// re-probes every launch and never caches — safe,
     /// just not the target build.) The subprocess runs OUTSIDE the lock so a concurrent launch isn't
     /// stalled up to 5s; two concurrent first-probes may both spawn and store the same idempotent value.
     /// Stale on an in-place codex upgrade until daemon restart — acceptable; daemons restart on upgrade.
@@ -282,27 +387,36 @@ public struct CodexAdapter: Adapter {
     }
 
     public func start(_ ctx: AdapterContext) -> [String] {
-        var argv = [binary]
-        argv += launchConfigurationFlags(ctx)
-        argv += hookTrustFlags
-        argv += accessFlags(ctx.access)
-        argv += modelFlag(ctx.model)
-        if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
-        return argv
+        var arguments = launchConfigurationFlags(ctx)
+        arguments += hookTrustFlags
+        arguments += accessFlags(ctx.access)
+        arguments += modelFlag(ctx.model)
+        let positional = ctx.prompt.flatMap { $0.isEmpty ? nil : $0 }.map { [$0] } ?? []
+        if let launch = CodexLaunchConfiguration.appServerLaunch(
+            binary: binary, context: ctx, agentId: id,
+            clientArguments: arguments, positional: positional
+        ) {
+            return launch.argv
+        }
+        return [binary] + arguments + positional
     }
 
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
-        var argv = [binary, "resume", sid]
-        argv += launchConfigurationFlags(ctx)
-        argv += hookTrustFlags
-        argv += accessFlags(ctx.access)
-        argv += modelFlag(ctx.model)
-        // F1: the folded seed (handoff ctx + pending inbox) rides the resume as its opening positional
-        // turn. This is the resume-seed delivery for handoff AND the idle-wake path (`.relaunch`); live
-        // turn-end delivery is the Stop hook (`inboxDrain == .stopHook`).
-        if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
-        return argv   // no prompt beyond the optional seed — the rollout holds prior task history
+        var arguments = ["resume", sid]
+        arguments += launchConfigurationFlags(ctx)
+        arguments += hookTrustFlags
+        arguments += accessFlags(ctx.access)
+        arguments += modelFlag(ctx.model)
+        // The folded handoff seed rides the resume as its opening positional turn.
+        let positional = ctx.seed.flatMap { $0.isEmpty ? nil : $0 }.map { [$0] } ?? []
+        if let launch = CodexLaunchConfiguration.appServerLaunch(
+            binary: binary, context: ctx, agentId: id,
+            clientArguments: arguments, positional: positional
+        ) {
+            return launch.argv
+        }
+        return [binary] + arguments + positional
     }
 
     /// Receive-direction format: Codex 0.135+ reads the SAME `hookSpecificOutput.additionalContext`
@@ -310,13 +424,11 @@ public struct CodexAdapter: Adapter {
     /// shape is a deliberate Codex choice, not a silent inheritance of Claude's.
     public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
         if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
-        if let cont = r.continuation   { return HookEnvelope.block(cont) }
         return nil
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
-        let sid = current ?? discover(cwd: ctx.cwd, newerThan: ctx.since)
-        guard let sid else {
+        guard let sid = current, !sid.isEmpty else {
             return AgentSessionInfo(agentId: id, sessionId: nil, transcriptPath: nil,
                                     priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
         }
@@ -332,48 +444,9 @@ public struct CodexAdapter: Adapter {
             resumeCmd: resume(resumeCtx))
     }
 
-    // MARK: rollout discovery — normal Codex state / sessions / rollout-<timestamp>-<uuid>.jsonl
+    // MARK: rollout metadata lookup — sessions / rollout-<timestamp>-<uuid>.jsonl
 
     var sessionsDir: String { "\(codexHome)/sessions" }
-
-    /// Newest rollout's embedded session UUID, or nil. Kept for diagnostics/tests; live card discovery
-    /// uses `discover(cwd:)` so one Codex card does not accidentally claim another card's newest rollout.
-    func discover() -> String? {
-        let newest = rolloutFiles().max { mtime($0) < mtime($1) }
-        guard let newest else { return nil }
-        return sessionId(fromRollout: newest)
-    }
-
-    /// Newest primary rollout whose first metadata record belongs to this cwd. This is the safe discovery
-    /// path for Orchestra cards before their Codex session id has been bound.
-    ///
-    /// `newerThan` (2.6) time-scopes the bind to rollouts created AFTER the card entered its being-born
-    /// phase (`phaseChangedAt`): a launching Codex card must adopt ONLY the rollout its own fresh launch
-    /// created, never a live sibling's actively-written rollout in the same cwd nor its own stale
-    /// pre-reboot rollout. The first `session_meta` payload has an immutable creation timestamp; use it
-    /// rather than mutable file mtime, which a prior card can update after this launch begins. Nested
-    /// Codex-agent rollouts are excluded before the ambiguity check. If more than one primary rollout
-    /// remains, binding is genuinely ambiguous and the N=3 liveness fallback carries readiness without
-    /// letting an unbound card adopt a sibling's session after it becomes live. `newerThan == nil` can
-    /// recover only an unambiguous primary cwd match.
-    func discover(cwd: String, newerThan: Date? = nil) -> String? {
-        let canon = PathResolver.canonical(cwd)
-        let matches = rolloutFiles()
-            .compactMap { path -> (path: String, startedAt: Date)? in
-                guard let metadata = rolloutMetadata(path),
-                      !metadata.isSubagent,
-                      PathResolver.canonical(metadata.cwd) == canon else { return nil }
-                let startedAt = metadata.startedAt ?? mtime(path)
-                if let newerThan, startedAt <= newerThan { return nil }   // stale / pre-launch → not ours
-                return (path, startedAt)
-            }
-        guard let newest = matches.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
-        // More than one PRIMARY rollout is genuinely ambiguous at every lifecycle phase. In particular,
-        // an unbound card may have reached live through the readiness fallback, but must never then adopt
-        // a sibling's session through an unscoped telemetry lookup.
-        if matches.count > 1 { return nil }
-        return sessionId(fromRollout: newest.path)
-    }
 
     func rolloutPath(for sessionId: String) -> String? {
         rolloutFiles().first { self.sessionId(fromRollout: $0) == sessionId }
@@ -401,72 +474,18 @@ public struct CodexAdapter: Adapter {
         return UUID(uuidString: candidate) != nil ? candidate.lowercased() : nil
     }
 
-    private struct RolloutMetadata {
-        let cwd: String
-        let startedAt: Date?
-        let isSubagent: Bool
-    }
-
-    private func rolloutMetadata(_ path: String) -> RolloutMetadata? {
-        guard let line = firstLine(path),
-              let jv = try? JSONValue.parse(Data(line.utf8)) else { return nil }
-        let payload = jv["payload"] ?? jv
-        guard let cwd = payload["cwd"]?.stringValue else { return nil }
-        return RolloutMetadata(
-            cwd: cwd,
-            startedAt: Self.rolloutTimestamp(payload["timestamp"]?.stringValue)
-                ?? Self.rolloutTimestamp(jv["timestamp"]?.stringValue),
-            isSubagent: Self.isSubagent(payload))
-    }
-
-    private func firstLine(_ path: String) -> String? {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? fh.close() }
-        var data = Data()
-        let chunkSize = 64 * 1024
-        let cap = 4 * 1024 * 1024
-        while data.count < cap {
-            let chunk = fh.readData(ofLength: chunkSize)
-            if chunk.isEmpty { break }
-            if let nl = chunk.firstIndex(of: 0x0A) {
-                data.append(chunk[..<nl])
-                break
-            }
-            data.append(chunk)
-        }
-        guard !data.isEmpty else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func mtime(_ path: String) -> Date {
-        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date ?? .distantPast
-    }
 }
 
 public extension AgentCapabilities {
-    /// Codex's shipped capabilities (B1 as-built). Discovered session id (rollout), file-tail telemetry
-    /// (rollout JSONL), token-based context usage, resume-seed wake (`.relaunch` — idle cards resume; no
-    /// TUI scrape), Stop-hook inbox drain (parity with Claude), an OS-sandboxed read-only guarantee, and
-    /// subscription auth.
+    /// Codex's shipped capabilities: app-server-discovered thread ids, file-tail metadata, token-based
+    /// context usage, an OS-sandboxed read-only guarantee, and subscription auth.
     static let codex = AgentCapabilities(
         sessionId: .discovered,
         telemetry: .fileTail,
         contextUsage: .tokens,
-        wakeTransport: .relaunch,
-        inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,
-        // A fresh Codex launch writes a rollout whose FIRST line is a `session_meta` record — the daemon's
-        // rollout tail observes it and resolves the launch's readiness (D1 `.rolloutMeta`). A `codex resume`
-        // writes NO rollout at resume time, so a relaunch has no marker; the universal N=3 liveness-tick
-        // fallback resolves the still-pending waiter within the grace, keeping the relaunch on the readiness
-        // gate (never an immediate ensure-is-confirmation that would bypass it).
-        readinessConfirmation: .rolloutMeta,
-        // Codex's permission gate is a TUI prompt whose default option is accepted with Enter / cancelled
-        // with Esc — the same keystrokes Claude uses — so the interim send-keys gate carries Enter/Esc.
-        // This is the per-adapter seam C1 refines: when Codex's structured `PermissionRequest` reply is
-        // wired, replace these with an empty chord so the gate routes through that channel, not keystrokes.
-        approveChord: [.named(.enter)],
-        denyChord: [.named(.esc)])
+        // SessionStart is lifecycle readiness only. Thread identity and state remain app-server-owned.
+        readinessConfirmation: .sessionStartHook)
 }

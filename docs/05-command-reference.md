@@ -14,19 +14,20 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | Command | Parameters | What it does |
 |---------|------------|--------------|
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
-| `spawn` | `prompt` (required), `title?`, `note?`, `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). `title` names the card and **pins** that name; without it the name is derived (branch → read-only target → prompt → directory) and a `seed` is never used as one — see [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot). On readiness the card lands `live(.waiting(.humanTurn))` if it has had no prompt yet, else `live(.running)`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
-| `needs-input` | `ref` (required), `question` (required) | **Declare** that the card is blocked on a decision only its owner can make, so the board can surface it — an agent waiting in its own terminal is otherwise an ordinary idle card, and the human never learns they are the blocker. Written to `Task.pendingQuestion` (trimmed to one line, 200 chars max). **Set/replace only — there is no clear form**, and an empty question is rejected: the daemon retires the declaration itself, so a stale one can't outlive its answer. It is cleared at proof the next turn started — a turn-start `.live(.running)` landing, or the moment a queued inbox batch is **handed back as a Stop continuation** (a Claude card resumes the same session with no `UserPromptSubmit`, and a prose-only reply calls no tool, so it would otherwise never report `.running`) — or by a completed session replacement (a landed relaunch, an id rollover, `/clear`). A permission approval resumes the *same* turn and does **not** clear it, and neither does the Stop that *ends* a continuation turn — that is where an agent out of road declares. The declaration carries a `declaredAt`, so a Codex turn-start (which reaches the daemon by a polled rollout tail) retires it only when the turn-start line's own write time is newer than the declaration — a stale late poll can't erase a question it predates; Claude's synchronous hook clears unconditionally. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). Guidance tells agents to re-declare if they are still blocked when the next turn ends; see [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
+| `spawn` | `prompt` (required), `title?`, `note?`, `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). `title` names the card and **pins** that name; without it the name is derived (branch → read-only target → prompt → directory) and a `seed` is never used as one — see [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot). On readiness the card enters `live(AgentState.unavailable)` and waits for current provider evidence to say `running` or `waiting`; neither a prompt nor a seed manufactures status. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent. A seed is authored opening context for a new card; it is not ordinary inbox delivery. |
+| `needs-input` | `ref` (required), `question` (required) | **Declare** that the card ended its turn blocked on a decision only its owner can make. Written to `Task.pendingQuestion` (one line, 200 chars max). The verb is set/replace only; the daemon clears it only when an identified **distinct** next turn starts (including `running → running`). Same-session reconnect, provider resolution, opening the harness, sending a message, or resolving a native request leave it unchanged. `declaredAt` supplies the question's age. Guidance tells an agent to re-declare if it remains blocked when the next turn ends. See [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `set-title` | `ref` (required), `title` (required) | Rename a card. The title is the board's SSOT for the name and is **pinned** by this verb; the agent session's own name follows at its next (re)launch — a live session cannot be renamed from outside, which is why this is an Orchestra verb rather than an agent command. Trimmed, 120 chars max. |
 | `set-note` | `ref` (required), `note` (required) | Set or clear a card's **durable** note — the one-liner about what the card IS (its wave/layer in a larger plan, say). Distinct from `desc`, the live status blurb telemetry overwrites every tick: a note is authored and survives restart/clear. An empty `note` clears it. Trimmed, 120 chars max. |
-| `set-planned` | `ref` (required), `n?` | Declare how many child cards this card's approved plan fans out — the target `m` of the `n/m` [wave-progress bar](03-data-model.md#the-card), broadcast on `treeStat.plannedChildren`. `n = 0` or absent clears it. Stored on the card's branch git-config (`branch.<b>.orchestra-planned`); **worktree cards only** (a branchless card is rejected). Same authored-narration family as `set-note` — set it once the plan is approved and update it as the plan changes. |
-| `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3), then **wake** the card (F2) so an *idle* agent drains it now rather than at its next unprompted turn. Content still rides the inbox (Stop-hook delivery / session seed / resume seed), never typed into tmux — `wake` only starts a turn. A message over the shared `StopDrain.maxMessageChars` cap (the ~10 000-char delivery budget after the operator-relayed header) is **rejected** with `invalidParams` at enqueue — put large content in a worktree file and reference it — so any accepted message delivers whole. The source is retained for the inbox API and editor, but omitted from the model-facing delivery string. Also the **append** action of the app's [inbox editor](07-app-ui.md#the-inspector). |
-| `inbox` | `ref` (required) | List a card's pending [inbox](03-data-model.md#the-inbox-store-f3) messages (`{id, cardId, text, source?, dedupKey?, createdAt, lease?}`) in FIFO order, including their source metadata. Read-only (`Inbox.peek`); backs the [inbox editor](07-app-ui.md#the-inspector)'s list. |
-| `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit the text of one queued message in place (`Inbox.update`); `id`/`cardId`/`source`/`dedupKey`/`createdAt` are preserved. |
-| `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove one queued message by id (`Inbox.remove`). |
-| `inbox-reorder` | `ref` (required), `ids` (required: array of message UUIDs) | Reorder a card's queued messages (`Inbox.reorder`); `ids` is the full new order and must be a permutation of the card's pending message ids. Refills exactly that card's array slots, so other cards' interleaving is preserved. |
-| `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done/archived, or dies (any `.dead` reason: a clean exit or a crash) — and return that conclusion; the caller re-issues on the cards that remain. A delegate that merely finishes its turn does **not** conclude (it idles waiting) — get its result via `send`, not `wait`. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
-| `handoff` | `ref` (required), `context` (required), `model?` | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. `model` additionally **re-seats** the card onto that model while the context rides across — the self-escalation path (see [the `--model` re-seat](#the---model-re-seat)). |
+| `set-planned` | `ref` (required), `n?` | Declare how many child cards this card's approved plan fans out — the target `m` of the `n/m` [wave-progress bar](03-data-model.md#the-task-card), broadcast on `treeStat.plannedChildren`. `n = 0` or absent clears it. Stored on the card's branch git-config (`branch.<b>.orchestra-planned`); **worktree cards only** (a branchless card is rejected). Same authored-narration family as `set-note` — set it once the plan is approved and update it as the plan changes. |
+| `send` | `ref` (required), `message` (required), `id?` | Durably admit a message to the card's local [inbox](03-data-model.md#the-inbox-store). RPC success means admission only. The per-live-session native sender later attempts it without consulting card status; `handedOff` means the provider accepted the request, never that the model read or acted on it. `id` lets a caller safely retry admission after an uncertain RPC result. |
+| `inbox` | `ref` (required), `includeHistory?` (bool, default `false`) | List unresolved inbox rows in FIFO order. Pass `includeHistory:true` to also list bounded `handedOff` history. |
+| `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit an unresolved row. Editing `failed` requeues it; `handedOff` history is immutable. |
+| `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove any row, including `handedOff` history. |
+| `inbox-retry` | `ref` (required), `id` (required: message UUID) | Requeue a `failed` row with a fresh native submission attempt. |
+| `inbox-reorder` | `ref` (required), `ids` (required: array of message UUIDs) | Reorder the full unresolved sequence. `ids` must be a permutation of all unresolved ids; a failed row must be retried, edited, or removed first. |
+| `wait` | `refs` (required: array of refs), `watcher?` | Subscribe until **one** watched card reaches a real conclusion — Done/archived, or any `.dead` reason — then return it. A delegate that merely finishes its turn does not conclude. `wait` is a lifecycle subscription, not an inbox-delivery acknowledgement. |
+| `handoff` | `ref` (required), `context` (required), `model?` | Clean-context handoff: resume **this** card in a fresh process while retaining its session identity and passing the authored `context`. Ordinary inbox rows stay independent. `model` additionally **re-seats** the card onto that model while the context rides across (see [the `--model` re-seat](#the---model-re-seat)). |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: record the intent (`phase = .archived(teardownComplete: false)`, `archived=true`) and return; the reconciler's Teardown stepper kills the session, cleans the run dir per origin, and flips the phase to `.archived(teardownComplete: true)`. |
 | `reopen` | `ref` (required) | Bring an archived (Done) card back onto the board: recreate the run dir the archive reclaimed, unarchive (keeping its column, clearing stale dead state), then `resume` its transcript when resumable else `restart` a fresh session. Idempotent on a non-archived card. Backs the [Done popover](07-app-ui.md#onboarding-settings-recovery-and-popovers)'s **Reopen** button. |
@@ -52,14 +53,16 @@ required on every schema, so a new verb must classify itself before it can ship:
 - **Query** — read-only, retry-free, never touches `phase`. `list`, `inbox`, `status`, `tree`, `sessions`,
   `trustState`, `capture`.
 - **Mutation** — completes inline and returns its result; may hop off-actor (a shell command, a tmux
-  attach) but never changes `phase`. `move`, `send`, `inbox-edit`/`-remove`/`-reorder`, `wait`, `shell`,
+  attach) but never changes `phase`. `move`, `inbox-edit`/`-remove`/`-reorder`, `wait`, `shell`,
   `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-title`, `set-note`, `needs-input`, `set-planned`,
   `set-parent`, `synced`, `shipped`, `merge-request`, `borrow`, `release`.
-- **Convergence** — the only kind that touches `phase`. The synchronous half persists an **intent** — one
-  `transition()` call — and returns immediately; the reconciler's phase-keyed
-  [`PhaseStepper`s](02-architecture.md#the-convergence-model) drive the card the rest of the way. `spawn`,
-  `batch-spawn`, `archive`, `reopen`, `resume`, `restart`, and `handoff` are Convergence — none of them
-  awaits a worktree checkout, an agent bring-up, or a teardown duty before its RPC returns.
+- **Convergence** — the synchronous half persists durable intent and returns immediately. Most instances
+  use one `transition()` call, then the phase-keyed
+  [`PhaseStepper`s](02-architecture.md#the-convergence-model) drive the card the rest of the way. `send`
+  is the other shape: queue admission is its durable intent, and the native sender later attempts it without
+  changing `phase`. `spawn`, `batch-spawn`, `archive`, `reopen`, `resume`, `restart`, and `handoff` are
+  lifecycle Convergence verbs — none awaits a worktree checkout, an agent bring-up, or a teardown duty
+  before its RPC returns.
 
 `phaseGate` is enforced once, at the single dispatch chokepoint (`CommandRegistry.dispatch`): for any
 non-query verb that names a target `ref`, the card's *current* `Phase.Kind` is checked against the
@@ -68,7 +71,7 @@ A `Phase.Kind` absent from a verb's set is denied by default, so a future kind i
 updated to admit it (the fail-safe direction). `spawn`/`batch-spawn`/`trust`/`trustState`/`wait`/`list` name
 no single pre-existing target card, so they skip the gate.
 
-The seven Convergence verbs and what each persists:
+The seven lifecycle Convergence verbs and what each persists:
 
 | Verb | Allowed phases | Intent persisted |
 |------|-----------------|-------------------|
@@ -99,32 +102,15 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   [recovery, resume, and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart).
 - **`exec` vs `shell`.** `exec` is a one-shot non-interactive command with a captured result; `shell`
   opens an interactive window you attach a terminal to. `inspect` is `shell` + a read-only agent.
-- **`send` is durable, not keystrokes.** As of C1 (F3), `send` enqueues to the card's persistent
-  [inbox](03-data-model.md#the-inbox-store-f3) rather than typing into the agent's tmux window. The
-  message is drained into the agent at its next turn-end (the Claude Stop hook), survives a daemon
-  restart, and coalesces with other queued messages. **After enqueueing, `send` also `wake`s the card**
-  (the same F2 `wake` the [merge-watch](09-design-decisions.md#shipped-feature-history) uses), so a message
-  to an *idle* agent starts a turn immediately instead of sitting durable until the agent's next unprompted
-  turn. The wake only *triggers* a turn — content still rides the inbox, never the keystroke — and no-ops
-  when the card is busy, drafting, mid-relaunch, or already watching children on a background `orchestra
-  wait`. For a send-keys (Codex) card it fires the content-free nudge; for a `nativeReinvoke` (Claude) card
-  that is genuinely idle with no live wait it **resume-seeds** — relaunches `claude --resume` with the inbox
-  folded into the opening turn. (The wake dispatcher is C2/C4, extended by `send-wakes-idle-card`.)
-- **`wait` is a conclusion-watch, read from real card state — never git.** As of C2 (F2 / merge-watch),
-  `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived (`done`), or a real
-  agent death, i.e. any `.dead` reason incl. a clean exit or a crash (`exited`) — and returns that
-  `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A delegate that merely **ends its turn does NOT
-  conclude**: turn-completion is not daemon-observable "done" (see
-  [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)), so a
-  read-only reviewer/fork idles `.live(.waiting(.humanTurn))` and returns its result via `send`, not `wait`.
-  Conclusion is read from real card state, never `git merge-base` (which false-positives a 0-commit branch
-  as "merged"). `OrchestraService` is the single authority that marks a card concluded (from `archive`→Done
-  and the agent-death report branch); `MergeWatch` is a **subscriber** it feeds — no polling, no file/git
-  watching. `wait` is single-shot on purpose: when
-  one child concludes it returns, and the caller (an orchestrator card) re-issues on the cards that remain,
-  so several children can conclude concurrently without a barrier. With `watcher` set, each conclusion also
-  routes into that card's durable inbox (coalescing at its next turn-end) and wakes it (F2). This is what
-  the reactive fan-out / stacked-PR DAG composes from.
+- **`send` is local admission, not keystrokes.** It writes a durable row to the
+  [inbox](03-data-model.md#the-inbox-store); that is the RPC success boundary. A native provider sender
+  attempts queued rows only while its live session handle exists. It has no status gate, does not wake or
+  relaunch the session, and reports `handedOff` only after the native harness accepts the request.
+- **`wait` is a conclusion subscription, read from real card state — never git.** It returns the first
+  watched card that settles terminal — Done/archived (`done`) or any `.dead` reason (`exited`). A delegate
+  that merely ends its turn remains `.live(AgentState.waiting)`, so its parent must collect the result and
+  archive it. `wait` is single-shot and may be re-issued for remaining cards; it does not prove ordinary
+  inbox delivery or control the sender.
 - **An idle card is not a concluded one — nothing reclaims it for you.** Those three branches are the
   *whole* of conclusion authority, so a worktree child told to `send` a result back and stop (a review-pair
   reviewer, a research fork) ends its turn `waiting`, not concluded: it keeps its agent process, worktree,
@@ -142,22 +128,12 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   handed to an owner that appears later, and one whose owner is archived keeps its badge and simply stops
   being nudged. The badge is sticky either way: an unowned request is retired by `synced` / `shipped` /
   `set-parent`, or by archiving the card.
-- **`handoff` is the F1 seam's first surface.** As of D1, `handoff` is a thin `Command` that resolves the
-  ref and delegates to `OrchestraService.resumeInCard(seed:)` (shipped by C3) — it does **not** start a
-  new card. The named card is killed and resumed in a fresh, clean-context process that keeps its session
-  id (so the vendor transcript carries forward), with `context` folded ahead of the card's drained pending
-  inbox as the resumed session's opening turn. It auto-surfaces as an MCP tool (registry↔MCP parity stays
-  green with no test edit); the CLI verb is the one hand-wired surface (`orchestra handoff <ref>
-  <context...>`). This is the *same-card* (replace-the-thread) topology; the new-card **Fork/Fan-out**
-  start-actions (a `spawn`/`batch-spawn` with a `SpawnInput.seed`) plus the Handoff/Send **card actions**
-  landed as PR D3 (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The dedicated
-  Handoff/Fork/Fan-out **buttons have since been removed** — those moves stay reachable via the
-  natural-language → MCP path — and the per-card Send button became an
-  [inbox editor](07-app-ui.md#the-inspector) (the *agent-buttons simplification*, ch. 9). The *when-to-use* guidance for `spawn`/`handoff`/`wait`
-  across all four topologies — and the card-vs-native-subagent line — is vendored as shared per-agent
-  guidance (PR D2). Each launch packages it through the provider-native surface: Claude as
-  `.claude/skills` project skills and Codex as launch-scoped `developer_instructions`, so Codex leaves its
-  global `AGENTS.md` alone; see [chapter 9](09-design-decisions.md#shipped-feature-history).
+- **`handoff` is a same-card context operation.** It delegates to
+  `OrchestraService.resumeInCard(seed:)` and keeps the provider transcript while replacing the active
+  context with the authored summary. It never folds or drains ordinary inbox rows. Fork and fan-out use
+  new-card `SpawnInput.seed` context instead. The app keeps these as natural-language → MCP moves and uses
+  the [inbox editor](07-app-ui.md#the-inspector) for manual messages; shared provider-native guidance covers
+  when to use each one.
 - **`trust` is human-only — an agent can never self-grant.** As of T2, `trust` records a *human* grant
   into the [trust ledger](03-data-model.md#the-trust-ledger-t1), filling the `needsGrant` gap the core's
   `resolveTrust` (T1) leaves for a borrowed dir the user hasn't approved (see
@@ -224,7 +200,7 @@ visible to the app but not auto-exposed as MCP tools — unifying this is part o
 | `media` | Resolve one opaque transcript image reference to its bytes (`{ref, id}` → `{reference, dataBase64}`). The read side of [`publish-image`](#registry-commands), and **app-only** for the same reason `diffText` is: an agent that wants an image already has it on disk. The caller supplies only a UUID — the daemon scopes it to the card's current session epoch and returns Base64, so no filesystem location ever crosses the boundary in either direction. |
 | `diffText` | Render a card's worktree diff as an ANSI string for the inspector's [Diff view](07-app-ui.md#the-inspector) (`{ref, base?}` → String, `base` one of `working`/`branch`/`parent`, default `branch`). **App-only** (axis 7): the `openInZed`-shape internal endpoint, deliberately **not** a registry command, so it never surfaces as an MCP/CLI tool — an agent reads a diff by running `git diff` in its own cwd. Non-`.worktree` cards return `""`; a huge render is capped (256 KB) with an "open in Zed" sentinel. |
 | `diffStat` | Recompute + return a card's footer diffstat (`{ref, base?}` → `{filesChanged, insertions, deletions}` or null). The on-selection refresh; the same **app-only** internal endpoint (also refreshed event-driven off the report funnel — see [chapter 9](09-design-decisions.md#shipped-feature-history)). |
-| `hook` | Internal hook-channel plumbing (**not user-facing**): the single entry point the `_report` edge client calls, replacing the former `report`/`drain`/`sessionBrief`. Takes a typed `{ref, event, report?, source?}` and dispatches both directions in the adapter-free `OrchestraService.handleHook` — applies the telemetry `report` (send), and for `session` returns the live orientation ([`SessionBrief`](04-cards-worktrees-sessions.md), skipped on `compact`) or for `stop` the drained [inbox](03-data-model.md#the-inbox-store-f3) — returning `{response: <HookResponse-or-null>}` for the client to encode. The drain payload carries a channel-neutral **provenance header** and `[k/N]`-numbers a batch, delivering only the *whole messages that fit* the 10 000-char budget (overflow stays queued). Deliberately not a registry command, so it never surfaces on the CLI/MCP. |
+| `hook` | Internal hook-channel plumbing (**not user-facing**): the `_report` edge client sends `{ref, event, report?, observationPayload?, source?, epoch?}` to `OrchestraService.handleHook`. Metadata/lifecycle fields go through `StatusReport`; Claude's current-session compact observation becomes `AgentSignal`s after card/session fencing, while Codex runtime state comes only from its app-server observer. `session` may return the live [`SessionBrief`](04-cards-worktrees-sessions.md); Stop has no inbox-delivery response. Native inbox senders are separate from this RPC and never produce status. Deliberately not a registry command, so it never surfaces on the CLI/MCP. |
 
 ## The wire protocol
 

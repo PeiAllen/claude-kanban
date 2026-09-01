@@ -340,22 +340,27 @@ public class BoardStore: ObservableObject {
     // MARK: attached agents (read-only reviewers embedded behind their target)
 
     /// Eye-tint tier for attached agents — a THREE-tier priority, not a binary. `needsAttention` (a
-    /// reviewer on a permission prompt, or dead) is a distinct warning that DOMINATES everything; `running`
+    /// reviewer requiring a human, or dead) is a distinct warning that DOMINATES everything; `running`
     /// (any reviewer active or still being born) DOMINATES `idle`; `idle` (a reviewer that finished its
-    /// turn — `humanTurn` — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
+    /// turn — an ordinary wait — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
     /// is `idle`, NOT attention: a running sibling keeps the eye green, and only a genuine block (or an
     /// all-quiet group) changes it.
     public enum AttachedLiveness: Equatable {
         case running        // green — active work in progress (dominates idle)
         case idle           // grey  — all attached agents have finished their turn, none blocked
-        case needsAttention // amber — a reviewer is blocked on a permission prompt or has died
+        case needsAttention // amber — a reviewer requires a human or has died
 
         /// The tier a single agent's phase maps to.
-        public init(phase: Phase) {
-            switch phase {
-            case .dead, .live(.waiting(.permission)): self = .needsAttention
-            case .live(.waiting(.humanTurn)):         self = .idle
-            default:                                  self = .running   // running + being-born
+        public init(task: Task) {
+            switch task.phase {
+            case .dead:
+                self = .needsAttention
+            case .live where task.requiresHuman:
+                self = .needsAttention
+            case .live(let state) where state.workInFlight == false:
+                self = .idle
+            default:
+                self = .running   // work in flight, unavailable observation, and being-born
             }
         }
     }
@@ -431,7 +436,7 @@ public class BoardStore: ObservableObject {
     public func attachedLiveness(of target: Task) -> AttachedLiveness? {
         let agents = attachedAgents(of: target)
         guard !agents.isEmpty else { return nil }
-        let tiers = agents.map { AttachedLiveness(phase: $0.phase) }
+        let tiers = agents.map(AttachedLiveness.init(task:))
         if tiers.contains(.needsAttention) { return .needsAttention }
         if tiers.contains(.running) { return .running }
         return .idle
@@ -915,7 +920,6 @@ public class BoardStore: ObservableObject {
                 // `tasks` wholesale, bypassing `apply`) never fire a notification. The array IS the mac
                 // path's per-card memory (no separate stuck-state store needed).
                 let prevTask = tasks.first { $0.id == t.id }
-                let prevPhase = prevTask?.phase
                 let wasStuck = prevTask.map { AttentionTransition.currentStuckTrigger($0) != nil } ?? false
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
@@ -923,11 +927,11 @@ public class BoardStore: ObservableObject {
                 // Genuine transitions → the matching notification trigger, decided by the SHARED
                 // `AttentionTransition.notifyTrigger` core (the same mapping + precedence the phone's push
                 // path uses) so the macOS banner can't drift from the phone push. It reconciles the phase
-                // edge and a "card stuck" rise into ONE trigger (died/permission > stuck > needsYou). A fresh
+                // edge and a "card stuck" rise into ONE trigger (died/human-required > stuck). A fresh
                 // card (`prevTask == nil`, so `seen: false`) yields nil and never fires.
                 // Host-only: the macOS notifier surfaces these as system banners; iOS notifications are N1.
                 #if os(macOS)
-                if let trigger = AttentionTransition.notifyTrigger(prev: prevPhase, wasStuck: wasStuck,
+                if let trigger = AttentionTransition.notifyTrigger(prev: prevTask, wasStuck: wasStuck,
                                                                    seen: prevTask != nil, task: t) {
                     notifier.notify(trigger, task: t)
                 }
@@ -1054,23 +1058,6 @@ public class BoardStore: ObservableObject {
             return t
         } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
-    @discardableResult
-    public func send(_ id: UUID, _ message: String) async -> Bool {
-        // Mint the required message id here (the daemon requires it; this is a client seam like the CLI
-        // and MCP bridge). A fresh id per UI send is correct — the phone's reply/compose is a new intent,
-        // not a retry.
-        let messageId = UUID()
-        do {
-            _ = try await client.call("send", .object(["ref": .string(id.uuidString),
-                                                       "message": .string(message),
-                                                       "id": .string(messageId.uuidString)]))
-            return true
-        } catch {
-            toast("Couldn't send message", sub: "\(error)", color: .red)
-            return false                    // the caller keeps the user's text so it can be retried
-        }
-    }
-
     /// Register this device for push (N1): hand the APNs device token + the current notification-pref
     /// snapshot to the daemon over the shared `client`, so it can push attention alerts while the phone is
     /// backgrounded. Call after `registerForRemoteNotifications` yields a token, and again whenever a
@@ -1131,32 +1118,11 @@ public class BoardStore: ObservableObject {
     }
 
     /// Send a constrained key chord to a card's agent window (the Agent tab's steer-bar key affordances,
-    /// D2). Live keystrokes with no implicit Enter — distinct from `send`, which *queues* a message to the
-    /// inbox drained at turn-end. Best-effort (swallows RPC errors): a dropped keystroke on a flaky link
+    /// D2). Live keystrokes with no implicit Enter — distinct from `send`, which queues a durable message
+    /// for the live provider sender. Best-effort (swallows RPC errors): a dropped keystroke on a flaky link
     /// is recoverable by tapping again, and the steer bar shouldn't error-toast on every miss.
     public func sendKeysToAgent(_ id: UUID, _ chord: [KeyToken], window: String = "agent") async {
         try? await client.sendKeys(ref: id.uuidString, chord, window: window)
-    }
-
-    /// Inbox editor: list a card's pending messages (empty on any error).
-    public func inboxPeek(_ id: UUID) async -> [InboxMessage] {
-        (try? await client.call("inbox", .object(["ref": .string(id.uuidString)]))
-            .decode([InboxMessage].self)) ?? []
-    }
-    /// Inbox editor: edit one queued message's text.
-    public func inboxEdit(_ id: UUID, messageId: UUID, text: String) async {
-        _ = try? await client.call("inbox-edit", .object(["ref": .string(id.uuidString),
-            "id": .string(messageId.uuidString), "text": .string(text)]))
-    }
-    /// Inbox editor: remove one queued message.
-    public func inboxRemove(_ id: UUID, messageId: UUID) async {
-        _ = try? await client.call("inbox-remove", .object(["ref": .string(id.uuidString),
-            "id": .string(messageId.uuidString)]))
-    }
-    /// Inbox editor: reorder a card's queued messages (full new order).
-    public func inboxReorder(_ id: UUID, orderedIds: [UUID]) async {
-        _ = try? await client.call("inbox-reorder", .object(["ref": .string(id.uuidString),
-            "ids": .array(orderedIds.map { .string($0.uuidString) })]))
     }
 
     /// Read-only trust check for the spawn sheet's freeform trust indicator (T1's ledger via the daemon).

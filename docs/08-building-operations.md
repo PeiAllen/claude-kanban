@@ -451,9 +451,10 @@ produce a silent, empty run) and `agent_auth_seed "$ISO_HOME"`. Check it with `s
 
 Two more traps worth knowing when you run real agents in a harness:
 
-- **A missing permission parks a card forever.** An agent that reaches for an ungranted tool (e.g.
-  `git rev-parse` when only `git diff` was allowed) sits on an approval prompt, and the board shows only
-  "waiting" — indistinguishable from a slow agent. Scope grants by *tool*, not by guessing verbs.
+- **A missing permission parks a card.** An agent that reaches for an ungranted tool (e.g.
+  `git rev-parse` when only `git diff` was allowed) can open a provider permission prompt. Current provider
+  observation marks that as a human-needed state; ordinary `waiting` alone does not. Scope grants by
+  *tool*, not by guessing verbs.
 - **PTY exhaustion kills every session.** macOS caps PTYs (`kern.tty.ptmx_max`, 511 by default). Leaked
   tmux servers from earlier runs eat them, and once the cap is hit **every** new card dies instantly
   (`fork failed: Device not configured`) — including on your live board. Check with

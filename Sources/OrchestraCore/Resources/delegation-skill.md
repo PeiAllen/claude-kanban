@@ -65,9 +65,9 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   **`set-planned <ref> <n>`** declares how many child cards your wave will fan out — the target the
   progress bar fills toward (dashed until they spawn). Set it once your plan is approved and update it
   when the plan changes; `0` clears it. Same authored-narration family as `set-note`.
-- **`handoff <ref> <context…> [--model <id>]`** — F1 clean-context resume: kill + `--resume` the SAME
-  session seeded with `context` (folded together with the card's pending inbox). Same worktree, same
-  branch, fresh context window. Hand off to a *new* card instead by spawning with the context as the seed.
+- **`handoff <ref> <context…> [--model <id>]`** — clean-context resume: kill + `--resume` the SAME
+  session with the authored `context`. Same worktree, same branch, fresh context window; ordinary inbox
+  rows stay independent. Hand off to a *new* card instead by spawning with the context as the seed.
 - **`--model <id>` on `handoff` / `restart` / `resume`** — **re-seat** the card onto a different model
   *in place*: same card, same worktree, same session lineage. `handoff --model` **carries the context
   across** (that's how you escalate yourself to a higher tier mid-task); `restart --model` deliberately
@@ -75,8 +75,8 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   The id must come from your **own agent's** model list — a Claude card cannot re-seat onto a Codex model
   (the session transcript pins the agent), and an unknown id is rejected outright rather than silently
   ignored.
-- **`send <ref> <message>`** — enqueue a message into a card's durable inbox (F3); it drains at the card's
-  next turn-end, waking it if idle.
+- **`send <ref> <message>`** — durably enqueue a message into a card's inbox. The live native harness may
+  later accept it; queued or handed-off state never proves the model read or acted on it.
 - **`wait <ref…>`** — subscribe to a watched card's **real conclusion** — a merge/archive (done) or a
   death (exited) — so you are woken when it fires. A delegate that merely **ends its turn does NOT conclude**
   (a read-only reviewer/fork idles `.live(.waiting)` and `wait` will hang on it forever); get its result via
@@ -106,7 +106,7 @@ tightly-coupled work.
 - **Fork** — *you want an independent exploration or side-discussion of a slice, and you'll want the
   result back.* Default to a **lightweight read-only freeform card in the same directory**: `spawn` with
   `cwd` = your working dir, `access: readOnly`, and the slice as the `seed` — no worktree, no branch,
-  nothing to clean up. It explores and reports back via a wake + your inbox. Ideal for *"while planning,
+  nothing to clean up. It explores independently and can report its result through the normal card tools. Ideal for *"while planning,
   go over components A, B, and C separately without clogging this context, then pull their conclusions
   back."* Only cut a **worktree fork** (`spawn` with `repo` + `branch`) when the fork will change files
   and you want its own branch/PR.
@@ -117,8 +117,8 @@ tightly-coupled work.
   MCP `wait`; Orchestra records the durable watch and resumes you when a child concludes. In a
   terminal-native Claude environment, start `orchestra wait <refs>` through Claude Code's background
   execution (`run_in_background: true`) or Monitor. The wait process exits when any child concludes, and
-  Claude can then inspect the process output plus the durable inbox, react, and spawn the next PR in the
-  stack. Several children concluding at once coalesce in the inbox and drain together — none is lost.
+  Claude can then inspect the conclusion, react, and spawn the next PR in the stack. This is a lifecycle
+  subscription, independent of ordinary inbox delivery.
 
   Choose one completion return channel for each child. If you subscribe with `wait`, treat the wait wake
   as that child's completion signal; do not also ask those same children to `send` a completion/result to
@@ -150,5 +150,5 @@ synthesize the answer now → **subagent**. Reach for a card *in addition to*, n
 
 The headline pattern: spawn the stack head → subscribe with MCP `wait` in a managed/sandboxed harness
 (or start `orchestra wait <child>` as a Claude Code background task in a terminal-native environment) →
-your turn ends → the child concludes → the agent wakes → drain your inbox → spawn the next-in-stack off
+your turn ends → the child concludes → the subscription returns a conclusion → spawn the next-in-stack off
 the merged branch. Repeat. That is how one card orchestrates a whole PR forest without polling.

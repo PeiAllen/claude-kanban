@@ -7,23 +7,18 @@ struct CapabilitiesTests {
 
     // The COMPLETE variant spelling, locked against SSOT §4 + 02-contract classDiagram.
     // If any spelling drifts (add/rename/remove a case), this fails — that is the point. `sendKeys` /
-    // `sessionSeed` were retired when Codex moved to resume-seed wake + the Stop-hook drain (see
-    // docs/04-cards-worktrees-sessions.md § "Agent adapters" — the capability descriptor / wake
-    // transport); capabilities are computed from the adapter, never persisted.
+    // Capabilities are computed from the adapter, never persisted.
     @Test("every enum variant spelling is frozen exactly")
     func variantSpellingsFrozen() {
         #expect(AgentCapabilities.SessionId.allCases.map(\.rawValue) == ["seeded", "discovered"])
         #expect(AgentCapabilities.Telemetry.allCases.map(\.rawValue) == ["hooksPush", "fileTail", "ptyScrape"])
         #expect(AgentCapabilities.ContextUsage.allCases.map(\.rawValue) == ["percent", "tokens", "none"])
-        #expect(AgentCapabilities.WakeTransport.allCases.map(\.rawValue)
-                == ["nativeReinvoke", "relaunch", "controlChannel"])
-        #expect(AgentCapabilities.InboxDrain.allCases.map(\.rawValue) == ["stopHook", "none"])
         #expect(AgentCapabilities.ReadOnlyEnforcement.allCases.map(\.rawValue)
                 == ["sandboxed", "toolGatedOnly", "orchestraSandboxed"])
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
         #expect(AgentCapabilities.TerminalImagePaste.allCases.map(\.rawValue) == ["direct", "controlV"])
         #expect(AgentCapabilities.ReadinessConfirmation.allCases.map(\.rawValue)
-                == ["sessionStartHook", "rolloutMeta", "relaunchLiveness"])
+                == ["sessionStartHook", "relaunchLiveness"])
     }
 
     @Test("Claude advertises its frozen shipped tuple")
@@ -32,8 +27,6 @@ struct CapabilitiesTests {
         #expect(c.sessionId == .seeded)
         #expect(c.telemetry == .hooksPush)
         #expect(c.contextUsage == .percent)
-        #expect(c.wakeTransport == .nativeReinvoke)
-        #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
@@ -45,13 +38,10 @@ struct CapabilitiesTests {
         #expect(ClaudeCodeAdapter().capabilities == .claudeCode)
     }
 
-    // Codex is `.discovered` + `fileTail`: a fresh launch writes a rollout whose first line is a
-    // `session_meta` record, so the daemon's rollout tail confirms a LAUNCH via `.rolloutMeta`. A
-    // `codex resume` writes no rollout, so a relaunch has no marker and rides the universal N=3 fallback —
-    // still on the readiness gate, never an immediate ensure-is-confirmation.
-    @Test("Codex advertises rolloutMeta readiness confirmation (fileTail agent, session_meta launch marker)")
+    @Test("Codex uses SessionStart for readiness while app-server owns its discovered thread id")
     func codexReadinessConfirmation() {
-        #expect(AgentCapabilities.codex.readinessConfirmation == .rolloutMeta)
+        #expect(AgentCapabilities.codex.readinessConfirmation == .sessionStartHook)
+        #expect(AgentCapabilities.codex.sessionId == .discovered)
         #expect(AgentCapabilities.codex.telemetry == .fileTail)
         #expect(CodexAdapter().capabilities == .codex)
     }
@@ -60,7 +50,6 @@ struct CapabilitiesTests {
     func stubAdvertisesTuple() {
         let custom = AgentCapabilities(
             sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-            wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .toolGatedOnly, authMode: .apiKey)
         #expect(custom.terminalImagePaste == .direct)
         #expect(custom.terminalImagePaste.canPasteImages)
@@ -84,6 +73,19 @@ struct CapabilitiesTests {
         let encoded = try OrchestraJSON.wire.encode(AgentCapabilities.claudeCode)
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object["terminalPointerInput"] = "nativeSelection"
+
+        let legacyPayload = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try OrchestraJSON.decoder.decode(AgentCapabilities.self, from: legacyPayload)
+
+        #expect(decoded == .claudeCode)
+    }
+
+    @Test("retired direct permission-gate keys are ignored")
+    func retiredPermissionGateKeysIgnored() throws {
+        let encoded = try OrchestraJSON.wire.encode(AgentCapabilities.claudeCode)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["approveChord"] = []
+        object["denyChord"] = []
 
         let legacyPayload = try JSONSerialization.data(withJSONObject: object)
         let decoded = try OrchestraJSON.decoder.decode(AgentCapabilities.self, from: legacyPayload)
@@ -156,7 +158,6 @@ struct CapabilitiesTests {
     /// seeding, not the awaited launch-readiness path).
     static let discoveredTuple = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         readinessConfirmation: .relaunchLiveness)
 }

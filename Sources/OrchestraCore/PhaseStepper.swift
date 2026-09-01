@@ -30,15 +30,13 @@ public enum MaterializeOutcome: Sendable {
 /// A plain dependency bundle handed to every stepper, so steppers are testable with stubs and steppable
 /// off the service actor. Carries no behavior — just references to the real machinery, plus a handful of
 /// closures that re-enter the service actor for the duties that touch actor-private state (`lineage`,
-/// `remoteParents`, `readinessWaiters`, `derivedCard`, `wake`, …). Steppers stay THIN orchestrators:
+/// `remoteParents`, `readinessWaiters`, `derivedCard`, …). Steppers stay THIN orchestrators:
 /// anything actor-private is delegated through a closure here, never reached directly from the struct.
 public struct ConvergeContext: Sendable {
     public let store: TaskStore
     public let worktrees: WorktreeRegistry
     public let sessions: any SessionManaging
     public let adapters: AgentRegistry
-    /// The card durable message queue — Teardown's dedup child-nudge writes through here.
-    public let inbox: Inbox
     /// The scratch-root fence — teardown's `rm -rf` guard. Carried as a plain value (the stepper
     /// bundle has no Config); always the owning service's `config.scratchRoot`.
     public let scratchRoot: String
@@ -62,34 +60,22 @@ public struct ConvergeContext: Sendable {
     public let finishLaunch: @Sendable (_ id: UUID, _ flavor: LaunchFlavor,
                                         _ expecting: Phase.Kind, _ epoch: Int) async -> ReadinessOutcome
     /// Actor-bound teardown duties Teardown can't reach from the struct: cancel treeStat/child-fanout
-    /// debounces + remote watch + re-nudge timer AND the child find+nudge+wake (`lineage`/`derivedCard`/`wake`).
+    /// debounces + remote watch + re-nudge timer and child notifications.
     public let teardownActorDuties: @Sendable (_ id: UUID, _ expectedEpoch: Int) async -> Void
     /// Emit an activity feed entry (re-materialized / spawn-failed / backoff), closed over the actor.
     public let emitActivity: @Sendable (_ id: UUID, _ kind: ActivityKind, _ text: String) async -> Void
-    /// Funnel a delivery receipt (a claimed token's confirm) back to the service actor's `confirmDelivery`
-    /// — B3's stepper signal-readiness confirm reaches the archive guard + attempt/stuck resets through here.
-    public let confirmDelivery: @Sendable (_ token: UUID, _ cardId: UUID) async -> Void
-    /// Claim the cold-delivery `relaunchSeed` batch on the service actor: the card's `pendingSeed` (handoff)
-    /// composed with its pending inbox under one budget, leased at `epoch`. `nil` when there is nothing to
-    /// seed. The RelaunchStepper seeds the launch with `batch.payload` and confirms/holds on readiness.
-    public let claimSeed: @Sendable (_ cardId: UUID, _ epoch: Int) async -> ClaimedBatch?
-
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
-                adapters: AgentRegistry, inbox: Inbox, scratchRoot: String,
+                adapters: AgentRegistry, scratchRoot: String,
                 transition: @escaping @Sendable (UUID, Phase, Int?, Phase.Kind?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID, Int) async -> Void,
-                emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void,
-                confirmDelivery: @escaping @Sendable (UUID, UUID) async -> Void,
-                claimSeed: @escaping @Sendable (UUID, Int) async -> ClaimedBatch?) {
+                emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
-        self.adapters = adapters; self.inbox = inbox; self.scratchRoot = scratchRoot
+        self.adapters = adapters; self.scratchRoot = scratchRoot
         self.transition = transition
         self.materialize = materialize; self.finishLaunch = finishLaunch
         self.teardownActorDuties = teardownActorDuties; self.emitActivity = emitActivity
-        self.confirmDelivery = confirmDelivery
-        self.claimSeed = claimSeed
     }
 }
 
@@ -106,23 +92,13 @@ private func transcriptExists(_ card: Task, _ adapter: any Adapter) -> Bool {
     return FileManager.default.fileExists(atPath: tp)
 }
 
-/// The `.blank` landing (or `.waiting` for a resume). Extracted so Launch/Relaunch share the read — and
-/// the reconciler's epoch-identity adopt (`+Reconcile`), which jumps `.launching→.live` WITHOUT the
-/// LaunchStepper, so it must derive the same landing itself.
-func landing(of flavor: LaunchFlavor) -> RunState {
-    if case .blank(let l, _) = flavor { return l }
-    return .waiting(.humanTurn)
-}
-
 /// Derive the launch flavor from persisted fields alone (crash-recovery re-derives from disk): a card
-/// with a resumable transcript resumes (`pendingSeed` folded); else a blank launch that submits the
-/// `initialPrompt` only for a real (non-provisional) first launch, landing `.running`; a provisional
-/// (never-prompted) card lands `.waiting` with no positional.
+/// with a resumable transcript resumes (`pendingSeed` folded); else a blank launch submits the
+/// `initialPrompt` only for a real (non-provisional) first launch. It does not imply a provider status.
 func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
     if transcriptExists(card, adapter) { return .resume(seed: card.pendingSeed) }
-    let land: RunState = card.awaitingFirstPrompt ? .waiting(.humanTurn) : .running
     let prompt: String? = card.awaitingFirstPrompt ? nil : (card.initialPrompt.isEmpty ? nil : card.initialPrompt)
-    return .blank(landing: land, prompt: prompt)
+    return .blank(prompt: prompt)
 }
 
 /// Conclude a bring-up that could not create a session at all, with the reason we actually hold.
@@ -132,8 +108,7 @@ func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
 /// existing classification (`.spawnFailed` / `.resumeFailed`), so this never relabels a death it doesn't
 /// understand — it only stops the detail from being thrown away.
 ///
-/// `pendingSeed` is deliberately LEFT SET: the launch never happened, so a handoff/wake seed staged for it
-/// must still ride the next resume rather than being silently dropped by a machine-wide hiccup.
+/// `pendingSeed` is deliberately left set: a handoff staged for a failed launch must ride the next resume.
 private func concludeFailedLaunch(_ id: UUID, _ failure: LaunchFailure, fallback: DeadReason,
                                   expecting: Phase.Kind, ctx: ConvergeContext) async {
     let reason: DeadReason = failure.resource != nil ? .resourceExhausted : fallback
@@ -200,13 +175,12 @@ public struct LaunchStepper: PhaseStepper {
     public func step(_ card: Task, _ ctx: ConvergeContext) async throws {
         guard let adapter = try? ctx.adapters.get(card.agentId) else { return }
         let flavor = deriveLaunchFlavor(card, adapter)
-        let land = landing(of: flavor)
         let epoch = card.sessionEpoch
         switch await ctx.finishLaunch(card.id, flavor, .launching, epoch) {
         case .confirmed:
             // `expecting: .launching` — the landing carries the same fence as the bring-up: if the launch
             // timeout concluded the card while we were confirming readiness, do NOT revive it.
-            _ = await ctx.transition(card.id, .live(land), epoch, .launching) { t in
+            _ = await ctx.transition(card.id, .live(.init(turnStatus: .unavailable)), epoch, .launching) { t in
                 t.pendingSeed = nil
                 consumeModelReseat(&t, adapter)
             }
@@ -249,58 +223,29 @@ public struct RelaunchStepper: PhaseStepper {
                 return
             }
         }
-        // B3 D8: RE-READ the card AFTER the worktree ensure (which suspends). The claim epoch must be the
-        // card's CURRENT generation, not the possibly-stale dispatch snapshot — a relaunch that superseded
-        // us during `ensure` would otherwise let this stale step claim/re-own the lease at the wrong epoch.
+        // Re-read after materialization: a later relaunch can supersede this step while the worktree hop runs.
         guard let fresh = await ctx.store.get(card.id), fresh.phase.kind == .relaunching else { return }
         let epoch = fresh.sessionEpoch
-
-        // B3 — claim the cold-delivery seed: the card's handoff (`pendingSeed`) composed with its pending
-        // inbox, leased on the `relaunchSeed` route. `batch.payload` is the FINAL argv seed verbatim (never
-        // re-folded). `nil` when there's nothing to seed (a bare relaunch: no handoff, no claimable message).
-        let batch = await ctx.claimSeed(card.id, epoch)
-
-        // Resume when resumable (seeded with the claimed payload); a provisional card blank-launches with the
-        // payload as its opening positional (landing `.running` when a prompt is submitted); a non-provisional
-        // card whose transcript vanished can't resume → fail safe.
-        let flavor: LaunchFlavor
-        if transcriptExists(fresh, adapter) {
-            flavor = .resume(seed: batch?.payload)
-        } else if fresh.awaitingFirstPrompt {
-            if let payload = batch?.payload, !payload.isEmpty {
-                flavor = .blank(landing: .running, prompt: payload)   // a prompt IS submitted → running
-            } else {
-                flavor = .blank(landing: .waiting(.humanTurn), prompt: nil)
-            }
-        } else {
+        let flavor = deriveLaunchFlavor(fresh, adapter)
+        if !fresh.awaitingFirstPrompt, !transcriptExists(fresh, adapter) {
             _ = await ctx.transition(card.id, .dead(.resumeFailed), nil, .relaunching) { t in
                 t.deadReason = .resumeFailed; t.deadDetail = "transcript gone"
             }
             return
         }
-        let land = landing(of: flavor)
         switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
-        case .confirmed(let via):
-            _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in
+        case .confirmed:
+            _ = await ctx.transition(card.id, .live(.init(turnStatus: .unavailable)), epoch, .relaunching) { t in
                 t.pendingSeed = nil
                 consumeModelReseat(&t, adapter)
-            }
-            // Signal readiness proves the NEW session booted with the seed → confirm now (removes the
-            // messages + rings). Tick readiness proves only liveness → HOLD the lease; `report()`'s
-            // provenance-fenced held-confirm removes it on the first proven current-gen line/hook. A
-            // handoff-only batch (ids == []) leased no message, so there is nothing to confirm — skip it
-            // (a 0-id confirm is a harmless no-op, but skipping avoids touching the funnel for nothing).
-            if via == .signal, let batch, !batch.ids.isEmpty {
-                await ctx.confirmDelivery(batch.token, card.id)
             }
         case .launchFailed(let failure):
             await concludeFailedLaunch(card.id, failure, fallback: .resumeFailed,
                                        expecting: .relaunching, ctx: ctx)
         case .timedOut:
-            break   // leave `.relaunching` for the reconciler's timeout — keeps `pendingSeed` AND the held
-                    // lease; the retry's claim re-owns the batch (relaunchSeed re-own rule)
+            break   // leave `.relaunching` for the reconciler's timeout
         case .superseded:
-            break   // a newer relaunch bumped the epoch and owns the card; its claim re-owns the lease
+            break   // a newer relaunch owns the card
         }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
@@ -375,15 +320,10 @@ public struct TeardownStepper: PhaseStepper {
             break   // Orchestra never deletes a borrowed dir.
         }
         guard await stillArchiving(card, ctx) else { return }
-        // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
+        // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge and notify children.
         // The card snapshot's sessionEpoch is the LEASE: the duties re-verify phase+epoch on the actor
         // before each mutation, so a reopen that bumped the epoch makes this whole step a no-op.
         await ctx.teardownActorDuties(card.id, card.sessionEpoch)
-        // 4b · B3 D9: release the card's delivery leases before the terminal flip. B3 introduces HELD
-        // relaunchSeed leases; without the release, `confirmDelivery`'s archive-read→confirm await window
-        // could DELETE a held message on an archiving card instead of retaining it for a reopen. A released
-        // lease makes a late `confirm(token)` a token-no-op, so the message stays durable; a reopen redelivers.
-        try? await ctx.inbox.releaseAll(card.id)
         // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase,
         // fenced on BOTH the expected phase and the dispatched epoch (see `stillArchiving`).
         guard await stillArchiving(card, ctx) else { return }

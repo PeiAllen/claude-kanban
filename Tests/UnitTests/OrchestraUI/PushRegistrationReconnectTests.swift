@@ -42,23 +42,23 @@ final class PushRegistrationReconnectTests: XCTestCase {
     /// re-register is observable without a live daemon.
     func testPrefChangeReregistersWithFreshSnapshot() async {
         let prefs = NotificationPrefs()
-        let original = prefs.scope(.permission)
-        defer { prefs.setScope(original, for: .permission) }   // don't leak into other tests
+        let original = prefs.scope(.humanRequired)
+        defer { prefs.setScope(original, for: .humanRequired) }   // don't leak into other tests
 
         let model = BoardModel(platform: .noop)
         await model.registerForPush(token: "cafe")
-        XCTAssertEqual(model.lastRegisteredPrefs?.permission.scope, original)
+        XCTAssertEqual(model.lastRegisteredPrefs?.humanRequired.scope, original)
 
         // Flip a pref and fire the same notification the Settings binding posts.
         let flipped: NotifyScope = (original == .off) ? .always : .off
-        prefs.setScope(flipped, for: .permission)
+        prefs.setScope(flipped, for: .humanRequired)
         NotificationCenter.default.post(name: .orchNotificationPrefsChanged, object: nil)
 
         // The observer hops to the MainActor and spawns the re-register; poll for it (yield-based).
         try? await pollUntil("the pref change re-registers with the fresh snapshot") {
-            await model.lastRegisteredPrefs?.permission.scope == flipped
+            await model.lastRegisteredPrefs?.humanRequired.scope == flipped
         }
-        XCTAssertEqual(model.lastRegisteredPrefs?.permission.scope, flipped,
+        XCTAssertEqual(model.lastRegisteredPrefs?.humanRequired.scope, flipped,
                        "a pref write must re-register with the updated snapshot")
     }
 }

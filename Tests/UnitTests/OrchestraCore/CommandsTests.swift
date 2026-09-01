@@ -256,6 +256,34 @@ struct CommandsTests {
         #expect(final.map(\.text) == ["ONE"])
     }
 
+    @Test("inbox includes provider-accepted history only when requested")
+    func inboxHistoryOptIn() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let registry = CommandRegistry()
+        let task = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b")
+        )
+        try await env.svc.send(task.id, "handed off")
+        try await env.svc.send(task.id, "queued")
+
+        let first = try #require(await env.svc.inboxPeek(task.id).first)
+        #expect(try await env.svc.inbox.markHandedOff(
+            cardId: task.id, messageId: first.id, expectedText: first.text
+        ))
+
+        let inbox = try #require(registry.command("inbox"))
+        let unresolved = try await inbox.run(env.svc, .object([
+            "ref": .string(task.shortId),
+        ]), .mcp).decode([InboxMessage].self)
+        let withHistory = try await inbox.run(env.svc, .object([
+            "ref": .string(task.shortId), "includeHistory": .bool(true),
+        ]), .mcp).decode([InboxMessage].self)
+
+        #expect(unresolved.map(\.text) == ["queued"])
+        #expect(withHistory.map(\.text) == ["handed off", "queued"])
+    }
+
     @Test("inbox-edit rejects a non-UUID id")
     func inboxBadId() async throws {
         let env = TestEnv.make()

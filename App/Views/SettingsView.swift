@@ -109,17 +109,11 @@ struct SettingsView: View {
                 }
 
                 section("Notifications") {
-                    notifyRow(.permission, "Permission needed",
-                              "Alert when an agent is blocked waiting for your approval.")
-                    rowDivider
-                    notifyRow(.needsYou, "Needs you",
-                              "Alert when an agent finishes and is waiting on you — not while a background task is still running.")
+                    notifyRow(.humanRequired, "Human action needed",
+                              "Alert when an agent needs approval, input, or an answer in its harness.")
                     rowDivider
                     notifyRow(.died, "Card died",
                               "Alert when an agent session crashes or exits and needs recovery.")
-                    rowDivider
-                    notifyRow(.deliveryStuck, "Delivery stuck",
-                              "Alert when an agent can't be reached and a queued message is stuck undelivered.")
                     rowDivider
                     notifyRow(.mergeStalled, "Merge stalled",
                               "Alert when a merge-request goes unanswered and the agent gives up asking.")

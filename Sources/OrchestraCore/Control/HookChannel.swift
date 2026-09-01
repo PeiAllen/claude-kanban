@@ -7,10 +7,12 @@ public enum HookEvent: String, Sendable, Codable, CaseIterable {
     case statusLine   = "statusline"
     case sessionStart = "session"      // Claude "session" + Codex "orient" collapse here
     case userPrompt   = "prompt"
+    case messageDisplay = "messagedisplay"
     case preToolUse   = "pretool"
     case postToolUse  = "posttool"
+    case postToolUseFailure = "posttoolfailure"
     case notification = "notification"
-    case permission   = "permission"   // Codex "PermissionRequest" gate → waitReason == .permission (C1)
+    case permission   = "permission"
     case taskCompleted = "taskcompleted"
     case stop         = "stop"
     case sessionEnd   = "sessionend"
@@ -26,10 +28,8 @@ public enum SessionSource: String, Sendable, Codable {
 /// field is set per event.
 public struct HookResponse: Sendable, Codable, Equatable {
     public var additionalContext: String?   // sessionStart → orientation
-    public var continuation: String?         // stop → inbox-drain block reason
-    public init(additionalContext: String? = nil, continuation: String? = nil) {
+    public init(additionalContext: String? = nil) {
         self.additionalContext = additionalContext
-        self.continuation = continuation
     }
 }
 
@@ -50,6 +50,4 @@ public enum HookEnvelope {
         return ""
     }
 
-    /// The Stop-hook `decision:block` continuation that hands `reason` to the model to continue.
-    public static func block(_ reason: String) -> String { StopDrain.blockJSON(reason: reason) }
 }

@@ -14,12 +14,8 @@ public struct LaunchFailure: Sendable, Equatable {
     }
 }
 
-/// HOW a bring-up's readiness was confirmed — the provenance B3's cold delivery turns on. `.signal` is a
-/// positive session signal proving the NEW generation booted (a current-epoch SessionStart hook / a fresh
-/// launch's rollout `session_meta`), so a `relaunchSeed` seed can be confirmed immediately. `.ticks` is the
-/// N=3 liveness fallback (a `codex resume` emits no signal) or a signal we can't attribute to the current
-/// generation — it proves only that SOMETHING is alive, so the stepper HOLDS the seed lease and lets
-/// `report()`'s provenance-fenced held-confirm remove it on the first proven current-gen line/hook.
+/// How a bring-up's readiness was confirmed. `.signal` is a current-generation provider marker and
+/// `.ticks` is the liveness fallback for providers that do not emit one while resuming.
 public enum ReadinessVia: Sendable, Equatable { case signal, ticks }
 
 /// The outcome of awaiting a relaunch's inline readiness confirmation. `.superseded` is distinct from
@@ -32,12 +28,11 @@ public enum ReadinessOutcome: Sendable, Equatable {
 }
 
 /// How spawn / reopen bring the agent session up once the card is being walked to `.live`. `.blank`
-/// starts a fresh session (readiness is the successful `ensure` — the 2.5 sync-spawn readiness stub;
-/// dedicated signals arrive in 2.6) and lands on the given run-state. `.resume` relaunches the vendor
-/// transcript and confirms readiness via `awaitReadiness` (the SessionStart(resume) hook / relaunch
-/// liveness), landing `.waiting`.
+/// starts a fresh session. `.resume` relaunches the vendor transcript and confirms readiness via
+/// `awaitReadiness`. Flavor carries argv semantics only; provider observation establishes the later
+/// live turn state.
 public enum LaunchFlavor: Sendable {
-    case blank(landing: RunState, prompt: String?)
+    case blank(prompt: String?)
     case resume(seed: String?)
 }
 
@@ -105,15 +100,12 @@ extension OrchestraService {
     /// reconciler's `RelaunchStepper` drives the walk: re-materializes a missing worktree, kills+ensures the
     /// session off-actor, confirms readiness (capability-gated), and finalizes `→ .live` epoch-fenced (a
     /// relaunch superseded by a newer one no-ops its finalize; a genuine failure → `.dead(.resumeFailed)`).
-    /// A `seed` (handoff / seeded-wake) is persisted as `pendingSeed` in the SAME patch (carried #1 write
-    /// side); the RelaunchStepper consumes + clears it on readiness. No subprocess runs before the return.
+    /// An explicit handoff seed is persisted in the same patch and consumed on the next live landing.
     @discardableResult
     public func resume(_ id: UUID, graceSeconds: Int? = nil, seed: String? = nil,
                        model: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
         let task = try await require(id)
-        // Validate BEFORE the first mutation: a rejected model must leave the card completely untouched —
-        // not merely un-relaunched, but with its startup-watch (below) and its durable inbox (drained by
-        // `resumeInCard`, which validates for the same reason) still intact.
+        // Validate before the first mutation so a rejected model leaves the card untouched.
         let override = try resolveModelOverride(model, for: task)
         clearSpawnPending(id)   // a user-driven resume supersedes any in-flight spawn startup-watch
         runtime[id]?.modelOverrideWatch = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
@@ -121,12 +113,7 @@ extension OrchestraService {
         // again and an earlier attempt's finalize is dropped by the epoch fence (single-winner discipline).
         _ = await transition(id, to: .relaunching, mutate: { t in
             t.deadReason = nil; t.deadDetail = nil; t.deadResource = nil
-            // Human-pacing flips false only on a fresh AGENT-driving turn. A SEEDED resume (a handoff) is
-            // exactly that — the seed is the agent context that drives the next turn — so it clears the bit.
-            // A SEEDLESS resume is an idle-wake/recovery relaunch (no new driver), so it PRESERVES it: a
-            // human `send` already stamped the card human-paced before this wake, and clearing here would
-            // undo that (and re-stall the human's own cards on every recovery). See `Task.humanPaced`.
-            if let seed { t.pendingSeed = seed; t.humanPaced = false }   // folded handoff/wake seed rides the relaunch (carried #1)
+            if let seed { t.pendingSeed = seed; t.humanPaced = false }
             if let override {
                 // `pendingModel` is the launch intent and the ONLY thing `finishLaunch` trusts; `model` is
                 // set purely so the board reflects the re-seat at once. If the dying session's last
@@ -147,17 +134,8 @@ extension OrchestraService {
         return updated
     }
 
-    /// F1 (C3) — resume THIS card into a fresh process with CLEAN context, carrying the handoff/fork
-    /// context as the resumed session's opening seed. This is **resume, not a blank restart**:
-    /// `agentSessionId` is KEPT, so the vendor transcript carries forward. This is F1 (handoff) AND the
-    /// cold idle-wake path the `wake` ladder records as its `.relaunching` intent. Backs D1's `handoff`.
-    ///
-    /// B3 — NO inbox drain. The pending inbox is no longer eaten here and folded into the seed; it stays
-    /// DURABLE and is delivered by the RelaunchStepper's `relaunchSeed` claim (which composes this handoff
-    /// with the still-queued messages at claim time under one budget). That closes the L1 drain→persist
-    /// crash window — a crash between here and the launch loses nothing, because nothing was removed. This
-    /// body is now exactly `resume(seed:)`; `resume` validates the model before its first mutation, so no
-    /// pre-validation is needed (there is no destructive drain left to protect).
+    /// Resume this card with clean context while retaining its provider transcript. The optional seed is
+    /// explicit handoff context; durable inbox rows remain independent from the session launch.
     @discardableResult
     public func resumeInCard(_ id: UUID, seed: String? = nil, graceSeconds: Int? = nil,
                              model: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
@@ -165,7 +143,8 @@ extension OrchestraService {
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
-    /// re-handed; status → waiting, awaitingFirstPrompt → true. Never touches worktree contents.
+    /// re-handed; it lands live/unavailable until the provider observes it, and `awaitingFirstPrompt`
+    /// becomes true. Never touches worktree contents.
     ///
     /// INTENT-ONLY (PR4b Task 4): `transition(→ .relaunching, mutate:)` carries the real persist block
     /// (fresh id, rolled prior ids, provisional, cleared dead/desc) atomically with the phase write, then
@@ -244,8 +223,7 @@ extension OrchestraService {
         if resumable {
             _ = await transition(id, to: .creatingWorktree, mutate: {
                 $0.archived = false; $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil
-                // A resumable reopen restores the card as it was — not a new driver — so humanPaced is
-                // preserved (see `Task.humanPaced`; the reset belongs only to a seeded handoff / agent send).
+                // A resumable reopen restores the card as it was, including the reserved pacing bit.
             })
         } else {
             let freshId: String?
@@ -274,20 +252,16 @@ extension OrchestraService {
     }
 
     /// Confirm a being-born card (launch OR relaunch) is alive — HOW depends on the agent (capability, never
-    /// identity). `.sessionStartHook` waits for the agent's own SessionStart telemetry (Claude), or times
-    /// out. `.rolloutMeta` ALSO waits (Codex): a fresh launch's rollout `session_meta` line resolves the
-    /// waiter via the tail observer; a `codex resume` writes no rollout, so the N=3 `launchReadyTicks`
-    /// fallback resolves it within the grace — either way it stays ON the readiness gate (never immediate,
-    /// which would leave no waiter and bypass the gate). `.relaunchLiveness` takes the successful `ensure`
+    /// identity). `.sessionStartHook` waits for the agent's own SessionStart telemetry, or times out.
+    /// `.relaunchLiveness` takes the successful `ensure`
     /// as the confirmation because the agent emits no marker at all, so it must NOT wait for one.
     func confirmReadiness(_ id: UUID, adapter: any Adapter, graceSeconds: Int,
                           expectedEpoch: Int) async -> ReadinessOutcome {
         switch adapter.capabilities.readinessConfirmation {
-        case .sessionStartHook, .rolloutMeta:
+        case .sessionStartHook:
             return await awaitReadiness(id, graceSeconds: graceSeconds, expectedEpoch: expectedEpoch)
         case .relaunchLiveness:
-            // No marker at all — the successful `ensure` IS the confirmation, but it's a liveness proof,
-            // not a signal that the seed booted, so it holds the seed lease like the tick fallback.
+            // No marker at all — a successful `ensure` is the liveness confirmation.
             return .confirmed(via: .ticks)
         }
     }
@@ -482,7 +456,7 @@ extension OrchestraService {
             // healthy retried session down and relaunches it, losing the agent's context), and its hooks
             // report with `observedEpoch == nil`, which skips the funnel's generation fence entirely — a
             // stale report from it can then land `.live` on a card a newer relaunch already owns.
-            let env = withEpoch(adapter.env, live.sessionEpoch)
+            let env = withEpoch(adapter.launchEnvironment(ctx), live.sessionEpoch)
             let argv = adapter.start(ctx)
             let launchTask = t
             do {
@@ -590,7 +564,7 @@ extension OrchestraService {
         let n = (runtime[id]?.launchReadyTicks ?? 0) + 1
         if n >= launchReadyTickThreshold {
             runtime[id]?.launchReadyTicks = 0
-            resolveReadiness(id, true, via: .ticks)   // liveness fallback → HOLD the seed lease (B3)
+            resolveReadiness(id, true, via: .ticks)
         } else {
             runtime[id]?.launchReadyTicks = n
         }
@@ -615,27 +589,6 @@ extension OrchestraService {
                 return FileManager.default.fileExists(atPath: statePath)
             }) ?? false
         }
-    }
-
-    /// The funnel's wake-on-live release point (+Lifecycle step 7): a `send`/inbox-add that queued
-    /// WHILE the card was being born had its `wake` no-op'd on the being-born phase, and the arm
-    /// covers a `.dead` card — but a card landing `.live` after provisioning needs one nudge to drain
-    /// what accumulated. `wake` re-checks every gate, so this is a no-op unless a genuinely claimable
-    /// message remains, and it self-terminates (the delivered turn drains the inbox). The
-    /// `hasClaimable` gate (B3 D5) keeps a card holding a `.ticks` relaunchSeed lease from re-waking
-    /// itself into a kill loop.
-    func wakeIfPending(_ id: UUID) async {
-        // B3 D5, kept: gate on `hasClaimable`, NOT `!peek.isEmpty`. The funnel fires this on EVERY
-        // `.live` landing (+Lifecycle wake-on-live), and `peek` returns leased messages too — so a
-        // card that just landed `.live(.waiting)` HOLDING a `.ticks`-readiness relaunchSeed lease has
-        // a non-empty peek and would be re-woken → a fresh resume → epoch bump → the held lease
-        // re-claimed → the just-live session killed and re-delivered, in a loop. A held same-epoch
-        // lease is NOT claimable, so `hasClaimable` leaves it alone until its held-confirm (or the
-        // lease expires). B4's `hasLiveLease` guard inside `wake` backs this up. Phase gate goes
-        // through `deliverable` so this stays in step with the ladder's target set.
-        guard let t = await store.get(id), deliverable(t),
-              await inbox.hasClaimable(id, epoch: t.sessionEpoch, now: now()) else { return }
-        await wake(id)
     }
 
     /// The single terminal-death classifier. Routes through the funnel so a non-terminal → terminal death

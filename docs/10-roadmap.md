@@ -7,103 +7,41 @@ feature that will plug into it. They were identified by the 2026-06-26 deep code
 worked up as an approved design (a *what* and a *contract*, deepened to implementation + tests when
 picked up); that design detail now lives **inline in this chapter** — see [Axis designs](#axis-designs)
 below — not in a separate design vault.
-**Axis 7 — view/review code on the board — has now fully shipped**, the first *whole* axis built end to
-end (footer diffstat + a read-only in-inspector diff; its row has migrated into
-[chapter 9's shipped history](09-design-decisions.md#shipped-feature-history)). The rest remain design-only
-until picked up — but **feature work has already landed underneath them**: the
-freeform/borrowed/scratch/read-only PRs (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)) shipped the non-git card substrate, which
-realizes axis 4's *non-git cards* half and provides the standalone freeform region, leaving **search** as
-axis 4's live remainder. Axes **2, 3, and 6's handoff delivery** have since been **consolidated and
-deepened to a single implementable L3 + tests design** — the **agent-provider interface** (an
-agent-agnostic adapter seam with a per-agent **capability descriptor**, a **Codex** adapter, and
-the **F1/F2/F3 live-delivery** functions that handoff/fork/fan-out compose from), with a defined **PR
-forest** and every open question resolved (2026-07-01). The forest's **seam-contract root — PR A1 — has
-now landed**: it froze the complete
-`AgentCapabilities` descriptor and the defaulted `AdapterContext.seed`, and moved core to gate
-session-seeding and resumability on the capability (never on adapter identity), with Claude behavior
-byte-for-byte unchanged — see [chapter 9](09-design-decisions.md#shipped-feature-history). A second forest
-PR, **E2 — the authMode soft-warn**, has also landed off
-A1: an `AuthRateMonitor` that emits an advisory activity-feed warning when a subscription-auth adapter
-fans out past a threshold, **advising but never capping** (see
-[chapter 9](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)). A third forest PR, **A2 — the
-telemetry-source seam**, has now landed
-too: it relocated the raw→`StatusReport` parse out of the `orchestra` CLI into the adapter behind a new
-defaulted `Adapter.parse(_ raw: RawTelemetry)`, establishing the transport/parse boundary the design calls
-for while keeping Claude telemetry byte-identical (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). A fourth forest PR, **C1 —
-the durable inbox + F3 Stop-drain**, has landed
-too: it builds the **first of the design's three live-delivery functions** — a durable per-card
-[inbox](03-data-model.md#the-inbox-store-f3) that `send` now routes through, drained into the agent at its
-turn-end by the (unchanged) Claude Stop hook via a `decision:block` continuation, with a consecutive-inject
-loop guard (see [chapter 9](09-design-decisions.md#shipped-feature-history)). A fifth forest PR, **C2 —
-F2 wake + the merge-watch conclusion-watch**, has
-now landed on top of C1: the **second live-delivery function**, plus the [`wait` command / `MergeWatch`](05-command-reference.md#notes-on-key-commands)
-that lets an orchestrator card block until a watched child concludes (read from **real card state, never
-`git merge-base`**) and be woken as each conclusion coalesces into its inbox — the reactive fan-out (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). Two more forest PRs, **B1 and B2 — the
-Codex adapter + its rollout-tail telemetry**,
-have now landed too: the **second `Adapter` conformer** (registered alongside Claude), launching
-access-gated (default permissioning, or the read-only preset for a read-only card) with a discovered
-session id in Codex's native state, its live context %/status
-derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
-vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
-[chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
-so their rows stay in the roadmap below. An eighth forest PR, **C3 — F1 resume-in-card with a seed**
-has now landed too: the **third and final
-live-delivery function**, which resumes a card into a fresh process with clean context — keeping its
-session id (a *resume, not a blank restart*) — seeded with an authored handoff/fork context folded
-together with its pending inbox, delivered as the resumed session's opening turn (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). A ninth forest PR, **C4 — the Codex
-send-keys wake**, has now landed too:
-the `.sendKeys` `wakeTransport` C2 left as a no-op, so an idle Codex card (no `nativeReinvoke` push, no Stop
-hook) is woken by a fixed content-free TUI nudge, detect-and-defer gated on an idle, empty composer (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). With F1/F2/F3 all shipped **across both
-providers**, the **first surface that *calls* this seam has now landed too — PR D1, the `handoff`
-delegation tool**: a thin registry `Command`
-(auto-surfaced as an MCP tool) plus an `orchestra handoff` CLI verb that delegates to C3's `resumeInCard`,
-wiring the F1 *same-card* handoff topology into a callable tool (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). The delegation **guidance** itself has since
-been authored too — **PR D2**: two vendored
-resources (a Claude **skill** + a Codex **developer-instructions** body — same heuristics, different
-packaging) plus a `DelegationDocs` loader that maps an agent to its variant, teaching *when* to hand off /
-fork / fan-out / wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in
-addition to*, never *instead of*). The shared guidance wire has since landed: `AgentGuidance` assembles the
-sections once, then each adapter packages them through its native surface — Claude as
-`.claude/skills/orchestra-<section>/SKILL.md` project skills and Codex as launch-scoped `-c`
-`developer_instructions` — so the guidance reaches every launched card without an Orchestra global Codex
-file (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
-landed — PRs T1 and T2**: **T1** made
-"which directories may agents write in" a durable, provider-agnostic decision — a
-[trust ledger](03-data-model.md#the-trust-ledger-t1) + `OrchestraService.resolveTrust` (origin →
-`.trusted`/`.needsGrant`, carried as `AdapterContext.trustCwd`, which each adapter merely *applies*) —
-and **T2** added the **human-grant surfaces**: a `trust` Command (auto-surfaced as an MCP tool), an
-interactive-only `orchestra trust` CLI verb, the MCP `requestElicitation` grant dialog, and an actionable
-warning when an untrusted card spawns sandboxed — under the rule that an agent can only *trigger* a grant,
-**never self-grant** (see [Trust boundaries](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)
-and [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **final PR, D3, has now
-landed too**: the *new-card* handoff/fork/fan-out
-**UI + start-actions** (board/CLI **Fork**/**Fan-out** over a new defaulted `SpawnInput.seed`, plus the
-Handoff/Send card actions) **and** the app `SpawnSheet` trust control T2 deferred to it (backed by a new
-read-only `trustState` query) — so **all 15 forest PRs are merged** (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). What the forest did **not** ship — and what
-keeps axes 2 and 3 as roadmap rows below — is Codex **board-routed approval telemetry** (axis 2's live
-remainder — its launch is now access-gated like Claude, so write access is no longer clamped off)
-and the richer agent-integration surfaces (axis 3's structured sub-status and more agent-facing commands —
-though *auto-injecting the vendored delegation guidance on launch* has since shipped, skill-injection above).
-Separately from the forest, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam,
-the persisted `Connection` model + a Connections settings pane, the Linux daemon port, and the app-managed
-SSH tunnel that runs the Mac board against a remote Linux `orchestrad` — built once so the phone client
-inherits it, leaving only the iOS app itself (see [chapter 9](09-design-decisions.md#shipped-feature-history)
-and axis 9 below).
-The principle is to design every change *toward* these axes, never away from them.
+**Axis 7 — view/review code on the board — has now fully shipped**, the first whole axis built end
+to end (footer diffstat + a read-only in-inspector diff; its row has migrated into
+[chapter 9's shipped history](09-design-decisions.md#shipped-feature-history)). The remaining axes still
+describe work to pick up, although the non-git card substrate and the connection spine have already landed.
+
+### Current provider and inbox direction
+
+The provider seam now has Claude and Codex adapters. Claude supplies strictly correlated hook observations,
+identity-bearing main-turn activity that distinguishes same-prompt continuation from a different queued
+turn, and a narrow provider-native idle repair for hook-silent Ctrl-C; Codex uses rollout data for metadata and the app server alone for turn state and
+provider human need. The app server also owns Codex's thread identity: one fail-closed loaded-thread
+snapshot binds a fresh card while the same observer listens for later starts, so rollout/hook metadata
+cannot race it. Their normalized
+observations reduce into one provider-neutral live state.
+
+The native inbox is deliberately smaller than the retired delivery design. `send` durably queues a local
+row. A per-live-session native sender in `CardRuntime` later makes a bounded best-effort request, and
+`handedOff` means only that the harness accepted it. Delivery never waits for a displayed status, does not
+wake or relaunch a session, does not clear `pendingQuestion`, and does not turn `wait` into a receipt
+protocol. Handoff and fork seeds remain authored session context, separate from ordinary inbox rows.
+
+**Deferred:** provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog,
+and possible deprecations of `wait` and `needs-input`.
+
+Separately, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam, the persisted
+`Connection` model + a Connections settings pane, the Linux daemon port, and the app-managed SSH tunnel
+that runs the Mac board against a remote Linux `orchestrad`. The principle is to design every change
+toward these axes, never away from them.
 
 ## The nine axes
 
 | # | Axis | Slug | One-line goal |
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
-| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9), and is now **startable from the UI/CLI** (agent picker + model→adapter routing, `enable-codex`, ch. 9); board-routed approval telemetry is the live remainder. |
+| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with rollout-tail metadata, app-server-only turn and provider-human observation, SessionStart orientation, and a separate native sender peer; it is startable from the UI/CLI through model→adapter routing and `enable-codex`. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads has **shipped** as vendored resources + a shared `AgentGuidance` assembler (D2, ch. 9), packaged on every launch as Claude project skills or Codex `developer_instructions` overrides, and a **column-aware SessionStart orientation** (each agent learns its live column/mode/self-id and is nudged to self-move) has **shipped** on the same hook channel for both agents (ch. 9); structured sub-status + more agent commands remain. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
@@ -207,9 +145,9 @@ depends on axis 1 (the `onEnter` column) and axis 3 (the `additionalContext` fee
 
 ### Axis 6 — Context-clearing continuity (unbuilt remainder)
 
-The core of this axis shipped — the agent-authored handoff artifact, the seeded `restart`/`spawn`, and the
-durable inbox / merge-back model (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The one
-piece still **roadmap/unbuilt** is the **automatic trigger**: an optional `autoContinueCtxPct` threshold
+The core of this axis shipped — the agent-authored handoff artifact and the seeded `restart`/`spawn`
+context carriers (see [chapter 9](09-design-decisions.md#shipped-feature-history)). Ordinary inbox rows
+remain separate. The one piece still **roadmap/unbuilt** is the **automatic trigger**: an optional `autoContinueCtxPct` threshold
 (in `Config`, **default off**) that, when a report's `ctxPct` crosses it, asks the agent to author a
 handoff and then performs the seeded restart — bounded by an `autoContinueCount` cap so a session that
 immediately refills can't restart-storm, and announced in the Activity feed. If the agent doesn't produce a
@@ -264,22 +202,22 @@ Sequencing guidance from the design gates:
    (SSH-tunnel blips need it either way); see [chapter 9](09-design-decisions.md#shipped-feature-history).
 3. **First multi-provider consumer:** build a **`CodexAdapter`** (axis 2) once the adapter report-
    mapping seam lands. Studying Codex CLI forced three design points now baked into the model-providers
-   design: session ids are **two-mode** (Claude seeds an id; Codex can't, so it's discovered from the
-   report), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
+   design: session ids are **two-mode** (Claude seeds an id; Codex can't, so its app server exposes the
+   thread after launch), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
    new `AgentModel.contextWindow`, from a per-adapter **offline model table**), and report wiring is
    `{files, env, argv}` + trust, not one `--settings` file. The L3 design refines report handling further:
-   the daemon owns only the **telemetry transport** (push / rollout-tail / pty-scrape, keyed by the
+   the daemon owns only the **metadata transport** (push / rollout-tail / pty-scrape, keyed by the
    capability descriptor), while the **parse** into a `StatusReport` is the **adapter's** own
    (agent-dependent) — so `ReportHelper.map` relocated out of the CLI target into `ClaudeCodeAdapter.parse`
    (✅ **landed** as A2). The whole build is sequenced as a **stacked-PR forest** (A1 capability-descriptor
    freeze ✅ **landed** → A2 telemetry seam ✅ **landed** → B1/B2 Codex adapter + rollout-tail ✅ **landed**,
-   in parallel with the trust-ledger (✅ **landed** as T1/T2) and live-delivery tracks).
+   in parallel with the trust-ledger (✅ **landed** as T1/T2) and native-inbox work).
 4. **Keystone — now shipped:** the **context seed** (the design's `additionalContext`) is the chokepoint
    for the whole handoff/fork/fan-out/subagent family — *one primitive at four topologies* (see
    [chapter 9](09-design-decisions.md#one-seed-four-topologies)). As-built it is **two** defaulted carriers, both frozen
    on the seam contract by A1: `AdapterContext.seed` (the *resume-only* carrier, injected by C3's
    `resumeInCard` as the opening turn) and `SpawnInput.seed` (the *new-card* carrier, folded ahead of the
-   prompt by D3's `spawn`/`batch-spawn`). With F1/F2/F3 and both seed carriers landed, the family is wired,
+   prompt by D3's `spawn`/`batch-spawn`). With both seed carriers landed, the family is wired,
    and the *guidance auto-injection* on launch has since landed too — the `DelegationDocs` loader (D2) is now
    bound to each adapter's `prepareToLaunch` (skill-injection, ch. 9), independent of the seed carriers.
 5. **Dependency chains:** axis 1 enables 5 (a review column); axis 2 → 3 → 5/6; axis 4 is used by 8;
@@ -311,7 +249,7 @@ A few decisions are explicitly deferred until the relevant axis is built:
   worktree machinery) is now **decided** (see [chapter 9](09-design-decisions.md#11-worktree--card-ownership));
   what's still open is *how* a spawn on an already-checked-out `repo+branch` is handled: refuse + jump to
   the owning card, or auto-branch a suffixed branch?
-- **Context seed delivery** — **resolved and shipped** (carriers by PRs A1/D3, injection by PRs C3/D3). The
+- **Context seed injection** — **resolved and shipped** (carriers by PRs A1/D3, injection by PRs C3/D3). The
   **carrier** is a defaulted `AdapterContext.seed` field, frozen on the seam contract by A1. The
   **per-agent injection mechanism** is now
   decided: on a *resume* the seed rides as the resumed session's **opening positional turn** — each adapter
@@ -321,17 +259,10 @@ A few decisions are explicitly deferred until the relevant axis is built:
   parallel **new-card** carrier — a defaulted `SpawnInput.seed` folded ahead of the prompt by
   `spawn`/`batch-spawn` — so Fork and Fan-out seed a fresh card the same way (see
   [chapter 9](09-design-decisions.md#shipped-feature-history)).
-- **Merge-back timing** — **resolved and shipped** (PR C1 then C2): a fork's conclusion rides the durable
-  **inbox (F3)** and drains at the parent's **next turn-end** — never a mid-turn interrupt (an explicit
-  non-goal); concurrent returns coalesce in the inbox and drain together. The
-  [durable inbox + Stop-drain (C1)](09-design-decisions.md#shipped-feature-history) and the
-  [F2 wake + merge-watch (C2)](09-design-decisions.md#shipped-feature-history) have both landed: an
-  orchestrator card `wait`s on its children, each conclusion coalesces into its inbox and wakes it. The
-  Claude wake is `nativeReinvoke` — for a watcher card the background `orchestra wait` process exiting is
-  the wake, and a genuinely idle card with no live wait is resume-seeded (`send-wakes-idle-card`, ch. 9); the
-  Codex **send-keys** wake for an idle non-native card has since landed too (PR C4, ch. 9) — a fixed
-  content-free TUI nudge, detect-and-defer gated on an idle, empty composer. Conclusion is
-  read from real card state, never `git merge-base`.
+- **Merge-back timing** — a card uses `wait` only to subscribe to a child conclusion, read from lifecycle
+  rather than `git merge-base`. A result message is a separate ordinary inbox row: it is locally queued,
+  then the live native provider may accept it. That path makes no model-read or scheduling promise, and it
+  does not change the conclusion subscription.
 - **Archiving a parent with live forks** — hard-block + override, or warn-and-proceed?
 
 Because this manual is regenerated whenever `main` changes (see [chapter 11](11-doc-automation.md)),

@@ -3,16 +3,15 @@ import Foundation
 /// The capability descriptor every adapter advertises. Core degrades on these flags — never on adapter
 /// identity (no `if agentId == "claude"`). This is the seam-contract root (A1): the COMPLETE set of
 /// fields and every variant spelling is declared here, so later PRs implement behavior behind variants
-/// declared now but not yet exercised (e.g. `wakeTransport.controlChannel`,
-/// `readOnlyEnforcement.orchestraSandboxed`, `telemetry.ptyScrape`, `contextUsage.none`). Additions are
+/// declared now but not yet exercised (e.g. `readOnlyEnforcement.orchestraSandboxed`,
+/// `telemetry.ptyScrape`, `contextUsage.none`). Additions are
 /// defaulted; spellings are stable BUT not immortal — a variant that was exercised and then retired is
 /// removed, not kept as dead vocabulary (capabilities are computed from the adapter, never persisted, so a
-/// removal breaks nothing). `wakeTransport.sendKeys` + `inboxDrain.sessionSeed` were retired when Codex
-/// moved to resume-seed wake + the Stop-hook drain.
+/// removal breaks nothing).
 public struct AgentCapabilities: Sendable, Equatable, Codable {
 
     /// How the agent's session id is obtained. `seeded` = Orchestra mints it pre-launch (Claude
-    /// `--session-id`); `discovered` = read back from the agent's own output post-launch (Codex rollout).
+    /// `--session-id`); `discovered` = learned from the provider after launch (Codex app-server thread).
     public enum SessionId: String, Sendable, Equatable, Codable, CaseIterable {
         case seeded, discovered
     }
@@ -30,33 +29,15 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         case percent, tokens, none
     }
 
-    /// How an idle agent is woken to start a turn (F2). `nativeReinvoke` = the harness re-invokes it in
-    /// session (Claude); `relaunch` = kill + resume-seed (Codex, and the universal fallback);
-    /// `controlChannel` = an app-server / RPC `turn/start` (future — wakes without tearing the session down).
-    public enum WakeTransport: String, Sendable, Equatable, Codable, CaseIterable {
-        case nativeReinvoke, relaunch, controlChannel
-    }
-
     /// How a card being BORN — `launching` (blank spawn/reopen) OR `relaunching` (resume/restart) — is
     /// confirmed alive (D1: one axis covers both being-born phases). `sessionStartHook` = wait for the
-    /// agent's own SessionStart telemetry to reach `report()` (Claude `hooksPush`: `startup` confirms a
-    /// launch, `resume` confirms a relaunch — precise + fast). `rolloutMeta` = wait for the agent's rollout
-    /// `session_meta` line, tailed post-launch (Codex `.discovered`): a fresh launch writes one so the tail
-    /// observer resolves readiness on it; a `codex resume` writes NO rollout, so the universal N=3
-    /// liveness-tick fallback (`launchReadyTicks`) resolves the still-pending waiter within the grace —
-    /// keeping the relaunch ON the readiness gate rather than off it. `relaunchLiveness` = the successful
+    /// agent's own SessionStart telemetry to reach `report()` (`startup` confirms a launch, `resume`
+    /// confirms a relaunch — precise + fast). `relaunchLiveness` = the successful
     /// relaunch (tmux `ensure`) IS the confirmation because the agent emits no marker at all; waiting for a
     /// signal that never comes would time out at the grace and fail-DANGEROUSLY `markDead` a live card. The
     /// continuous liveness reconcile (folded into the 2s `reconcile()` tick) is the safety net for every variant.
     public enum ReadinessConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
-        case sessionStartHook, rolloutMeta, relaunchLiveness
-    }
-
-    /// How the durable inbox is drained into the agent (F3). `stopHook` = a Stop hook injects at
-    /// turn-end (both shipped agents); `none` = no live drain. (Delivery to an *idle* card is F2 wake —
-    /// a resume-seed folds the inbox into the opening turn — not an `inboxDrain` mode.)
-    public enum InboxDrain: String, Sendable, Equatable, Codable, CaseIterable {
-        case stopHook, none
+        case sessionStartHook, relaunchLiveness
     }
 
     /// The strength of the read-only guarantee. `sandboxed` = an OS sandbox is the boundary (true RO);
@@ -89,46 +70,27 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let sessionId: SessionId
     public let telemetry: Telemetry
     public let contextUsage: ContextUsage
-    public let wakeTransport: WakeTransport
-    public let inboxDrain: InboxDrain
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
     public let terminalImagePaste: TerminalImagePaste
     public let readinessConfirmation: ReadinessConfirmation
 
-    /// The key chord the Needs-You gate sends to APPROVE a `waitReason == .permission` prompt, and the
-    /// chord that DENIES it. These are agent-terminal-layout facts, not provider-neutral truths: Claude's
-    /// TUI accepts the pre-highlighted "Yes" with `Enter` and cancels with `Esc`. They live on the
-    /// capability (not on the neutral Needs-You queue) so each adapter states its own gate keys — a
-    /// structured-approval agent (Codex's `PermissionRequest`) overrides these per-adapter instead of
-    /// inheriting Claude's keystrokes. An empty chord means "this agent has no send-keys gate" and the
-    /// gate is a no-op (its approval rides a different channel).
-    public let approveChord: [KeyToken]
-    public let denyChord: [KeyToken]
-
     public init(sessionId: SessionId, telemetry: Telemetry, contextUsage: ContextUsage,
-                wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
-                readinessConfirmation: ReadinessConfirmation = .sessionStartHook,
-                approveChord: [KeyToken] = [.named(.enter)],
-                denyChord: [KeyToken] = [.named(.esc)]) {
+                readinessConfirmation: ReadinessConfirmation = .sessionStartHook) {
         self.sessionId = sessionId
         self.telemetry = telemetry
         self.contextUsage = contextUsage
-        self.wakeTransport = wakeTransport
-        self.inboxDrain = inboxDrain
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
         self.readinessConfirmation = readinessConfirmation
-        self.approveChord = approveChord
-        self.denyChord = denyChord
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, telemetry, contextUsage, wakeTransport, inboxDrain, readOnlyEnforcement, authMode
-        case terminalImagePaste, readinessConfirmation, approveChord, denyChord
+        case sessionId, telemetry, contextUsage, readOnlyEnforcement, authMode
+        case terminalImagePaste, readinessConfirmation
     }
 
     /// Capability payloads cross the daemon/client boundary. Decode additive fields with their historical
@@ -138,15 +100,11 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         sessionId = try c.decode(SessionId.self, forKey: .sessionId)
         telemetry = try c.decode(Telemetry.self, forKey: .telemetry)
         contextUsage = try c.decode(ContextUsage.self, forKey: .contextUsage)
-        wakeTransport = try c.decode(WakeTransport.self, forKey: .wakeTransport)
-        inboxDrain = try c.decode(InboxDrain.self, forKey: .inboxDrain)
         readOnlyEnforcement = try c.decode(ReadOnlyEnforcement.self, forKey: .readOnlyEnforcement)
         authMode = try c.decode(AuthMode.self, forKey: .authMode)
         terminalImagePaste = try c.decodeIfPresent(TerminalImagePaste.self, forKey: .terminalImagePaste)
             ?? .direct
         readinessConfirmation = try c.decodeIfPresent(ReadinessConfirmation.self, forKey: .readinessConfirmation)
             ?? .sessionStartHook
-        approveChord = try c.decodeIfPresent([KeyToken].self, forKey: .approveChord) ?? [.named(.enter)]
-        denyChord = try c.decodeIfPresent([KeyToken].self, forKey: .denyChord) ?? [.named(.esc)]
     }
 }

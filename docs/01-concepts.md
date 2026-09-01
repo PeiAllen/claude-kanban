@@ -19,8 +19,9 @@ Three facts define the shape of the product:
 - **The agent is the unit of work.** One card = one autonomous agent session.
 - **The daemon is the source of truth.** A background process (`orchestrad`) owns the tasks, worktrees,
   and sessions and keeps running with the app closed. The app is just one of three windows onto it.
-- **State is pushed, not polled.** The agent reports its own context-window usage, current activity,
-  and status back to the board through a hook channel, so the board reflects reality in near real time.
+- **Provider state is observed, not inferred.** The board separates lifecycle from a live provider
+  snapshot. Claude supplies current-session hook observations, Codex supplies app-server observations,
+  and rollout/status-line paths add metadata without pretending to know whether a turn is open.
 
 The authoritative high-fidelity UI is the **Orchestra** prototype on Claude Design; the app's visual
 language (light/linear, radial wallpaper, hairline borders, mono accents) matches it pixel-for-pixel.
@@ -89,14 +90,21 @@ stateDiagram-v2
     launching --> live : LaunchStepper — readiness confirmed
 
     state live {
-        running : live(.running)
-        idle : live(.waiting(.humanTurn))
-        perm : live(.waiting(.permission))
-        running --> idle : Stop / turn_complete
-        running --> perm : permission prompt
-        idle --> running : prompt / inbox drain
-        perm --> running : approved
+        running : turnStatus = running
+        waiting : turnStatus = waiting
+        unavailable : turnStatus = unavailable
+        running --> waiting : top-level turn completed
+        waiting --> running : top-level turn started
+        running --> unavailable : observation lost
+        waiting --> unavailable : observation lost
+        unavailable --> running : attach / reconciled active
+        unavailable --> waiting : attach / reconciled idle
     }
+
+    note right of live
+      Provider human need is orthogonal
+      to whether the top-level turn is open.
+    end note
 
     live --> relaunching : restart · resume · handoff
     relaunching --> relaunching : supersede (re-arm)
@@ -117,16 +125,29 @@ stateDiagram-v2
     archivedComplete --> [*]
 ```
 
-Neither axis constrains the other: a `live(.running)` card can sit in Plan, and a `dead` card can sit
+Neither axis constrains the other: a `live(AgentState.running)` card can sit in Plan, and a `dead` card can sit
 in Review. Verbs only persist *intent* and return — a 2-second `reconcile()` tick then drives each
 transitional card one edge onward, so a daemon crash and a clean boot converge through the same code
 path. Note that `dead → live` is the one **signal-gated** edge (no verb may drive it; only observing
 a live session can), and that archiving is not terminal — `reopen` sends an archived card back to
 `creatingWorktree`.
 
-The signals that drive the phase come from the agent itself over the report channel: a prompt
-submission moves it to `running`, a `Stop`/`Notification` hook to `waiting`, a `SessionEnd` can take
-it to `dead`. See [Architecture](02-architecture.md#the-report-channel) for how those arrive, and
+The live agent state comes from provider observation. A distinct identified provider turn opens
+`running`, an exact terminal observation can close it to `waiting`, and unavailable is the honest result
+when the current turn cannot be identified. `humanNeed` is an optional provider fact, separate from turn
+state; `.permission`, `.input`, and `.unspecified` only refine display copy. A `SessionEnd` is lifecycle
+evidence and can take the Card to `dead`.
+
+Claude's main-session hooks supply those turn edges. Exact-prompt `MessageDisplay` or `PreToolUse`
+activity reopens a prompt after a blocking Stop; when no turn is active, activity carrying a different
+prompt id establishes the distinct turn whose queued `UserPromptSubmit` edge was not observable. Claude
+emits no terminal hook for Ctrl-C, so one global ten-second `claude agents --json`
+snapshot may repair only an unchanged, human-unblocked `running` session to `waiting`; missing, busy,
+failed, or superseded observations do nothing. Codex uses only its app-server thread/turn stream.
+
+An ordinary `waiting` card is idle, not automatically **Needs You**. A card needs a person only when its
+current provider has a non-nil `humanNeed` or it has the separate durable `pendingQuestion` declaration.
+See [Architecture](02-architecture.md#provider-observation-and-metadata-channel) for how those arrive, and
 [Recovery, resume and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart) for what
 happens when one goes wrong.
 

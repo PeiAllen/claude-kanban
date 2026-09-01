@@ -89,20 +89,20 @@ struct SpawnPhaseTests {
         #expect(await env.svc.list(includeArchived: true).first { $0.id == l.id }?.phase.kind == .launching)
     }
 
-    @Test("a prompted spawn lands .live(.running)")
-    func test_promptedSpawnLandsRunning() async throws {
+    @Test("a prompted spawn lands live but unavailable until provider observation")
+    func test_promptedSpawnLandsUnavailable() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "do the thing", repo: repo, branch: "b"))
-        #expect(t.phase == .live(.running))
+        #expect(t.phase == .live(.init(turnStatus: .unavailable)))
     }
 
-    @Test("a promptless (provisional) spawn lands .live(.waiting(.humanTurn))")
-    func test_provisionalSpawnLandsWaiting() async throws {
+    @Test("a promptless spawn also lands live but unavailable until provider observation")
+    func test_provisionalSpawnLandsUnavailable() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
-        #expect(t.phase == .live(.waiting(.humanTurn)))
+        #expect(t.phase == .live(.init(turnStatus: .unavailable)))
     }
 
     @Test("relaunch supersede: a second relaunching self-edge bumps the epoch; the first attempt's completion is dropped")
@@ -118,12 +118,12 @@ struct SpawnPhaseTests {
         #expect(e2 == e1 + 1)
 
         // The first attempt's completion (old epoch) is fenced out.
-        let stale = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: e1)
+        let stale = await env.svc.transition(t.id, to: .live(.waiting), observedEpoch: e1)
         #expect(stale == .noop)
         #expect(try #require(await env.svc.store.get(t.id)).phase.kind == .relaunching)
 
         // The surviving attempt's completion (current epoch) applies.
-        let fresh = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: e2)
+        let fresh = await env.svc.transition(t.id, to: .live(.waiting), observedEpoch: e2)
         #expect(fresh == .applied)
     }
 
@@ -144,34 +144,6 @@ struct SpawnPhaseTests {
         _ = await env.svc.transition(t2.id, to: .dead(.agentExited))
         let byVerb = await env.svc.transition(t2.id, to: .live(.running))
         #expect(byVerb == .rejected(from: .dead(.agentExited), to: .live(.running)))
-    }
-
-    @Test("two concurrent wakes on an idle card resume exactly once (deliveriesInFlight defers the second)")
-    func test_concurrentWakeDoesNotDoubleResume() async throws {
-        // .claudeCode (sessionStartHook): the resume genuinely awaits its signal, so the in-flight window
-        // the `deliveriesInFlight` deferral depends on is observable (a `.relaunchLiveness` stub confirms too
-        // fast to exercise it). spawnAwaited drives the setup spawn's launch-ready signal.
-        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        env.adapter.writeTranscript(for: t.agentSessionId!)                       // resumable
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))   // idle
-        let name = env.sessions.sessionName(t.id)
-        let before = env.sessions.ensureCount
-
-        async let w1: Void = env.svc.wake(t.id)
-        async let w2: Void = env.svc.wake(t.id)
-        _ = await (w1, w2)
-
-        // `deliveriesInFlight` lets ONE wake proceed → ONE `.relaunching` intent; the reconciler then
-        // drives that single relaunch (the other wake deferred at the in-flight guard).
-        try await pollUntil {
-            await env.svc.reconcile()
-            return env.sessions.ensureArgv[name]?.contains("--resume") == true
-        }
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))     // confirm the ONE resume
-        await yieldBriefly()   // negative: a wrongful second resume-seed gets its chance to run
-        #expect(env.sessions.ensureCount == before + 1)                           // one relaunch, not two
     }
 
     @Test("reopen drives .archived → .creatingWorktree → .launching → .live and re-materializes the cwd")
@@ -217,7 +189,7 @@ struct SpawnPhaseTests {
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)             // reconciler blank-launches
 
         #expect(updated.archived == false)
-        #expect(updated.phase == .live(.waiting(.humanTurn)))
+        #expect(updated.phase == .live(.init(turnStatus: .unavailable)))
         #expect(updated.agentSessionId != oldId)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(!argv.contains("--resume"))

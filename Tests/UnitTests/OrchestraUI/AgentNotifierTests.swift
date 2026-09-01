@@ -38,18 +38,15 @@ final class AgentNotifierTests: XCTestCase {
     /// The banner body is the shared `APNsPayload.body` wording (what `content.body` is set to) — the same
     /// strings the old private `body(for:)` returned, now single-sourced with the phone push.
     func testBodyTextComesFromSharedPayload() {
-        XCTAssertEqual(APNsPayload.body(for: .permission), "Agent needs your approval")
-        XCTAssertEqual(APNsPayload.body(for: .needsYou), "Agent finished — waiting on you")
+        XCTAssertEqual(APNsPayload.body(for: .humanRequired), "Agent needs you — open harness")
         XCTAssertEqual(APNsPayload.body(for: .died), "Agent session ended — needs recovery")
     }
 
     /// The per-Mac defaults the notifier reads (via `NotificationPrefs`) match the historically-shipped
-    /// scheme: permission always/Hero, needsYou background/Submarine, died always/Basso.
+    /// scheme: human-required always/Hero, died always/Basso.
     func testDefaultsMatchShippedNotifierScheme() {
-        XCTAssertEqual(NotificationPrefs.defaultScope(.permission), .always)
-        XCTAssertEqual(NotificationPrefs.defaultSound(.permission), .hero)
-        XCTAssertEqual(NotificationPrefs.defaultScope(.needsYou), .background)
-        XCTAssertEqual(NotificationPrefs.defaultSound(.needsYou), .submarine)
+        XCTAssertEqual(NotificationPrefs.defaultScope(.humanRequired), .always)
+        XCTAssertEqual(NotificationPrefs.defaultSound(.humanRequired), .hero)
         XCTAssertEqual(NotificationPrefs.defaultScope(.died), .always)
         XCTAssertEqual(NotificationPrefs.defaultSound(.died), .basso)
     }

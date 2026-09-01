@@ -3,8 +3,7 @@ import Foundation
 /// Composes the short, agent-agnostic orientation an agent reads at **SessionStart**: which board
 /// column it's in, whether it's read-only, and its own card id (so it can `move` itself as the work
 /// changes phase). Injected as the Claude SessionStart hook's `additionalContext` — the open-time
-/// counterpart to [[StopDrain]] (which injects the inbox at turn-end). Pure + synchronous so it's
-/// trivially testable and callable from the `_report` hook process.
+/// Pure + synchronous so it is trivially testable and callable from the `_report` hook process.
 ///
 /// The point is that an agent shouldn't need to be *told* "you're planning" / "you're implementing" /
 /// "you're read-only" — the board already knows, so we hand it that context the moment it starts. The

@@ -119,58 +119,42 @@ struct PhaseTransitionTests {
         #expect(after.sessionEpoch == epochBefore + 1)   // the supersede self-edge bumps
     }
 
-    // Wake-on-live: a message parked while the card was provisioning (creatingWorktree / launching) —
-    // where wake no-ops — is picked up by the funnel's single release point when the card goes live.
-    @Test("a message parked during provisioning is delivered when the card transitions to live")
-    func test_sendDuringProvisioningDeliveredOnLive() async throws {
-        // Case A — parked at .creatingWorktree.
-        try await runProvisioningDelivery(seed: .creatingWorktree, branch: "cw")
-        // Case B — parked at .launching.
-        try await runProvisioningDelivery(seed: .launching, branch: "lw")
-    }
-
-    private func runProvisioningDelivery(seed: Phase, branch: String) async throws {
-        let env = TestEnv.make(grace: 2)
+    @Test("live detail preserves status age; a turn-status edge restamps it")
+    func test_liveDetailDoesNotResetTurnStatusAge() async throws {
+        let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
-        env.adapter.writeTranscript(for: card.agentSessionId!)          // resumable
-        let name = env.sessions.sessionName(card.id)
-        // Seed the provisioning phase directly (live→creatingWorktree is not a legal verb edge).
-        _ = try await env.svc.store.update(card.id) { $0.phase = seed }
-
-        // Park a message while provisioning — nothing delivers it yet.
-        let inbox = await env.svc.inbox
-        try await inbox.enqueue(card.id, "PARKED-\(branch)")
-        let ensureBefore = env.sessions.ensureCount
-
-        // If seeded at creatingWorktree, first advance to launching (no wake on a non-live target).
-        if seed.kind == .creatingWorktree {
-            #expect(await env.svc.transition(card.id, to: .launching) == .applied)
-            await yieldBriefly()   // negative: a wrongful wake-on-transition gets its chance to run
-            #expect(env.sessions.ensureCount == ensureBefore)          // still parked
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "status-age")
+        )
+        let originalDate = Date(timeIntervalSince1970: 1_000)
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        _ = try await env.svc.store.update(card.id) {
+            $0.phase = .live(.running)
+            $0.phaseChangedAt = originalDate
         }
 
-        // A `.live` card ALWAYS has a session in production — `finishLaunch` ensures one BEFORE landing the
-        // card `.live`. This test seeds the phase directly (spawn is non-blocking, so nothing ever ensured a
-        // session), so seed the session too. Without it the card is `.live` with no session, and the
-        // reconciler correctly concludes the agent vanished and kills it before the parked-message delivery
-        // can run. That kill used to be masked by reconcile()'s stale snapshot order (the session sample
-        // suspended the actor long enough for the wake's `.relaunching` intent to land first) — the very race
-        // fixed in `freshlyLiveCardNotKilledByStaleSnapshot`. Model the real precondition instead of relying
-        // on a race to dodge it.
-        env.sessions.setAlive(card.id, true)
+        let withHumanNeed = AgentState(
+            turnStatus: .running,
+            humanNeed: .permission
+        )
+        #expect(await env.svc.transition(
+            card.id,
+            to: .live(withHumanNeed),
+            observedEpoch: epoch,
+            expecting: .live
+        ) == .applied)
+        var after = try #require(await env.svc.store.get(card.id))
+        #expect(after.phaseChangedAt == originalDate)
 
-        // Going live (idle) fires wakeIfPending → resume-seed enqueues a `.relaunching` intent (PARKED folded
-        // into pendingSeed); the reconciler's RelaunchStepper then delivers it (PR4b Task 4 — intent-only wake).
-        #expect(await env.svc.transition(card.id, to: .live(.waiting(.humanTurn))) == .applied)
-        try await pollUntil {
-            await env.svc.reconcile()
-            return env.sessions.ensureArgv[name]?.contains("--resume") == true
-        }
-        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
-        let argv = try #require(env.sessions.ensureArgv[name])
-        #expect(argv.contains("--resume"))
-        #expect(try #require(argv.last).contains("PARKED-\(branch)"))
+        #expect(await env.svc.transition(
+            card.id,
+            to: .live(.waiting),
+            observedEpoch: epoch,
+            expecting: .live
+        ) == .applied)
+        after = try #require(await env.svc.store.get(card.id))
+        #expect(after.phaseChangedAt > originalDate)
     }
 
     @Test("dead → archived does NOT re-conclude a watched child (only the entry into terminal concludes)")
@@ -277,34 +261,34 @@ struct EpochGuardReportFunnelTests {
         #expect(after.deadReason == .agentExited)
         #expect(env.sessions.isAliveQueries.contains(env.sessions.sessionName(live.id)))
 
-        // A nil-epoch STATUS signal (running↔waiting) is NOT kill-class → it passes unprobed.
+        // A provider-neutral status signal is fenced by the card generation, not the liveness probe.
         let status = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "b"))
-        try await env.svc.report(status.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: nil)
+        await env.svc.testSetTurnStatus(status.id, .waiting())
         let s = try #require(await env.svc.store.get(status.id))
         #expect(s.phaseDisplay == .idle)
     }
 
     // MARK: - status/exit writes go through the funnel
 
-    @Test("a running→waiting report drives the funnel and emits exactly one upsert")
-    func test_reportStatusWritesGoThroughFunnel() async throws {
+    @Test("a running→waiting observation drives the funnel and emits exactly one upsert")
+    func test_agentStatusWritesGoThroughFunnel() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.testSetTurnStatus(card.id, .waiting())
         try await pollUntil("the funnel's upsert is delivered") {
             await collector.upserts.contains { $0.id == card.id }
         }
         await yieldBriefly()   // settle: a wrongful second write would also have landed
 
         let after = try #require(await env.svc.store.get(card.id))
-        #expect(after.phase == .live(.waiting(.humanTurn)))
+        #expect(after.phase == .live(.waiting))
         let upserts = await collector.upserts.filter { $0.id == card.id }
         #expect(upserts.count == 1)                          // a pure phase change = one funnel write
-        #expect(upserts.last?.phase == .live(.waiting(.humanTurn)))
+        #expect(upserts.last?.phase == .live(.waiting))
     }
 
     @Test("turn completion leaves a read-only card idle (never concludes); a worktree card also just goes idle")
@@ -313,25 +297,25 @@ struct EpochGuardReportFunnelTests {
         let repo = TestEnv.repo(env.base)
         let inbox = await env.svc.inbox
 
-        // Read-only card: a completed turn is NOT terminal — it idles `.live(.waiting(.humanTurn))` and
+        // Read-only card: a completed turn is NOT terminal — it idles `.live(.waiting)` and
         // concludes nothing (success is agent-signalled via `send`, not inferred from turn-end).
         let watcherA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wA", repo: repo, branch: "wa"))
         let readOnly = try await readOnlyCard(env, "ro")
         await env.svc.registerWatch(watcherA.id, [readOnly.id])
-        try await env.svc.report(readOnly.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        await env.svc.testCompleteTurn(readOnly.id)
         let ro = try #require(await env.svc.store.get(readOnly.id))
-        #expect(ro.phase == .live(.waiting(.humanTurn)))
+        #expect(ro.phase == .live(.waiting))
         await yieldBriefly()
         #expect(await inbox.peek(watcherA.id).count == 0)     // no conclusion enqueued
 
-        // Worktree card: a completed turn stays long-lived (.live(.waiting(.humanTurn))), never concludes.
+        // Worktree card: a completed turn stays long-lived (.live(.waiting)), never concludes.
         let watcherB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wB", repo: repo, branch: "wb"))
         let worktree = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wt", repo: repo, branch: "wt"))
         await env.svc.registerWatch(watcherB.id, [worktree.id])
-        try await env.svc.report(worktree.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        await env.svc.testCompleteTurn(worktree.id)
         await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
         let wt = try #require(await env.svc.store.get(worktree.id))
-        #expect(wt.phase == .live(.waiting(.humanTurn)))      // NOT terminal
+        #expect(wt.phase == .live(.waiting))      // NOT terminal
         #expect(await inbox.peek(watcherB.id).isEmpty)        // no conclusion
     }
 

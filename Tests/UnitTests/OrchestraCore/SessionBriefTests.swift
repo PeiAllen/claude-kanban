@@ -172,20 +172,16 @@ struct CodexHookRenderingTests {
         #expect(inner.first?["command"] as? String == "/abs/orchestra _report --event session --agent codex")
     }
 
-    // The idle-Codex-never-wakes bug: Codex's hooks schema accepts only `description`/`hooks` at the top
-    // level, so a stray `_comment` makes it REJECT the whole file (`_comment, expected 'description' or
-    // 'hooks'`) — the Stop hook never registers and no turn-end inbox drain fires. Claude is immune only
-    // because SettingsComposer strips `_comment`; the Codex render path must strip it too. Pin: the
-    // rendered file parses as JSON, carries NO `_comment`, and keeps BOTH SessionStart and Stop.
-    @Test("rendered Codex hooks parse cleanly (no _comment) and keep both SessionStart + Stop")
+    // Codex accepts only `description`/`hooks` at the top level, so the renderer strips its template note.
+    @Test("rendered Codex hooks parse cleanly and contain only the SessionStart callback")
     func renderedCodexJSONIsCodexValid() throws {
         let rendered = HooksRenderer.renderedCodexJSON(orchestraBin: "/abs/orchestra", agentId: "codex")
         let obj = try #require(try JSONSerialization.jsonObject(with: Data(rendered.utf8)) as? [String: Any])
         #expect(obj["_comment"] == nil)   // Codex rejects any top-level key other than description/hooks
         let hooks = try #require(obj["hooks"] as? [String: Any])
         #expect(hooks["SessionStart"] != nil)
-        #expect(hooks["Stop"] != nil)      // the turn-end inbox drain — its absence is the wake bug
-        #expect(hooks["PermissionRequest"] != nil)   // the whole hook set must survive the strip
+        #expect(hooks["Stop"] == nil)
+        #expect(hooks["PermissionRequest"] == nil)   // app-server is the sole request authority
     }
 
     // Pin the strip helper's contract directly (independent of Bundle template resolution): it drops a
@@ -193,7 +189,7 @@ struct CodexHookRenderingTests {
     // input UNCHANGED so a malformed template still installs its hooks rather than collapsing to empty.
     @Test("strippingComment drops _comment, preserves hooks, and passes through non-JSON unchanged")
     func strippingCommentContract() throws {
-        let stripped = HooksRenderer.strippingComment(#"{"_comment":"doc","hooks":{"Stop":[]}}"#)
+        let stripped = HooksRenderer.strippingComment(#"{"_comment":"doc","hooks":{"SessionStart":[]}}"#)
         let obj = try #require(try JSONSerialization.jsonObject(with: Data(stripped.utf8)) as? [String: Any])
         #expect(obj["_comment"] == nil)
         #expect(obj["hooks"] != nil)
@@ -208,7 +204,7 @@ struct CodexHookRenderingTests {
     func inMemoryHooksAreCodexValid() throws {
         let hooks = try #require(HooksRenderer.codexHooks(orchestraBin: "/abs/orchestra", agentId: "codex"))
         #expect(hooks["SessionStart"] != nil)
-        #expect(hooks["Stop"] != nil)
-        #expect(hooks["PermissionRequest"] != nil)
+        #expect(hooks["Stop"] == nil)
+        #expect(hooks["PermissionRequest"] == nil)
     }
 }
