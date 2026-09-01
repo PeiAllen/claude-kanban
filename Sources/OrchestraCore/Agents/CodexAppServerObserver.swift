@@ -51,24 +51,26 @@ final class CodexAppServerObserver: @unchecked Sendable {
             )
             onObservation(.rpcResponse(method: "thread/resume", result: resumed))
         } else {
-            let listed = try client.call(
-                "thread/list",
-                params: .object([
-                    "cwd": .string(binding.cwd),
-                    "limit": .int(20),
-                    "sortKey": .string("created_at"),
-                    "sortDirection": .string("desc"),
-                ]),
+            let loaded = try client.call(
+                "thread/loaded/list",
+                params: .object([:]),
                 onNotification: notify
             )
-            let candidates = listed["data"]?.arrayValue?.filter {
-                Self.isCandidate($0, for: binding)
-            } ?? []
-            if candidates.count == 1 {
-                onObservation(.rpcResponse(
-                    method: "thread/list",
-                    result: .object(["data": .array(candidates)])
-                ))
+            let loadedCandidates: [JSONValue] = try (loaded["data"]?.arrayValue ?? []).compactMap { value in
+                guard let threadId = value.stringValue, !threadId.isEmpty else { return nil }
+                let read = try client.call(
+                    "thread/read",
+                    params: .object([
+                        "threadId": .string(threadId),
+                        "includeTurns": .bool(false),
+                    ]),
+                    onNotification: notify
+                )
+                guard let thread = read["thread"], Self.isCandidate(thread, for: binding) else { return nil }
+                return read
+            }
+            if loadedCandidates.count == 1 {
+                onObservation(.rpcResponse(method: "thread/read", result: loadedCandidates[0]))
             }
         }
 

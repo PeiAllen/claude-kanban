@@ -121,11 +121,16 @@ actor AgentObservationCoordinator {
         case .turnReconciled(let status, _):
             // A current-session running snapshot refines the active turn without erasing an exact ID that
             // event notifications already established. If there is no active ID, the snapshot represents
-            // an uncorrelated open turn and any older completed-turn history is no longer usable. Waiting
-            // and unavailable snapshots retire all turn-pair history.
-            if case .running = status {
+            // an uncorrelated open turn and any older completed-turn history is no longer usable. Codex
+            // reports idle before turn/completed, so a waiting snapshot closes the active fence but keeps
+            // its ID long enough to recognize the matching terminal notification as a duplicate.
+            switch status {
+            case .running:
                 if activeTurnID == nil { lastCompletedTurnID = nil }
-            } else {
+            case .waiting:
+                if let activeTurnID { lastCompletedTurnID = activeTurnID }
+                activeTurnID = nil
+            case .unavailable:
                 activeTurnID = nil
                 lastCompletedTurnID = nil
             }

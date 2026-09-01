@@ -72,18 +72,16 @@ struct CodexAppServerObserverTests {
         #expect(!peer.sent.contains { $0["id"]?.intValue == 91 })
     }
 
-    @Test("unbound observer binds only one launch-scoped root thread, then follows exact starts")
-    func discoverUnboundThread() throws {
-        let eligible = Self.thread(id: "thread-1", cwd: "/work", createdAt: 101)
+    @Test("unbound observer binds the sole eligible loaded thread")
+    func bindsSoleEligibleLoadedThread() throws {
+        let loaded = Self.thread(id: "thread-1", cwd: "/work", createdAt: 101)
         let peer = FakeCodexAppServerPeer(incoming: [
             Self.response(id: 1, result: .object([:])),
-            Self.response(id: 2, result: .object(["data": .array([
-                Self.thread(id: "stale", cwd: "/work", createdAt: 99),
-                Self.thread(id: "child", cwd: "/work", createdAt: 101, parent: "thread-1"),
-                Self.thread(id: "ephemeral", cwd: "/work", createdAt: 101, ephemeral: true),
-                Self.thread(id: "other-cwd", cwd: "/other", createdAt: 101),
-                eligible,
-            ])])),
+            Self.response(id: 2, result: .object([
+                "data": .array([.string("thread-1")]),
+                "nextCursor": .null,
+            ])),
+            Self.response(id: 3, result: .object(["thread": loaded])),
         ])
         let observer = CodexAppServerObserver(peer: peer)
         var observations: [RawTelemetry] = []
@@ -96,23 +94,67 @@ struct CodexAppServerObserverTests {
             )) { observations.append($0) }
         }
 
-        #expect(peer.sent[2]["method"]?.stringValue == "thread/list")
-        #expect(peer.sent[2]["params"]?["cwd"]?.stringValue == "/work")
+        #expect(peer.sent.count == 4)
+        guard peer.sent.count == 4 else { return }
+        #expect(peer.sent[2]["method"]?.stringValue == "thread/loaded/list")
+        #expect(peer.sent[3]["method"]?.stringValue == "thread/read")
+        #expect(peer.sent[3]["params"]?["threadId"]?.stringValue == "thread-1")
+        #expect(peer.sent[3]["params"]?["includeTurns"]?.boolValue == false)
         #expect(observations == [
-            .rpcResponse(method: "thread/list", result: .object(["data": .array([eligible])])),
+            .rpcResponse(method: "thread/read", result: .object(["thread": loaded])),
         ])
+    }
 
+    @Test("unbound observer waits for an exact future start when no thread is loaded")
+    func followsFutureThreadStart() throws {
+        let eligible = Self.thread(id: "thread-1", cwd: "/work", createdAt: 101)
+        let peer = FakeCodexAppServerPeer(incoming: [
+            Self.response(id: 1, result: .object([:])),
+            Self.response(id: 2, result: .object(["data": .array([]), "nextCursor": .null])),
+            Self.notification("thread/started", [
+                "thread": Self.thread(id: "stale", cwd: "/work", createdAt: 99),
+            ]),
+            Self.notification("thread/started", [
+                "thread": Self.thread(id: "other-cwd", cwd: "/other", createdAt: 101),
+            ]),
+            Self.notification("thread/started", ["thread": eligible]),
+        ])
+        let observer = CodexAppServerObserver(peer: peer)
+        var observations: [RawTelemetry] = []
+
+        #expect(throws: CodexAppServerError.connectionClosed) {
+            try observer.run(binding: .init(
+                harnessSessionId: nil,
+                cwd: "/work",
+                startedAfter: Date(timeIntervalSince1970: 100.9)
+            )) { observations.append($0) }
+        }
+
+        #expect(peer.sent.count == 3)
+        #expect(peer.sent[2]["method"]?.stringValue == "thread/loaded/list")
+        #expect(observations == [
+            .rpcNotification(method: "thread/started", params: .object(["thread": eligible])),
+        ])
+    }
+
+    @Test("ambiguous loaded threads fail closed until an exact future start")
+    func ambiguousLoadedThreads() throws {
+        let eligible = Self.thread(id: "thread-1", cwd: "/work", createdAt: 101)
         let replacement = Self.thread(id: "thread-3", cwd: "/work", createdAt: 102)
         let ambiguousPeer = FakeCodexAppServerPeer(incoming: [
             Self.response(id: 1, result: .object([:])),
-            Self.response(id: 2, result: .object(["data": .array([
-                eligible,
-                Self.thread(id: "thread-2", cwd: "/work", createdAt: 101),
-            ])])),
+            Self.response(id: 2, result: .object([
+                "data": .array([.string("thread-1"), .string("thread-2")]),
+                "nextCursor": .null,
+            ])),
+            Self.response(id: 3, result: .object(["thread": eligible])),
+            Self.response(id: 4, result: .object([
+                "thread": Self.thread(id: "thread-2", cwd: "/work", createdAt: 101),
+            ])),
             Self.notification("thread/started", ["thread": replacement]),
         ])
         let ambiguousObserver = CodexAppServerObserver(peer: ambiguousPeer)
-        observations.removeAll()
+        var observations: [RawTelemetry] = []
 
         #expect(throws: CodexAppServerError.connectionClosed) {
             try ambiguousObserver.run(binding: .init(

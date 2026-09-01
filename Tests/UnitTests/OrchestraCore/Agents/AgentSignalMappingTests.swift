@@ -339,6 +339,32 @@ struct AgentSignalMappingTests {
         }
     }
 
+    @Test("Codex resume establishes the active turn identity from its snapshot")
+    func codexResumeActiveTurnIdentity() {
+        let adapter = CodexAdapter()
+        let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
+        let result: JSONValue = .object([
+            "thread": .object([
+                "id": .string("thread-1"),
+                "status": .object([
+                    "type": .string("active"),
+                    "activeFlags": .array([]),
+                ]),
+                "turns": .array([
+                    .object(["id": .string("turn-1"), "status": .string("completed")]),
+                    .object(["id": .string("turn-2"), "status": .string("inProgress")]),
+                ]),
+            ]),
+        ])
+
+        #expect(adapter.agentSignals(
+            from: .rpcResponse(method: "thread/resume", result: result), context: context
+        ) == [
+            .init(sessionEpoch: epoch, turnID: "turn-2", kind: .turnStarted),
+            .init(sessionEpoch: epoch, kind: .turnReconciled(.running, humanNeed: nil)),
+        ])
+    }
+
     @Test("Codex requires the observer's exact thread identity")
     func codexThreadIdentityFence() {
         let adapter = CodexAdapter()

@@ -98,8 +98,8 @@ struct CodexAdapterArgvTests {
         #expect(adapter.parse(.rpcNotification(method: "thread/started", params: started))
             == StatusReport(sessionId: "thread-1"))
         #expect(adapter.parse(.rpcResponse(
-            method: "thread/list",
-            result: .object(["data": .array([started["thread"]!])])
+            method: "thread/read",
+            result: .object(["thread": started["thread"]!])
         )) == StatusReport(sessionId: "thread-1"))
     }
 

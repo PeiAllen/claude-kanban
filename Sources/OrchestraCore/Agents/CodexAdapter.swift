@@ -119,10 +119,8 @@ public struct CodexAdapter: Adapter {
             return StatusReport(sessionId: threadId)
         }
         if case let .rpcResponse(method, result) = raw,
-           method == "thread/list",
-           let threads = result["data"]?.arrayValue,
-           threads.count == 1,
-           let threadId = threads[0]["id"]?.stringValue,
+           method == "thread/read",
+           let threadId = result["thread"]?["id"]?.stringValue,
            !threadId.isEmpty {
             return StatusReport(sessionId: threadId)
         }
@@ -206,6 +204,24 @@ public struct CodexAdapter: Adapter {
             else { return [] }
             kinds = reconciliations(from: thread["status"])
             turnID = nil
+            if thread["status"]?["type"]?.stringValue == "active" {
+                let activeTurnIDs = thread["turns"]?.arrayValue?.compactMap { turn -> String? in
+                    guard turn["status"]?.stringValue == "inProgress",
+                          let id = turn["id"]?.stringValue,
+                          !id.isEmpty
+                    else { return nil }
+                    return id
+                } ?? []
+                if activeTurnIDs.count == 1 {
+                    return [.init(
+                        sessionEpoch: context.sessionEpoch,
+                        turnID: activeTurnIDs[0],
+                        kind: .turnStarted
+                    )] + kinds.map {
+                        .init(sessionEpoch: context.sessionEpoch, kind: $0)
+                    }
+                }
+            }
 
         case .hooksPush, .fileTail:
             kinds = []
