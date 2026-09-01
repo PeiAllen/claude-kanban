@@ -1360,21 +1360,47 @@ view tree. A trackpad delivers 100+ scroll events/second, so once any terminal h
 every scroll anywhere in the app — including views with no terminal at all, like the diff inspector —
 paid that cost, and fast scrolling pegged the main thread solid.
 
-The fix: `TerminalEventRoutingView`, a plain `NSView` that wraps one `ScrollableTerminalView` and
-overrides `hitTest` to claim every point in its own bounds as itself. AppKit's own per-event hit test —
-which it already performs once during `NSWindow.sendEvent`, natively, without touching SwiftUI's graph
-— now resolves directly to this view, so no second hit test ever runs. From there each event is either
-handled locally or forwarded to the terminal with a plain method call.
+The fix: `TerminalEventRoutingView` (`App/Views/AgentTerminalView+Support.swift`), a plain `NSView`
+that wraps one `ScrollableTerminalView` and overrides `hitTest` to claim, as itself, only points that
+resolve to the terminal's own surface. AppKit's own per-event hit test — which it already performs once
+during `NSWindow.sendEvent`, natively, without touching SwiftUI's graph — now resolves directly to this
+view for those points, so no second hit test ever runs. From there each event is either handled locally
+or forwarded to the terminal with a plain method call.
 
-Two of the five pointer event types (`scrollWheel`, `mouseMoved`) could not simply become overrides on
-`ScrollableTerminalView` itself: SwiftTerm declares them `public`, not `open`, so a subclass outside
-SwiftTerm's own module cannot override them (confirmed by compiling such an override — it fails with
-"overriding non-open instance method outside of its defining module"). `mouseDown`/`mouseUp`/
-`mouseDragged` are `open`, but `hitTest` is positional, not event-typed: once a view claims a point for
-one event type it claims it for all of them, so all five route through `TerminalEventRoutingView`
-uniformly rather than splitting the logic across two mechanisms.
+`hitTest` narrows to the terminal's own surface deliberately: `guard let hit = super.hitTest(point) else
+{ return nil }; return hit === terminalView ? self : hit`. Claiming every point unconditionally would
+also steal hits from subviews SwiftTerm manages directly — its scrollback `NSScroller`, find bar, URL
+preview field, marked-text overlay. None of those are reachable today under tmux attach (`canScroll` is
+permanently false in the alternate screen buffer, which every tmux-attached pane always is; Orchestra
+never shows the find bar), but claiming them anyway would silently break them the moment that changes.
 
-Two behaviors this relies on, both preserved exactly:
+`scrollWheel`/`mouseDown`/`mouseUp`/`mouseDragged` route through `TerminalEventRoutingView`. SwiftTerm
+declares `scrollWheel(with:)` `public`, not `open`, so a subclass outside SwiftTerm's own module cannot
+override it (confirmed by compiling such an override — it fails with "overriding non-open instance
+method outside of its defining module"). `mouseDown`/`mouseUp`/`mouseDragged` are `open` and could have
+stayed direct overrides on `ScrollableTerminalView`, but `hitTest` is positional, not event-typed: once
+a view claims a point for one event type it claims it for all of them, so those three route through the
+same wrapper as `scrollWheel` rather than splitting the logic across two mechanisms.
+
+`mouseMoved` does NOT route through here, and cannot: unlike the other four, AppKit never hit-tests a
+mouse-moved event to find its target. It goes either straight to the window's first responder (when
+`NSWindow.acceptsMouseMovedEvents` is set) or to whichever view owns the `NSTrackingArea` the pointer is
+inside — both name a specific view directly, bypassing `hitTest` entirely. SwiftTerm's own tracking area
+names the terminal itself as owner, so mouse-moved reaches it regardless of what any wrapper does
+(confirmed with a real `NSWindow` dispatching a synthetic event directly: it reached the terminal, never
+a claiming wrapper placed above it). The former monitor could swallow this because a local monitor sees
+every matching event before AppKit's dispatch even begins; `hitTest` has no equivalent hook for an event
+type it's never consulted for. In practice this matters only while Command is held (SwiftTerm's own
+`shouldTrackMouse()` gates its tracking area on Command, or on `linkHighlightMode == .hover(WithModifier)`
+— Orchestra sets `.alwaysWithModifier`, neither), where SwiftTerm's native hover link preview/highlight
+now shows (a cosmetic change, not the phantom-click bug this design exists to prevent: reaching tmux
+needs `sendMotionEvent()`, true only in `.anyEvent` mouse-reporting mode, which nothing here requests).
+If a future TUI ever asks tmux for `.anyEvent` (DECSET 1003), `shouldTrackMouse()` becomes true
+unconditionally and the original bug would return unguarded — a registry-based `mouseMoved`-only
+monitor could close that gap, but it reintroduces the same z-order/clipping mis-routing the rejected
+rect-containment alternative below has, so it isn't done; this is a known, accepted limitation.
+
+Two behaviors the four routed event types rely on, both preserved exactly:
 - **Click-to-focus**: `TerminalEventRoutingView` returns `false` from `acceptsFirstResponder`, so
   AppKit's own auto-first-responder-on-click never targets it; its `mouseDown` override explicitly calls
   `window?.makeFirstResponder(terminal)` so the wrapped terminal — not the router — gets real keyboard
@@ -1387,11 +1413,15 @@ Two behaviors this relies on, both preserved exactly:
   coordinates). `TerminalEventRoutingView` needs no registry or rect-containment tracking for this —
   the old monitor's `dragOwner` was working around a limitation specific to *local event monitors*
   (which bypass normal dispatch and so don't get this guarantee for free), not a limitation of AppKit
-  event routing in general.
+  event routing in general. Verified directly: a real `NSWindow` dispatching a synthetic `mouseDown`
+  inside the wrapper, then `mouseDragged`/`mouseUp` at points outside it (including outside the window
+  entirely), delivered all three to the wrapper throughout.
 
-A per-terminal rect-containment registry was considered and rejected: it would be a third mechanism
-alongside `hitTest` and `FocusBridge`'s KVC-based tree walk, and rect containment ignores z-order and
-clipping — it mis-routes when a popover or sheet overlaps a terminal. `hitTest` gets that right for free.
+A per-terminal rect-containment registry was considered and rejected for the four routed event types:
+it would be a third mechanism alongside `hitTest` and `FocusBridge`'s KVC-based tree walk, and rect
+containment ignores z-order and clipping — it mis-routes when a popover or sheet overlaps a terminal.
+`hitTest` gets that right for free (the same reasoning excludes it as a fix for the `mouseMoved` gap
+above).
 
 ### The document reader renders in a webview, and there is only one
 

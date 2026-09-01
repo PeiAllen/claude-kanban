@@ -514,10 +514,12 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
         }
     }
 
-    /// Fired when this terminal takes keyboard focus by a mouse click (see the shared monitor below).
-    /// The owner uses it to sync `focusZone` so the inspector focus ring / context chip stay truthful
-    /// even when focus is taken by the mouse rather than a keyboard verb. (`becomeFirstResponder` is
-    /// `public`-not-`open` in SwiftTerm, so we can't override it — hence the click monitor instead.)
+    /// Fired when this terminal takes keyboard focus by a mouse click (called by
+    /// `TerminalEventRoutingView.mouseDown`, below). The owner uses it to sync `focusZone` so the
+    /// inspector focus ring / context chip stay truthful even when focus is taken by the mouse rather
+    /// than a keyboard verb. (`becomeFirstResponder` is `public`-not-`open` in SwiftTerm, so we can't
+    /// override it directly — hence this callback instead, fired from the routing view's own
+    /// `mouseDown` alongside its explicit `window.makeFirstResponder(_:)`.)
     var onBecameFirstResponder: (() -> Void)?
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
 
@@ -605,9 +607,10 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// motion, which is why it still flashed a word.) SwiftTerm's own `sendButtonTracking()` is the right
     /// predicate but is internal, so match on the public mode instead.
     ///
-    /// This rides the shared event monitor rather than a `mouseDragged` override: SwiftTerm declares its
-    /// mouse handlers `public`, not `open`, so a subclass outside that module cannot override them — the
-    /// same constraint that put the click handling in the monitor.
+    /// Called by `TerminalEventRoutingView.mouseDragged`, not a `mouseDragged` override here:
+    /// `mouseDragged(with:)` IS `open` on SwiftTerm's side, but the routing view claims `hitTest` for
+    /// every pointer event uniformly (see its doc comment), so this method exists to be called rather
+    /// than overridden.
     ///
     /// Motion is emitted once per CELL crossed, not per pixel: a drag across the pane is otherwise
     /// hundreds of identical events down the pty, and tmux only acts on cell changes.
@@ -658,9 +661,9 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     }
 
     /// True only for a deliberate Command-click over a SwiftTerm-recognized link. This lets
-    /// `TerminalEventRoutingView` swallow the press before tmux sees it; normal terminal clicks remain
-    /// untouched. `fileprivate`, not `private`: called from that sibling class below, same file.
-    fileprivate func hasCommandLink(at event: NSEvent) -> Bool {
+    /// `TerminalEventRoutingView` (a different file, same module — hence `internal`, not `private`)
+    /// swallow the press before tmux sees it; normal terminal clicks remain untouched.
+    func hasCommandLink(at event: NSEvent) -> Bool {
         guard event.modifierFlags.contains(.command), terminal != nil else { return false }
         let (col, row) = gridLocation(of: event)
         return terminal.link(at: .screen(Position(col: col, row: row)), mode: .explicitAndImplicit) != nil
@@ -669,7 +672,7 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// SwiftTerm's public link API exposes implicit URLs but not the target of an explicit OSC 8 link.
     /// Explicit links continue through SwiftTerm's own mouse-up delegate callback; this method handles
     /// only the plain visible fallback and forwards non-Orchestra URLs to the existing downstream proxy.
-    fileprivate func activateImplicitCommandLink(at event: NSEvent) -> Bool {
+    func activateImplicitCommandLink(at event: NSEvent) -> Bool {
         guard event.modifierFlags.contains(.command), terminal != nil else { return false }
         let (col, row) = gridLocation(of: event)
         let location = Terminal.LinkLookupLocation.screen(Position(col: col, row: row))
@@ -690,155 +693,6 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
         let col = min(cols - 1, max(0, Int(p.x / bounds.width * CGFloat(cols))))
         let row = min(rows - 1, max(0, Int((bounds.height - p.y) / bounds.height * CGFloat(rows))))
         return (col, row)
-    }
-}
-
-/// Owns pointer-event routing for a single embedded `ScrollableTerminalView` — this, not the terminal
-/// itself, is `AgentTerminalView`'s actual `NSViewRepresentable` result.
-///
-/// AppKit hit-tests once per real pointer event during `NSWindow.sendEvent`, on the native `NSView`
-/// tree — cheap, and it never touches SwiftUI's graph. This view claims that hit test for its own
-/// bounds (see `hitTest` below) so every scroll/click/drag event for the wrapped terminal is dispatched
-/// straight here, then either handled locally or forwarded to the terminal with a plain method call.
-///
-/// This replaces a former app-wide `NSEvent` local monitor that re-hit-tested `window.contentView` (the
-/// SwiftUI-hosted window root) on EVERY matching event ANYWHERE in the app, to find out whether the
-/// pointer happened to be over some terminal. That second, manual hit test forced a synchronous SwiftUI
-/// graph flush (`NSHostingView.hitTest`) on every trackpad tick — measured at several milliseconds each
-/// — which pegged the main thread solid under fast scrolling, including in views with no terminal at
-/// all (e.g. the diff inspector). Claiming `hitTest` locally, per terminal instance, gets the same
-/// routing decision from AppKit's own already-cheap per-event dispatch instead.
-///
-/// All five pointer event types route through here, not just the two SwiftTerm won't let
-/// `ScrollableTerminalView` override (`scrollWheel`/`mouseMoved` — see its doc comment): `hitTest` is
-/// positional, not event-typed, so once this view claims a point for one event type it claims it for
-/// all of them, and `mouseDown`/`mouseUp`/`mouseDragged` need the same handling either way.
-final class TerminalEventRoutingView: NSView {
-    let terminalView: ScrollableTerminalView
-
-    init(terminalView: ScrollableTerminalView) {
-        self.terminalView = terminalView
-        super.init(frame: .zero)
-        terminalView.frame = bounds
-        terminalView.autoresizingMask = [.width, .height]   // always fills this view, resize included
-        addSubview(terminalView)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// Never become first responder itself — a click must focus the wrapped terminal (which needs real
-    /// keyboard focus to receive typed input), not this routing shim. AppKit's own
-    /// auto-first-responder-on-click would otherwise target whichever view `hitTest` returns, which is
-    /// now this one; `mouseDown` below assigns the terminal explicitly instead.
-    override var acceptsFirstResponder: Bool { false }
-
-    /// Claim every point this view (or its subviews) would otherwise answer for, as itself — so AppKit
-    /// dispatches every pointer event here directly instead of recursing into the terminal subview.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) != nil ? self : nil
-    }
-
-    /// Cursor rects are tracked by AppKit independently of event hit-testing, walking the real subview
-    /// tree regardless of what `hitTest` answers — so the terminal's own registration still applies.
-    /// Forwarding here (rather than leaving this view with no cursor rects of its own) keeps that
-    /// resolution unambiguous.
-    override func resetCursorRects() {
-        terminalView.resetCursorRects()
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        if terminalView.handleScroll(event) { return }   // consumed: forwarded to tmux
-        terminalView.scrollWheel(with: event)             // let SwiftTerm scroll its own buffer natively
-    }
-
-    /// Hover motion is dropped, never forwarded — see `ScrollableTerminalView`'s doc comment for why
-    /// (SwiftTerm's buttonless-move encoding reads as a click to Claude Code's TUI).
-    override func mouseMoved(with event: NSEvent) {}
-
-    override func mouseDown(with event: NSEvent) {
-        // Notify the owner so `focusZone` (and the inspector focus ring / chip) tracks the mouse click
-        // regardless of what happens next, then let the click reach SwiftTerm — except a Command-click
-        // on a link, which stays out of tmux entirely so a preview never becomes a provider-TUI click.
-        terminalView.onBecameFirstResponder?()
-        if terminalView.hasCommandLink(at: event) { return }
-        window?.makeFirstResponder(terminalView)
-        terminalView.mouseDown(with: event)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer { terminalView.endDragMotion() }   // next drag always reports its first cell, click or not
-        // SwiftTerm handles explicit OSC 8 links itself under `.alwaysWithModifier`. The visible
-        // fallback is an implicit URL, so activate that one deliberately here without re-enabling
-        // passive hover tracking.
-        if terminalView.activateImplicitCommandLink(at: event) { return }
-        terminalView.mouseUp(with: event)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        // AppKit keeps routing mouseDragged/mouseUp to the view that received the mouseDown for the
-        // rest of that gesture, even once the pointer leaves this view's bounds — SwiftTerm's own
-        // native selection-drag math (auto-scroll past the top/bottom edge) already depends on this
-        // same guarantee, so a drag that wanders onto the board or another card still arrives here.
-        if terminalView.handleDragMotion(event) { return }
-        terminalView.mouseDragged(with: event)
-    }
-}
-
-/// `LocalProcessTerminalView` deliberately owns its SwiftTerm delegate. Replacing that delegate would
-/// stop the local process from receiving terminal input, resize, and clipboard callbacks, so this proxy
-/// forwards its complete protocol surface and intercepts only Orchestra's exact opaque media URL.
-private final class TerminalImageLinkDelegateProxy: NSObject, TerminalViewDelegate {
-    weak var downstream: (any TerminalViewDelegate)?
-    var onOpenImage: ((UUID) -> Void)?
-
-    init(downstream: (any TerminalViewDelegate)?, onOpenImage: @escaping (UUID) -> Void) {
-        self.downstream = downstream
-        self.onOpenImage = onOpenImage
-    }
-
-    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-        downstream?.sizeChanged(source: source, newCols: newCols, newRows: newRows)
-    }
-
-    func setTerminalTitle(source: TerminalView, title: String) {
-        downstream?.setTerminalTitle(source: source, title: title)
-    }
-
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
-        downstream?.hostCurrentDirectoryUpdate(source: source, directory: directory)
-    }
-
-    func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        downstream?.send(source: source, data: data)
-    }
-
-    func scrolled(source: TerminalView, position: Double) {
-        downstream?.scrolled(source: source, position: position)
-    }
-
-    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        guard let referenceID = TranscriptImageLink.referenceID(from: link) else {
-            downstream?.requestOpenLink(source: source, link: link, params: params)
-            return
-        }
-        onOpenImage?(referenceID)
-    }
-
-    func bell(source: TerminalView) {
-        downstream?.bell(source: source)
-    }
-
-    func clipboardCopy(source: TerminalView, content: Data) {
-        downstream?.clipboardCopy(source: source, content: content)
-    }
-
-    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {
-        downstream?.iTermContent(source: source, content: content)
-    }
-
-    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
-        downstream?.rangeChanged(source: source, startY: startY, endY: endY)
     }
 }
 #endif

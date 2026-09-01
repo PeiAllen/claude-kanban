@@ -2,11 +2,11 @@ import AppKit
 import OrchestraUI
 import OrchestraCore
 
-/// The app's single keyboard router. Installs one `NSEvent` keyDown local monitor (mirroring the
-/// shared scroll monitor in AgentTerminalView), derives the current `KeyContext` from the first
-/// responder + model state, asks the active `Keybindings` what to do, and executes the resulting
-/// intent against `BoardModel`. Returns `nil` from the monitor to swallow a consumed key; anything it
-/// doesn't consume returns the event untouched so SwiftTerm / text fields / SwiftUI see it normally.
+/// The app's single keyboard router. Installs one `NSEvent` keyDown local monitor, derives the current
+/// `KeyContext` from the first responder + model state, asks the active `Keybindings` what to do, and
+/// executes the resulting intent against `BoardModel`. Returns `nil` from the monitor to swallow a
+/// consumed key; anything it doesn't consume returns the event untouched so SwiftTerm / text fields /
+/// SwiftUI see it normally.
 @MainActor
 final class KeyboardController {
     private let model: BoardModel
