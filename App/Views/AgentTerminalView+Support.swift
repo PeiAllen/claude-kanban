@@ -78,6 +78,13 @@ final class TerminalEventRoutingView: NSView {
     /// recursion (via `super`) already resolves correctly through `MacCaretView` (which returns `nil`
     /// from its own `hitTest` and falls through to the terminal) — this only narrows WHICH resolved
     /// target gets redirected to `self`.
+    ///
+    /// This assumes the scroller stays `.overlay` and disabled (Orchestra's fixed configuration, since
+    /// `canScroll` is permanently false under tmux attach): measured, a disabled `.overlay` scroller
+    /// does not hit-test at all (the point falls through to the terminal, so scroll/click still forward
+    /// to tmux across its full width), and a `.legacy`-style disabled scroller DOES hit-test — that
+    /// specific combination would leave a dead strip along the trailing edge. SwiftTerm hardcodes
+    /// `.overlay` and Orchestra never sets `scrollerStyle`, so that combination isn't reachable today.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let hit = super.hitTest(point) else { return nil }
         return hit === terminalView ? self : hit
@@ -118,11 +125,11 @@ final class TerminalEventRoutingView: NSView {
 
     // Deliberately not overridden: right/other mouse buttons, gestures (magnify/rotate/pressure), and
     // touches. `hitTest` claims the terminal's surface for these too since it can't discriminate by
-    // event type, so they dead-end at this view's superview rather than reaching the terminal — same
-    // as before this change for these specific types (the old monitor never watched them either, but
-    // it also never claimed `hitTest`, so they reached the terminal via ordinary dispatch). SwiftTerm
-    // 1.20.0 implements none of them, so nothing observable changes today; if a future SwiftTerm version
-    // adds one, it needs an explicit forwarding override here.
+    // event type, so they now dead-end at this view's superview instead of reaching the terminal — a
+    // real change from before this fix, when the old monitor never watched these types (so they
+    // reached the terminal via ordinary dispatch, unaffected by it). SwiftTerm 1.20.0 implements none
+    // of them, so nothing observable changes today; if a future SwiftTerm version adds one, it needs an
+    // explicit forwarding override here.
 }
 
 /// `LocalProcessTerminalView` deliberately owns its SwiftTerm delegate. Replacing that delegate would

@@ -83,10 +83,11 @@ struct AgentTerminalView: NSViewRepresentable {
         // white-box background — Claude Code's hover/expand previews — paints a solid black rectangle in
         // a light theme. Force the standard fixed xterm palette so indexed colours mean what apps expect.
         term.getTerminal().ansi256PaletteStrategy = .xterm
-        // Hover movement is intentionally swallowed below because SwiftTerm encodes it as a mouse
-        // release that Claude treats as a click. Its default `.hoverWithModifier` link mode therefore
-        // cannot activate reliably here; this keeps explicit OSC 8 links Command-click-only without
-        // needing a hover event to reach tmux.
+        // Its default `.hoverWithModifier` link mode would activate on hover — SwiftTerm encodes a
+        // buttonless move as a mouse release, which Claude treats as a click — so this keeps explicit
+        // OSC 8 links Command-click-only instead. `.alwaysWithModifier` needs no hover event to reach
+        // tmux; hover motion isn't swallowed for it (see `TerminalEventRoutingView`'s doc comment for
+        // why that's no longer possible, and what the residual gap is).
         term.linkHighlightMode = .alwaysWithModifier
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         term.onBecameFirstResponder = onFocused
@@ -427,20 +428,25 @@ struct AgentTerminalView: NSViewRepresentable {
 /// how Terminal.app and iTerm2 drive a tmux client. On the normal buffer we fall back to SwiftTerm's
 /// native scrollback.
 ///
-/// Why drop hover motion: SwiftTerm encodes a buttonless move as `CSI<32;…m`, which in the SGR mouse
-/// protocol is a *left-button release* (`m` = release, low bits = button 0) — not the no-button motion
-/// `CSI<35;…M` that xterm/Terminal.app send. A TUI like Claude Code therefore reads every hover as a
-/// click and opens the item under the cursor (flashing its preview box). Dropping hover motion makes
-/// expansion happen on a real click only. Pointer press-and-drag routing is adapter-specific; clicks
-/// still reach SwiftTerm normally to establish focus.
+/// Why hover motion is unwanted: SwiftTerm encodes a buttonless move as `CSI<32;…m`, which in the SGR
+/// mouse protocol is a *left-button release* (`m` = release, low bits = button 0) — not the no-button
+/// motion `CSI<35;…M` that xterm/Terminal.app send. A TUI like Claude Code therefore reads every hover
+/// as a click and opens the item under the cursor (flashing its preview box). Pointer press-and-drag
+/// routing is adapter-specific; clicks still reach SwiftTerm normally to establish focus. Hover motion
+/// itself is NOT actually swallowed today — see `TerminalEventRoutingView`'s doc comment (in
+/// `AgentTerminalView+Support.swift`) for why that isn't possible via this class's event routing, and
+/// what the residual, narrow gap is.
 ///
 /// This view exposes the click/scroll/drag policy (`handleScroll`, `handleDragMotion`,
 /// `hasCommandLink`, `activateImplicitCommandLink`) as plain methods rather than event overrides.
 /// SwiftTerm declares `scrollWheel(with:)` and `mouseMoved(with:)` as `public` (not `open`), so a
 /// subclass outside SwiftTerm's own module cannot override them — confirmed by compiling such an
 /// override, which fails with "overriding non-open instance method outside of its defining module".
-/// `TerminalEventRoutingView`, defined below, is the actual pointer-event entry point: it wraps an
-/// instance of this class, claims every pointer event via `hitTest`, and calls these methods directly.
+/// `TerminalEventRoutingView` (a different file, same module) is the actual pointer-event entry point
+/// for `scrollWheel`/`mouseDown`/`mouseUp`/`mouseDragged`: it wraps an instance of this class, claims
+/// `hitTest` for points that resolve to the terminal's own surface, and calls these methods directly.
+/// `mouseMoved` is NOT among them — AppKit never hit-tests a mouse-moved event, so no wrapper can
+/// intercept it this way (see that class's doc comment).
 final class ScrollableTerminalView: LocalProcessTerminalView {
     /// The terminal-local point of the most recent deliberate mouse activation. SwiftTerm reports an
     /// OSC 8 link on mouse-up, so retaining mouse-down's converted point gives the preview a stable
@@ -515,9 +521,10 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     }
 
     /// Fired when this terminal takes keyboard focus by a mouse click (called by
-    /// `TerminalEventRoutingView.mouseDown`, below). The owner uses it to sync `focusZone` so the
-    /// inspector focus ring / context chip stay truthful even when focus is taken by the mouse rather
-    /// than a keyboard verb. (`becomeFirstResponder` is `public`-not-`open` in SwiftTerm, so we can't
+    /// `TerminalEventRoutingView.mouseDown`, in `AgentTerminalView+Support.swift`). The owner uses it to
+    /// sync `focusZone` so the inspector focus ring / context chip stay truthful even when focus is
+    /// taken by the mouse rather than a keyboard verb. (`becomeFirstResponder` is `public`-not-`open` in
+    /// SwiftTerm, so we can't
     /// override it directly — hence this callback instead, fired from the routing view's own
     /// `mouseDown` alongside its explicit `window.makeFirstResponder(_:)`.)
     var onBecameFirstResponder: (() -> Void)?
@@ -608,9 +615,9 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// predicate but is internal, so match on the public mode instead.
     ///
     /// Called by `TerminalEventRoutingView.mouseDragged`, not a `mouseDragged` override here:
-    /// `mouseDragged(with:)` IS `open` on SwiftTerm's side, but the routing view claims `hitTest` for
-    /// every pointer event uniformly (see its doc comment), so this method exists to be called rather
-    /// than overridden.
+    /// `mouseDragged(with:)` IS `open` on SwiftTerm's side, but `scrollWheel`/`mouseDown`/`mouseUp`/
+    /// `mouseDragged` all route through that routing view uniformly (see its doc comment), so this
+    /// method exists to be called rather than overridden.
     ///
     /// Motion is emitted once per CELL crossed, not per pixel: a drag across the pane is otherwise
     /// hundreds of identical events down the pty, and tmux only acts on cell changes.
