@@ -1329,8 +1329,9 @@ program asks to hear about motion at ALL times (DECSET 1003), and otherwise retu
 native selection either. tmux asks for `1000;1002;1006`, where `1002` is "report motion WHILE a button is
 down" — so nothing sent the motion, tmux saw a press and a release but never a drag, and **dragging
 selected nothing at all**. A double-click needs no motion, which is why it still flashed a word: the
-exact pair of symptoms first reported. `ScrollableTerminalView` overrides `mouseDragged` to send the
-motion (once per cell crossed, not per pixel) whenever the view will not.
+exact pair of symptoms first reported. `ScrollableTerminalView.handleDragMotion` sends the motion
+(once per cell crossed, not per pixel) whenever SwiftTerm itself will not; `TerminalEventRoutingView`
+(see below) is what actually calls it on every drag.
 
 Drag-end keeps tmux's default `copy-selection-and-cancel`, which copies and leaves copy mode. Holding the
 highlight with `copy-selection-no-clear` was tried and reverted: it strands the pane in copy mode, where
@@ -1345,6 +1346,52 @@ newer one accepts both, but answers the *read* form from `clipboardRead` — whi
 `LocalProcessTerminalView` implements as the real `NSPasteboard` — so any program in a terminal could
 exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies, accepts tmux's
 spelling, and never answers a query, on every revision.
+
+### Terminal pointer routing claims `hitTest`, not a window-wide monitor
+
+Every terminal's scroll/click/drag logic above (`handleScroll`, `handleDragMotion`, the command-click
+link handling) used to run inside one app-wide `NSEvent.addLocalMonitorForEvents`, installed once and
+never removed. For every matching event anywhere in the app, that monitor called
+`event.window?.contentView?.hitTest(event.locationInWindow)` to find out whether the pointer happened to
+be over a terminal — a manual hit test starting at the SwiftUI-hosted window root. That second hit test,
+on top of the one AppKit already does to deliver the event in the first place, forces `NSHostingView`
+to synchronously flush the SwiftUI graph. Measured in isolation: ~8.5ms per call for a moderately sized
+view tree. A trackpad delivers 100+ scroll events/second, so once any terminal had ever been opened,
+every scroll anywhere in the app — including views with no terminal at all, like the diff inspector —
+paid that cost, and fast scrolling pegged the main thread solid.
+
+The fix: `TerminalEventRoutingView`, a plain `NSView` that wraps one `ScrollableTerminalView` and
+overrides `hitTest` to claim every point in its own bounds as itself. AppKit's own per-event hit test —
+which it already performs once during `NSWindow.sendEvent`, natively, without touching SwiftUI's graph
+— now resolves directly to this view, so no second hit test ever runs. From there each event is either
+handled locally or forwarded to the terminal with a plain method call.
+
+Two of the five pointer event types (`scrollWheel`, `mouseMoved`) could not simply become overrides on
+`ScrollableTerminalView` itself: SwiftTerm declares them `public`, not `open`, so a subclass outside
+SwiftTerm's own module cannot override them (confirmed by compiling such an override — it fails with
+"overriding non-open instance method outside of its defining module"). `mouseDown`/`mouseUp`/
+`mouseDragged` are `open`, but `hitTest` is positional, not event-typed: once a view claims a point for
+one event type it claims it for all of them, so all five route through `TerminalEventRoutingView`
+uniformly rather than splitting the logic across two mechanisms.
+
+Two behaviors this relies on, both preserved exactly:
+- **Click-to-focus**: `TerminalEventRoutingView` returns `false` from `acceptsFirstResponder`, so
+  AppKit's own auto-first-responder-on-click never targets it; its `mouseDown` override explicitly calls
+  `window?.makeFirstResponder(terminal)` so the wrapped terminal — not the router — gets real keyboard
+  focus, matching what AppKit did automatically when the terminal itself was the direct hit-test target.
+- **A drag that leaves the terminal's bounds keeps extending the selection.** AppKit keeps routing
+  `mouseDragged`/`mouseUp` to whichever view received the `mouseDown`, for the rest of that gesture,
+  even once the pointer leaves that view's bounds — a documented Cocoa mouse-tracking-session behavior
+  (every click-and-drag selection UI in AppKit depends on it), and SwiftTerm's own native selection-drag
+  math already assumes it (its auto-scroll-past-the-edge logic computes on unclamped, out-of-bounds grid
+  coordinates). `TerminalEventRoutingView` needs no registry or rect-containment tracking for this —
+  the old monitor's `dragOwner` was working around a limitation specific to *local event monitors*
+  (which bypass normal dispatch and so don't get this guarantee for free), not a limitation of AppKit
+  event routing in general.
+
+A per-terminal rect-containment registry was considered and rejected: it would be a third mechanism
+alongside `hitTest` and `FocusBridge`'s KVC-based tree walk, and rect containment ignores z-order and
+clipping — it mis-routes when a popover or sheet overlaps a terminal. `hitTest` gets that right for free.
 
 ### The document reader renders in a webview, and there is only one
 
@@ -2301,8 +2348,8 @@ terminal input. Its decisions:
 - **Pure, tested decision logic; one monitor to execute it.** The chord→intent table (`KeyMap`), the
   selection movement (`BoardNavigator`), and the `KeyChord`/`KeyContext`/`KeyIntent` value types live in
   **`OrchestraCore/Keyboard/`** — AppKit-free and unit-tested (`KeyMapTests`, `BoardNavigatorTests`) — while
-  the app installs a **single** `NSEvent` local monitor (`KeyboardController`, mirroring the existing shared
-  scroll monitor) that derives the context and executes the intent against `BoardModel`. This is the same
+  the app installs a **single** `NSEvent` local monitor (`KeyboardController`) that derives the context
+  and executes the intent against `BoardModel`. This is the same
   pure-core-plus-thin-app split the rest of the system uses, and it puts the keymap on the shared core the
   [phone client (axis 9)](10-roadmap.md) will reuse. A `ContextChip` in the toolbar surfaces the live
   context.
