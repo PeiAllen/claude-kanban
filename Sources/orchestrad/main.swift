@@ -81,6 +81,15 @@ _Concurrency.Task {
     }
 }
 
+// Claude hooks have no Ctrl-C terminal event. One global provider snapshot repairs only unchanged
+// running sessions; the service coalesces overlapping calls and otherwise leaves hook state untouched.
+_Concurrency.Task {
+    while true {
+        try? await _Concurrency.Task.sleep(for: .seconds(10))
+        await service.reconcileClaudeIdle()
+    }
+}
+
 // Clean-shutdown flush (bug #13): launchd sends SIGTERM before SIGKILL. Flush any debounced telemetry
 // `tasks.json` write so a clean restart is lossless (on-disk `rev` catches up to in-memory `rev`), then
 // exit. Ignore the default SIGTERM disposition first, then service it on a GCD source off the main queue.

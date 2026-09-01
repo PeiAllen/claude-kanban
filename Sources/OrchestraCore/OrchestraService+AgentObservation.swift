@@ -273,7 +273,7 @@ extension OrchestraService {
     /// Route every source through the card-owned queue before touching durable state. The apply closure
     /// re-reads the card after it reaches the front, so two suspended callers can never reduce from the
     /// same stale snapshot and overwrite each other.
-    private func submitAgentSignals(
+    func submitAgentSignals(
         _ signals: [AgentSignal],
         cardId: UUID,
         context: AgentSignalContext
@@ -281,6 +281,7 @@ extension OrchestraService {
         guard !signals.isEmpty,
               let coordinator = runtime[cardId]?.agentObservationCoordinator
         else { return }
+        runtime[cardId]?.agentObservationGeneration &+= 1
 
         await coordinator.submit(scope: context, signals: signals) { [weak self] accepted in
             await self?.applyAgentSignals(

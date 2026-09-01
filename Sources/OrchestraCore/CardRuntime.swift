@@ -63,6 +63,9 @@ struct CardRuntime {
     /// reference-typed so copies of `CardRuntime` retain the same queue and correlation fence.
     let agentObservationCoordinator = AgentObservationCoordinator()
     var agentObservationIdentity: AgentObservationIdentity?
+    /// Advances before every normalized provider observation enters the coordinator. Snapshot repairs
+    /// capture it so an observation arriving while their subprocess runs makes the result stale.
+    var agentObservationGeneration: UInt64 = 0
 
     /// Provider observations that arrived during the narrow readiness handoff before the stepper
     /// published `.live`. These are normalized source facts, not a second effective-state snapshot;

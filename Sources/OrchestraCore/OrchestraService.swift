@@ -75,6 +75,8 @@ public actor OrchestraService {
     /// the deliberate exceptions are `inFlightSteps`/`stepAttempts` (reconciler driving state) and
     /// `watchRegistry` (persisted relational state).
     var runtime: [UUID: CardRuntime] = [:]
+    /// One global Claude snapshot at a time; the actor may re-enter while the subprocess is running.
+    var claudeIdleReconcileInFlight = false
     /// Process-monotonic token mint for the arming fences (`CardRuntime.Armed`). Never reused, never
     /// reset — uniqueness across archive→reopen within one process is the fence guarantee.
     var runtimeTokenSeq: UInt64 = 0
