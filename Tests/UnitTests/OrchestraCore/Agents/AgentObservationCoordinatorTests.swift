@@ -6,8 +6,15 @@ import TestSupport
 struct AgentObservationCoordinatorTests {
     private let epoch = 41
 
+    /// `submit` is one-way (see the coordinator's doc comment) — it no longer waits for its own
+    /// `apply` to land. `isIdle` is the exact, race-free replacement: it is true only once every queued
+    /// submission (including ones enqueued mid-drain) has actually been applied.
+    private func waitIdle(_ coordinator: AgentObservationCoordinator) async throws {
+        try await pollUntil("coordinator to finish draining") { await coordinator.isIdle }
+    }
+
     @Test("a delayed terminal observation cannot close a newer identified turn")
-    func staleCompletionCannotCloseNewerTurn() async {
+    func staleCompletionCannotCloseNewerTurn() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -30,11 +37,12 @@ struct AgentObservationCoordinatorTests {
             signals: [.init(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnCompleted())]
         ) { await state.apply($0, epoch: epoch) }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .running)
     }
 
     @Test("only exact activity can reactivate the just-completed prompt")
-    func samePromptReactivationIsFenced() async {
+    func samePromptReactivationIsFenced() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -48,6 +56,7 @@ struct AgentObservationCoordinatorTests {
                 await state.apply($0, epoch: epoch)
             }
         }
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .running)
 
         for signal in [
@@ -63,12 +72,16 @@ struct AgentObservationCoordinatorTests {
             scope: scope,
             signals: [.init(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnActivity)]
         ) { _ in await stale.append("accepted") }
+        // Wait for quiescence FIRST, then check absence once: the drain has genuinely finished
+        // filtering this submission (rejected as stale, per `accept()`), so an empty recorder here
+        // is a fact, not a timing guess (a negative assertion cannot be polled for on its own).
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .running)
         #expect(await stale.values().isEmpty)
     }
 
     @Test("the matching duplicate terminal source can enrich automatic resume")
-    func matchingDuplicateCompletionEnrichesResume() async {
+    func matchingDuplicateCompletionEnrichesResume() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -83,11 +96,12 @@ struct AgentObservationCoordinatorTests {
             }
         }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .waiting(.init(resume: .init())))
     }
 
     @Test("a terminal observation without a turn identity loses current observation")
-    func missingTerminalIdentityLosesObservation() async {
+    func missingTerminalIdentityLosesObservation() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -101,11 +115,12 @@ struct AgentObservationCoordinatorTests {
             signals: [.init(sessionEpoch: epoch, kind: .turnCompleted())]
         ) { await state.apply($0, epoch: epoch) }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .unavailable)
     }
 
     @Test("a terminal for no provable current turn fails closed")
-    func orphanTerminalFailsClosed() async {
+    func orphanTerminalFailsClosed() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -115,11 +130,12 @@ struct AgentObservationCoordinatorTests {
             signals: [.init(sessionEpoch: epoch, turnID: "orphan-prompt", kind: .turnCompleted())]
         ) { await state.apply($0, epoch: epoch) }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .unavailable)
     }
 
     @Test("an identified terminal after an uncorrelated running snapshot fails closed")
-    func terminalAfterUncorrelatedRunningSnapshotLosesObservation() async {
+    func terminalAfterUncorrelatedRunningSnapshotLosesObservation() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -136,11 +152,12 @@ struct AgentObservationCoordinatorTests {
             signals: [.init(sessionEpoch: epoch, turnID: "unproven-turn", kind: .turnCompleted())]
         ) { await state.apply($0, epoch: epoch) }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .unavailable)
     }
 
     @Test("a running snapshot preserves an identified active-turn fence")
-    func runningSnapshotPreservesActiveTurnFence() async {
+    func runningSnapshotPreservesActiveTurnFence() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -155,11 +172,12 @@ struct AgentObservationCoordinatorTests {
             }
         }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .waiting())
     }
 
     @Test("a terminal snapshot preserves the matching completion fence")
-    func terminalSnapshotPreservesCompletionFence() async {
+    func terminalSnapshotPreservesCompletionFence() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -174,11 +192,12 @@ struct AgentObservationCoordinatorTests {
             }
         }
 
+        try await waitIdle(coordinator)
         #expect(await state.turnStatus() == .waiting())
     }
 
     @Test("a distinct turn start clears the prior turn detail while a duplicate is ignored")
-    func distinctStartIsSemanticBoundary() async {
+    func distinctStartIsSemanticBoundary() async throws {
         let coordinator = AgentObservationCoordinator()
         let state = AgentStateBox()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
@@ -193,6 +212,7 @@ struct AgentObservationCoordinatorTests {
                 await state.apply($0, epoch: epoch)
             }
         }
+        try await waitIdle(coordinator)
         #expect(await state.snapshot() == AgentState(turnStatus: .running))
 
         let current = AgentState(
@@ -206,17 +226,18 @@ struct AgentObservationCoordinatorTests {
             signals: [.init(sessionEpoch: epoch, turnID: "prompt-b", kind: .turnStarted)]
         ) { await state.apply($0, epoch: epoch) }
 
+        try await waitIdle(coordinator)
         #expect(await state.snapshot() == current)
     }
 
     @Test("a suspended apply prevents a later source from overtaking it")
-    func submissionsAreSerializedAcrossSuspension() async {
+    func submissionsAreSerializedAcrossSuspension() async throws {
         let coordinator = AgentObservationCoordinator()
         let scope = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "session-1")
         let gate = Gate()
         let recorder = SubmissionRecorder()
 
-        async let first: Void = coordinator.submit(
+        await coordinator.submit(
             scope: scope,
             signals: [.init(sessionEpoch: epoch, turnID: "prompt-a", kind: .turnStarted)]
         ) { _ in
@@ -225,18 +246,20 @@ struct AgentObservationCoordinatorTests {
         }
         await gate.reached()
 
-        async let second: Void = coordinator.submit(
+        await coordinator.submit(
             scope: scope,
             signals: [.init(sessionEpoch: epoch, turnID: "prompt-b", kind: .turnStarted)]
         ) { _ in
             await recorder.append("second")
         }
-        await yieldBriefly()
+        // The drain is still parked inside the first apply's gate, so the second submission — already
+        // enqueued — cannot have been applied yet: `isIdle` is false until every queued apply has run,
+        // an exact proxy (not a timing guess) for "second has not landed".
+        #expect(await !coordinator.isIdle)
         #expect(await recorder.values().isEmpty)
 
         gate.release()
-        await first
-        await second
+        try await waitIdle(coordinator)
         #expect(await recorder.values() == ["first", "second"])
     }
 }

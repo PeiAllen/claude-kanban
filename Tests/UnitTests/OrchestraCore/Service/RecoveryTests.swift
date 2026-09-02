@@ -257,7 +257,7 @@ struct RecoveryTests {
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
-        await env.svc.testSetTurnStatus(t.id, .waiting())                      // idle
+        try await env.svc.testSetTurnStatus(t.id, .waiting())                      // idle
 
         // Two overlapping resumes — both are intent-only and MUST return (never hang on a leaked continuation).
         async let r1: Task = env.svc.resume(t.id)

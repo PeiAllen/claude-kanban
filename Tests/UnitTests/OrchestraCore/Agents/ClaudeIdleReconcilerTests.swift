@@ -15,6 +15,7 @@ struct ClaudeIdleReconcilerTests {
             cardId: card.id,
             signals: [.init(sessionEpoch: card.sessionEpoch, turnID: promptID, kind: .turnStarted)]
         )
+        try await env.svc.waitForObservationQueueIdle(card.id)
         return try #require(await env.svc.store.get(card.id))
     }
 
@@ -33,6 +34,7 @@ struct ClaudeIdleReconcilerTests {
         }
 
         await env.svc.reconcileClaudeIdle()
+        try await env.svc.waitForObservationQueueIdle(card.id)
 
         #expect(await env.svc.store.get(card.id)?.turnStatus == .waiting())
     }
@@ -78,6 +80,7 @@ struct ClaudeIdleReconcilerTests {
                 kind: .humanNeedChanged(.permission)
             )]
         )
+        try await env.svc.waitForObservationQueueIdle(card.id)
 
         await env.svc.reconcileClaudeIdle()
 

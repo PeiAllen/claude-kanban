@@ -278,7 +278,7 @@ struct StartupAbortTests {
         async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, parks in capture
         await gate.reached()                                       // provably inside the capture window
         env.sessions.captureGate = nil                             // only the scheduled capture parks
-        await env.svc.testCompleteTurn(t.id)  // idles live, does NOT conclude
+        try await env.svc.testCompleteTurn(t.id)  // idles live, does NOT conclude
         gate.release()
         await reconciled
 

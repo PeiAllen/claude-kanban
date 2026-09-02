@@ -8,6 +8,13 @@ import TestSupport
         await service.store.get(id)?.agentState
     }
 
+    /// `submit` is one-way — `handleHook`/`receivePushedAgentObservation` return as soon as the signal
+    /// is queued, not once it lands. Call after any observation-payload-carrying hook, before reading
+    /// `state(...)`/`turnStatus`/`pendingQuestion`.
+    private func waitForObservation(_ service: OrchestraService, _ id: UUID) async throws {
+        try await service.waitForObservationQueueIdle(id)
+    }
+
     @Test("sessionStart returns the live orientation; compact skips it")
     func sessionStart() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
@@ -54,6 +61,7 @@ import TestSupport
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         let permission: JSONValue = .object([
@@ -65,6 +73,7 @@ import TestSupport
             card.shortId, event: .permission, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: permission
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
         #expect(await state(env.svc, card.id)?.humanNeed == .permission)
 
@@ -72,6 +81,7 @@ import TestSupport
             card.shortId, event: .postToolUse, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.humanNeed == nil)
 
         _ = await env.svc.handleHook(
@@ -84,6 +94,7 @@ import TestSupport
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
 
         let secondPrompt: JSONValue = .object([
@@ -94,6 +105,7 @@ import TestSupport
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: secondPrompt
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         let stop: JSONValue = .object([
@@ -105,6 +117,7 @@ import TestSupport
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: stop
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting(.init(resume: .init())))
     }
 
@@ -128,12 +141,14 @@ import TestSupport
             observedEpoch: epoch,
             raw: .hooksPush(kind: "prompt", payload: prompt)
         )
+        try await waitForObservation(env.svc, card.id)
         _ = try await env.svc.needsInput(ref: card.shortId, question: "same prompt question?")
         await env.svc.receivePushedAgentObservation(
             cardId: card.id,
             observedEpoch: epoch,
             raw: .hooksPush(kind: "stop", payload: prompt)
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
 
         await env.svc.receivePushedAgentObservation(
@@ -141,6 +156,7 @@ import TestSupport
             observedEpoch: epoch,
             raw: .hooksPush(kind: "messagedisplay", payload: prompt)
         )
+        try await waitForObservation(env.svc, card.id)
 
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
         #expect(await env.svc.store.get(card.id)?.pendingQuestion?.text == "same prompt question?")
@@ -166,12 +182,14 @@ import TestSupport
             observedEpoch: epoch,
             raw: .hooksPush(kind: "prompt", payload: firstPrompt)
         )
+        try await waitForObservation(env.svc, card.id)
         _ = try await env.svc.needsInput(ref: card.shortId, question: "old turn question?")
         await env.svc.receivePushedAgentObservation(
             cardId: card.id,
             observedEpoch: epoch,
             raw: .hooksPush(kind: "stop", payload: firstPrompt)
         )
+        try await waitForObservation(env.svc, card.id)
 
         let nextPrompt: JSONValue = .object([
             "session_id": .string("hook-session"),
@@ -182,6 +200,7 @@ import TestSupport
             observedEpoch: epoch,
             raw: .hooksPush(kind: "messagedisplay", payload: nextPrompt)
         )
+        try await waitForObservation(env.svc, card.id)
 
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
         #expect(await env.svc.store.get(card.id)?.pendingQuestion == nil)
@@ -191,6 +210,7 @@ import TestSupport
             observedEpoch: epoch,
             raw: .hooksPush(kind: "stop", payload: nextPrompt)
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .waiting())
     }
 
@@ -249,6 +269,7 @@ import TestSupport
             card.shortId, event: .userPrompt, report: nil, source: nil,
             observedEpoch: epoch, observationPayload: prompt
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
 
         let wrongSession: JSONValue = .object(["session_id": .string("old-session")])
@@ -260,6 +281,7 @@ import TestSupport
             card.shortId, event: .stop, report: nil, source: nil,
             observedEpoch: epoch + 1, observationPayload: prompt
         )
+        try await waitForObservation(env.svc, card.id)
         #expect(await state(env.svc, card.id)?.turnStatus == .running)
     }
 

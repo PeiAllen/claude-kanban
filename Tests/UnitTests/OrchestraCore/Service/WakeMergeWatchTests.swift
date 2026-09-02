@@ -6,21 +6,6 @@ import TestSupport
 @Suite("C2 · conclusion watch (real card state; subscriber; settled-terminal)")
 struct WakeMergeWatchTests {
 
-    /// Provider terminals are accepted only for their exact current turn. This fixture emits a complete
-    /// correlated pair so these wait/conclusion tests exercise ordinary idle behavior rather than the
-    /// missing-identity safety fallback.
-    private func completeCurrentTurn(_ service: OrchestraService, cardID: UUID) async {
-        guard let card = await service.store.get(cardID) else { return }
-        let turnID = UUID().uuidString
-        await service.receiveAgentSignals(
-            cardId: cardID,
-            signals: [
-                .init(sessionEpoch: card.sessionEpoch, turnID: turnID, kind: .turnStarted),
-                .init(sessionEpoch: card.sessionEpoch, turnID: turnID, kind: .turnCompleted()),
-            ]
-        )
-    }
-
     /// Run `body` with a deadline. Returns nil if it did not finish in time — so a LOST conclusion
     /// fails the test instead of suspending it forever (the suite-wide `--parallel` hang this guards).
     /// Backed by TestSupport's yield-based `withDeadline` (no wall-clock sleep in the race).
@@ -303,7 +288,7 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        await completeCurrentTurn(env.svc, cardID: child.id)
+        try await env.svc.testCompleteTurn(child.id)
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
@@ -323,7 +308,7 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        await completeCurrentTurn(env.svc, cardID: child.id)
+        try await env.svc.testCompleteTurn(child.id)
         await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
@@ -341,7 +326,7 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        await completeCurrentTurn(env.svc, cardID: child.id)
+        try await env.svc.testCompleteTurn(child.id)
         await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)

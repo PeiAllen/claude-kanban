@@ -46,6 +46,14 @@ final class StubAdapter: Adapter, @unchecked Sendable {
 
     func models() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
+    /// Claude-shaped (`.stub`, `telemetry: .hooksPush`) gets the same unconditional push-only endpoint
+    /// as `ClaudeCodeAdapter` — permanently, not opt-in, so the ~1,050 unit tests built on `StubAdapter`
+    /// exercise the push-only observation-rebind path for free. Gated on capability, not unconditional:
+    /// `.fileTailStub` (`telemetry: .fileTail`) exists specifically for Codex-shaped (file-tail/polling)
+    /// coverage, and an unconditional `.pushed` would erase that shape.
+    func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
+        capabilities.telemetry == .hooksPush ? .pushed : nil
+    }
     /// Both argv builders emit the model flag from `ctx.model`, like the real adapters
     /// (ClaudeCodeAdapter `--model`, Codex `-m`) — so a test can assert which model a launch actually
     /// went up on. Emitted BEFORE the trailing prompt/seed positional, again like the real ones.

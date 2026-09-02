@@ -158,8 +158,10 @@ extension OrchestraService {
                             for try await raw in AgentObservationIngress(source: current).stream() {
                                 guard let self else { continue }
                                 attempt.markObserved()
-                                // The async sequence retains callback order and awaits each actor apply, so
-                                // a later completion or disconnect cannot overtake an earlier turn start.
+                                // This sequential await is what fixes ENQUEUE order: two overlapping raw
+                                // events would otherwise race to submit in either order, since each hop
+                                // reads the store before it submits. The coordinator's FIFO drain then
+                                // preserves that order — `submit` itself is one-way.
                                 await self.receiveAgentObservation(
                                     cardId: card.id,
                                     identity: identity,
@@ -270,9 +272,11 @@ extension OrchestraService {
         runtime[id]?.pendingAgentSignals = nil
     }
 
-    /// Route every source through the card-owned queue before touching durable state. The apply closure
-    /// re-reads the card after it reaches the front, so two suspended callers can never reduce from the
-    /// same stale snapshot and overwrite each other.
+    /// Route every source through the card-owned queue before touching durable state. `submit` is
+    /// one-way (see `AgentObservationCoordinator`'s doc comment) — ordering comes from its FIFO drain,
+    /// not from a caller blocking on its own submission. The apply closure re-reads the card after it
+    /// reaches the front, so two queued submissions can never reduce from the same stale snapshot and
+    /// overwrite each other.
     func submitAgentSignals(
         _ signals: [AgentSignal],
         cardId: UUID,

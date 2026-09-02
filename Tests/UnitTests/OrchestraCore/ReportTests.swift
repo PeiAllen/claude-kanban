@@ -299,7 +299,7 @@ struct ReportTests {
         (await svc.list().first { $0.id == id })?.humanPaced ?? false
     }
 
-    private func turn(_ kind: AgentSignal.Kind, on task: Task, in service: OrchestraService) async {
+    private func turn(_ kind: AgentSignal.Kind, on task: Task, in service: OrchestraService) async throws {
         let epoch = (await service.store.get(task.id))?.sessionEpoch ?? task.sessionEpoch
         let turnID = UUID().uuidString
         let signals: [AgentSignal]
@@ -320,6 +320,7 @@ struct ReportTests {
             cardId: task.id,
             signals: signals
         )
+        try await service.waitForObservationQueueIdle(task.id)
     }
 
     /// A prompt typed into an idle-WAITING session is a direct human turn and marks the card human-paced;
@@ -335,7 +336,7 @@ struct ReportTests {
         try await env.svc.report(t.id, StatusReport(promptText: "seed echo"))
         #expect(await humanPaced(env.svc, t.id) == false)
         // Once the turn concludes and the card idle-waits, a prompt IS a direct human turn.
-        await turn(.turnCompleted(), on: t, in: env.svc)
+        try await turn(.turnCompleted(), on: t, in: env.svc)
         try await env.svc.report(t.id, StatusReport(promptText: "human follow-up"))
         #expect(await humanPaced(env.svc, t.id) == true)
     }
@@ -346,12 +347,12 @@ struct ReportTests {
     func humanPacedSkipsTheMachineSeedTurn() async throws {
         let (env, t) = try await spawned()      // spawns WITH a prompt → finishLaunch owes a machine turn at this epoch
         let epoch = t.sessionEpoch
-        await turn(.turnCompleted(), on: t, in: env.svc)
+        try await turn(.turnCompleted(), on: t, in: env.svc)
         // Stamped with the launch epoch: this IS the seed's own prompt, even though it lands on the idle wait.
         try await env.svc.report(t.id, StatusReport(promptText: "the machine seed"), observedEpoch: epoch)
         #expect(await humanPaced(env.svc, t.id) == false)
         // Marker consumed → the next prompt (after the turn concludes) is a genuine human turn.
-        await turn(.turnCompleted(), on: t, in: env.svc)
+        try await turn(.turnCompleted(), on: t, in: env.svc)
         try await env.svc.report(t.id, StatusReport(promptText: "a real human follow-up"), observedEpoch: epoch)
         #expect(await humanPaced(env.svc, t.id) == true)
     }
@@ -369,7 +370,7 @@ struct ReportTests {
 
         // A human-paced card handed a seed (a handoff) becomes agent-paced.
         let (env2, t2) = try await spawned()
-        await turn(.turnCompleted(), on: t2, in: env2.svc)
+        try await turn(.turnCompleted(), on: t2, in: env2.svc)
         try await env2.svc.report(t2.id, StatusReport(promptText: "human"))
         #expect(await humanPaced(env2.svc, t2.id) == true)
         let handed = try await env2.svc.resume(t2.id, seed: "handoff context")   // seed → agent-driving

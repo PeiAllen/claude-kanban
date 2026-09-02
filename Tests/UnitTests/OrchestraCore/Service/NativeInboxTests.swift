@@ -17,7 +17,7 @@ struct NativeInboxTests {
         let stored = try #require(await env.svc.store.get(card.id))
         await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
 
-        await env.svc.testSetTurnStatus(card.id, .running)
+        try await env.svc.testSetTurnStatus(card.id, .running)
         try await env.svc.send(card.id, "deliver while running")
 
         try await pollUntil("native sender accepts the queued message") {
