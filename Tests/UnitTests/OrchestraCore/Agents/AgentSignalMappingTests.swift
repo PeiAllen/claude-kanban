@@ -1,4 +1,5 @@
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
 @Suite("Adapter agent-signal mapping")
@@ -190,7 +191,7 @@ struct AgentSignalMappingTests {
     }
 
     @Test("Codex current-thread malformed completion loses observation through the coordinator")
-    func codexMalformedCompletionLosesObservation() async {
+    func codexMalformedCompletionLosesObservation() async throws {
         let adapter = CodexAdapter()
         let context = AgentSignalContext(sessionEpoch: epoch, harnessSessionId: "thread-1")
 
@@ -217,6 +218,8 @@ struct AgentSignalMappingTests {
                 await state.apply($0, epoch: epoch)
             }
 
+            // `submit` is one-way — wait for the coordinator to actually drain before reading state.
+            try await pollUntil("coordinator to finish draining") { await coordinator.isIdle }
             #expect(await state.snapshot() == AgentState(turnStatus: .unavailable))
         }
     }

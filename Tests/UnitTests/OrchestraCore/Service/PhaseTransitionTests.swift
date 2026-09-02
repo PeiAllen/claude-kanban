@@ -263,7 +263,7 @@ struct EpochGuardReportFunnelTests {
 
         // A provider-neutral status signal is fenced by the card generation, not the liveness probe.
         let status = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "b"))
-        await env.svc.testSetTurnStatus(status.id, .waiting())
+        try await env.svc.testSetTurnStatus(status.id, .waiting())
         let s = try #require(await env.svc.store.get(status.id))
         #expect(s.phaseDisplay == .idle)
     }
@@ -278,7 +278,7 @@ struct EpochGuardReportFunnelTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        await env.svc.testSetTurnStatus(card.id, .waiting())
+        try await env.svc.testSetTurnStatus(card.id, .waiting())
         try await pollUntil("the funnel's upsert is delivered") {
             await collector.upserts.contains { $0.id == card.id }
         }
@@ -302,7 +302,7 @@ struct EpochGuardReportFunnelTests {
         let watcherA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wA", repo: repo, branch: "wa"))
         let readOnly = try await readOnlyCard(env, "ro")
         await env.svc.registerWatch(watcherA.id, [readOnly.id])
-        await env.svc.testCompleteTurn(readOnly.id)
+        try await env.svc.testCompleteTurn(readOnly.id)
         let ro = try #require(await env.svc.store.get(readOnly.id))
         #expect(ro.phase == .live(.waiting))
         await yieldBriefly()
@@ -312,7 +312,7 @@ struct EpochGuardReportFunnelTests {
         let watcherB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wB", repo: repo, branch: "wb"))
         let worktree = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wt", repo: repo, branch: "wt"))
         await env.svc.registerWatch(watcherB.id, [worktree.id])
-        await env.svc.testCompleteTurn(worktree.id)
+        try await env.svc.testCompleteTurn(worktree.id)
         await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
         let wt = try #require(await env.svc.store.get(worktree.id))
         #expect(wt.phase == .live(.waiting))      // NOT terminal

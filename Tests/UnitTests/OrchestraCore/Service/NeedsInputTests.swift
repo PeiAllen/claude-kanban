@@ -76,11 +76,16 @@ struct NeedsInputTests {
             cardId: t.id,
             signals: [.init(sessionEpoch: epoch, turnID: "old-turn", kind: .turnStarted)]
         )
+        // `turnStarted`'s own apply clears `pendingQuestion` (a distinct turn start disarms the prior
+        // declaration) — it must land BEFORE `needsInput` writes, or a delayed apply would wipe the
+        // declaration this test is about to make. Submit is one-way, so this needs an explicit wait.
+        try await env.svc.waitForObservationQueueIdle(t.id)
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
         await env.svc.receiveAgentSignals(
             cardId: t.id,
             signals: [.init(sessionEpoch: epoch, turnID: "old-turn", kind: .turnCompleted())]
         )
+        try await env.svc.waitForObservationQueueIdle(t.id)
 
         #expect(await card(env.svc, t.id)?.phase == Phase.live(.waiting))
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // armed, waiting on the human
@@ -91,8 +96,8 @@ struct NeedsInputTests {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")   // declared mid-turn
-        await env.svc.testSetHumanNeed(t.id, .permission)
-        await env.svc.testSetHumanNeed(t.id, nil)
+        try await env.svc.testSetHumanNeed(t.id, .permission)
+        try await env.svc.testSetHumanNeed(t.id, nil)
 
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
@@ -132,7 +137,7 @@ struct NeedsInputTests {
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
 
-        await env.svc.testCompleteTurn(t.id)
+        try await env.svc.testCompleteTurn(t.id)
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
         try await env.svc.report(
             t.id,
@@ -149,7 +154,7 @@ struct NeedsInputTests {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: "mid-turn question?")
-        await env.svc.testSetTurnStatus(t.id, .running)
+        try await env.svc.testSetTurnStatus(t.id, .running)
 
         #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "mid-turn question?")
     }
@@ -161,12 +166,13 @@ struct NeedsInputTests {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
-        await env.svc.testCompleteTurn(t.id)
+        try await env.svc.testCompleteTurn(t.id)
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
         await env.svc.receiveAgentSignals(
             cardId: t.id,
             signals: [.init(sessionEpoch: epoch, turnID: "next-turn", kind: .turnStarted)]
         )
+        try await env.svc.waitForObservationQueueIdle(t.id)
 
         #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
     }
@@ -177,7 +183,7 @@ struct NeedsInputTests {
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-        await env.svc.testSetTurnStatus(t.id, .running)
+        try await env.svc.testSetTurnStatus(t.id, .running)
         let oldPhaseDate = Date(timeIntervalSince1970: 1)
         await env.svc.seedPhase(t.id, .live(.running), phaseChangedAt: oldPhaseDate)
 
@@ -185,6 +191,7 @@ struct NeedsInputTests {
             cardId: t.id,
             signals: [.init(sessionEpoch: epoch, turnID: "next-turn", kind: .turnStarted)]
         )
+        try await env.svc.waitForObservationQueueIdle(t.id)
 
         let after = try #require(await card(env.svc, t.id))
         #expect(after.pendingQuestion == nil)

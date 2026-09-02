@@ -210,19 +210,21 @@ final class PushNotifierTests: XCTestCase {
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))   // .running
         // Launch lands unavailable until current provider observation. Seed the current running snapshot
         // before opening the notifier window so the test's human-need flap is a real state transition.
-        await env.svc.testSetTurnStatus(card.id, .running)
+        try await env.svc.testSetTurnStatus(card.id, .running)
         try await env.svc.registerDevice(DeviceRegistration(token: validToken(7), clientId: "c", prefs: prefs(.always)))
         let mock = MockPushSender()
         let notifier = PushNotifier(service: env.svc, sender: mock)
 
         // Window flap (buffered, all rev ≤ the baseline the snapshot then captures = no human need).
+        // `setAfterSubscribeForTest` takes a non-throwing closure; a genuine timeout here would already
+        // surface as this test's own final `pollUntil` never observing the expected push.
         await notifier.setAfterSubscribeForTest {
-            await env.svc.testSetHumanNeed(card.id, .permission)
-            await env.svc.testSetHumanNeed(card.id, nil)
+            try? await env.svc.testSetHumanNeed(card.id, .permission)
+            try? await env.svc.testSetHumanNeed(card.id, nil)
         }
         // Genuine post-snapshot transition (rev > baseline): human need rises → must push exactly once.
         await notifier.setAfterBaselineForTest {
-            await env.svc.testSetHumanNeed(card.id, .permission)
+            try? await env.svc.testSetHumanNeed(card.id, .permission)
         }
         let run = _Concurrency.Task { await notifier.run() }
         defer { run.cancel() }
