@@ -86,7 +86,10 @@ extension OrchestraService {
             let accepted: Bool
             if let handle = submission.handle {
                 do {
-                    try await handle.sender.send(submission.message.text, timeout: Self.nativeInboxAttemptTimeout)
+                    try await handle.sender.send(
+                        nativeInboxPayload(for: submission.message),
+                        timeout: Self.nativeInboxAttemptTimeout
+                    )
                     accepted = true
                 } catch {
                     accepted = false
@@ -206,5 +209,14 @@ extension OrchestraService {
 
     private func nativeInboxBackoff(after attempt: Int) -> Duration {
         attempt == 1 ? .milliseconds(500) : .seconds(1)
+    }
+
+    /// Card provenance is immutable row metadata, so add it at delivery time without changing the editable
+    /// durable body or the text used to fence retry and acceptance transitions.
+    private func nativeInboxPayload(for message: InboxMessage) -> String {
+        guard case let .card(id, title)? = message.source else { return message.text }
+        let oneLineTitle = title.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let shortID = String(id.uuidString.prefix(6)).lowercased()
+        return "From Card \(oneLineTitle) (\(shortID)):\n\n\(message.text)"
     }
 }

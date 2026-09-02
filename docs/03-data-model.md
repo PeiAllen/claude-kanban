@@ -216,9 +216,11 @@ default; `includeHistory` also returns that bounded history.
 The only stored states are `queued`, `failed`, and `handedOff`. A failed FIFO head deliberately pauses later
 rows until a human retries, edits, or removes it. Editing an unresolved row makes it queued again;
 `handedOff` history is immutable except for removal; and reordering operates only on unresolved rows after
-failed rows are resolved. Source is human-facing provenance — Human, Card, Orchestra, or legacy Unknown —
-not an authorization or delivery guarantee. Neither this store nor its sender owns runtime status,
-`pendingQuestion`, attention, session wakeups, or `wait`.
+failed rows are resolved. Source is provenance — Human, Card, Orchestra, or legacy Unknown — not an
+authorization or delivery guarantee. A Card row adds `From Card <title> (<short id>):` above its body only
+when the native sender submits it; the durable, editable `text` remains bare, and every other source sends
+its body unchanged. Neither this store nor its sender owns runtime status, `pendingQuestion`, attention,
+session wakeups, or `wait`.
 
 ## The trust ledger (T1)
 
