@@ -184,6 +184,24 @@ struct WorktreeRegistryTests {
         #expect(stub.removed.isEmpty)
     }
 
+    /// Depth alone is not ownership. `../<otherRepo>/<theirBranch>` canonicalizes to a path that is
+    /// still two components below the root, so a depth floor admits it — and because the marker is
+    /// keyed on the CANONICAL path, `ensure` would find the other repo's marker and hand repo A a card
+    /// running in repo B's live worktree (or force-remove it on the markerless-clean arm). The path
+    /// must belong to the REQUESTED repo's container, not merely sit deep enough under the root.
+    @Test func test_ensureRejectsLateralAliasIntoAnotherReposContainer() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let victim = try await reg.ensure(repo: "b", branch: "feature", cardId: UUID())   // repo B's live tree
+        let ensuredBefore = stub.ensured.count
+
+        await #expect(throws: OrchestraError.self) {
+            _ = try await reg.ensure(repo: "a", branch: "../b/feature", cardId: UUID())
+        }
+        #expect(stub.ensured.count == ensuredBefore)                     // no checkout cut
+        #expect(stub.removed.isEmpty)                                    // B's tree not removed
+        #expect(FileManager.default.fileExists(atPath: victim.path))     // and still there
+    }
+
     // MARK: - Task 3.4: release() — the single removal policy
 
     @Test func test_releaseNeverRemovesWhileReferenced() async throws {

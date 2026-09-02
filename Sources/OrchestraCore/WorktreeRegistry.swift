@@ -307,7 +307,7 @@ public actor WorktreeRegistry {
     public func ensure(repo: String, branch: String, cardId: UUID, base: String? = nil) async throws -> Worktree {
         let realRepo = try resolver.resolveRepo(repo)
         let wt = manager.path(repo: realRepo, branch: branch)
-        try assertUnderWorktreesRoot(wt)                      // path-escape guard
+        try assertOwnedCardPath(wt, repo: realRepo)           // path-escape + container-identity guard
 
         let dirExists = FileManager.default.fileExists(atPath: wt)
         let marked = markerExists(wt)
@@ -400,9 +400,16 @@ public actor WorktreeRegistry {
             borrows[id] = nil
         }
         persistBorrows()
+        // A CARD's own tree is never a stray. `orphanBorrowPaths` classifies purely on the
+        // `orch-borrow-` basename, which an ordinary branch of that name also produces
+        // (`worktreePath("app", "orch-borrow-main")` == `borrowPath("app", "main")`) — so without this
+        // the boot sweep would force-remove a live card's worktree, uncommitted work and all. Card cwds
+        // are positive evidence we already hold; use them.
+        let cardPaths = Set(cards.filter { !$0.archived }.map { PathResolver.canonical($0.cwd) })
         for repo in Set(cards.filter { $0.origin == .worktree }.map(\.repo)) {
             for stray in manager.orphanBorrowPaths(repo: repo)
-                where isUnderOwnedRoots(stray) && !keptPaths.contains(PathResolver.canonical(stray)) {
+                where isUnderOwnedRoots(stray) && !keptPaths.contains(PathResolver.canonical(stray))
+                    && !cardPaths.contains(PathResolver.canonical(stray)) {
                 try? manager.remove(worktree: stray, force: true)
             }
         }
@@ -435,8 +442,18 @@ public actor WorktreeRegistry {
     private func removeMarker(_ wt: String) { try? FileManager.default.removeItem(atPath: markerFile(wt)) }
 
     // MARK: - path safety
-    private func assertUnderWorktreesRoot(_ p: String) throws {
+    /// The creation-side guard: `p` must be a card path that belongs to THIS repo. Depth alone is not
+    /// ownership — `../<otherRepo>/<theirBranch>` canonicalizes to a path that is still two components
+    /// below the root, and markers are keyed on the CANONICAL path, so a depth-only check would let repo
+    /// A adopt (or force-remove) repo B's live worktree. Requiring a strict descendant of THIS repo's
+    /// container closes that lateral alias; the depth floor still rules out a degenerate container.
+    private func assertOwnedCardPath(_ p: String, repo: String) throws {
         guard isUnderOwnedRoots(p) else { throw OrchestraError.pathNotAllowed(p) }
+        let repoName = (PathResolver.canonical(repo) as NSString).lastPathComponent
+        let container = PathResolver.canonical("\(config.worktreesRoot)/\(repoName)")
+        guard PathResolver.canonical(p).hasPrefix(container.hasSuffix("/") ? container : container + "/") else {
+            throw OrchestraError.pathNotAllowed(p)
+        }
         try resolver.assertAllowed(p)   // defense-in-depth (component-wise `..` collapse)
     }
     /// Owned roots for removal/creation = a PER-CARD entry under `worktreesRoot` (covers `orch-borrow-*`)
@@ -447,9 +464,11 @@ public actor WorktreeRegistry {
     /// `<root>/<repo>/<branch>`, `borrowPath` cuts `<root>/<repo>/orch-borrow-<branch>`), so the depth
     /// check is exact. It matters because both those paths are plain JOINS: a degenerate branch
     /// component collapses them upward — `""` onto the repo's container, `".."` onto the root holding
-    /// EVERY repo — and this is the one predicate gating `ensure`'s checkout AND every forced removal.
-    /// Without the depth floor a blank branch reported the shared container as a stale checkout to
-    /// delete, and `".."` force-removed `worktreesRoot` itself.
+    /// EVERY repo — and this predicate gates `ensure`'s checkout as well as the removals in `release`
+    /// and `sweepOrphanBorrows`. Without the depth floor a blank branch reported the shared container as
+    /// a stale checkout to delete, and `".."` addressed `worktreesRoot` itself (throwing while the root
+    /// is unqueryable by git, but force-removing it on the markerless-and-clean arm).
+    /// It is a FLOOR, not an ownership proof — `assertOwnedCardPath` supplies the identity half.
     private func isUnderOwnedRoots(_ p: String) -> Bool {
         let root = PathResolver.canonical(config.worktreesRoot)
         let rootSlash = root.hasSuffix("/") ? root : root + "/"
