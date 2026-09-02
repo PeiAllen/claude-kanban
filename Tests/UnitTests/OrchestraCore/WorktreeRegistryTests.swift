@@ -148,6 +148,42 @@ struct WorktreeRegistryTests {
     // one root string so this test proves the liveness guard, and the canonicalization is asserted by
     // review of the `PathResolver.canonical` calls.)
 
+    // MARK: - a card worktree is always a FRESH per-branch subdirectory
+
+    /// A blank branch joins to nothing, so `worktreePath` collapses to the repo's SHARED container
+    /// (`<worktreesRoot>/<repoName>/`) — the directory that holds every live worktree of that repo.
+    /// The container is not a checkout, so `isDirty` fails safe and `ensure` reported it as a stale
+    /// half-created tree, telling the operator to delete shared infrastructure. `ensure` must refuse
+    /// the path outright, and must touch nothing on the way out.
+    @Test func test_ensureRejectsBlankBranchContainerPath() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let container = stub.path(repo: "app", branch: "")
+        try FileManager.default.createDirectory(atPath: container, withIntermediateDirectories: true)
+        let sibling = container + "/live-worktree"          // an unrelated card's tree lives here
+        try FileManager.default.createDirectory(atPath: sibling, withIntermediateDirectories: true)
+        stub.setDirty(container, true)                       // an unqueryable container reads as dirty
+
+        await #expect(throws: OrchestraError.pathNotAllowed(container)) {
+            _ = try await reg.ensure(repo: "app", branch: "", cardId: UUID())
+        }
+        #expect(stub.ensured.isEmpty)                        // no checkout cut
+        #expect(stub.removed.isEmpty)                        // and nothing removed
+        #expect(FileManager.default.fileExists(atPath: sibling))
+    }
+
+    /// Same class, one level worse: `..` climbs to `worktreesRoot` itself — the container of EVERY
+    /// repo. The depth guard, not the branch string, is what makes both unrepresentable.
+    @Test func test_ensureRejectsDotDotBranchEscapingToWorktreesRoot() async throws {
+        let (reg, stub, _) = makeRegistry()
+        try FileManager.default.createDirectory(
+            atPath: stub.path(repo: "app", branch: ""), withIntermediateDirectories: true)
+        await #expect(throws: OrchestraError.self) {
+            _ = try await reg.ensure(repo: "app", branch: "..", cardId: UUID())
+        }
+        #expect(stub.ensured.isEmpty)
+        #expect(stub.removed.isEmpty)
+    }
+
     // MARK: - Task 3.4: release() — the single removal policy
 
     @Test func test_releaseNeverRemovesWhileReferenced() async throws {

@@ -439,11 +439,23 @@ public actor WorktreeRegistry {
         guard isUnderOwnedRoots(p) else { throw OrchestraError.pathNotAllowed(p) }
         try resolver.assertAllowed(p)   // defense-in-depth (component-wise `..` collapse)
     }
-    /// Owned roots for removal/creation = under `worktreesRoot` (covers `orch-borrow-*`).
+    /// Owned roots for removal/creation = a PER-CARD entry under `worktreesRoot` (covers `orch-borrow-*`)
+    /// — never the root itself, and never a repo's shared container (`<worktreesRoot>/<repoName>`, the
+    /// directory that holds every live worktree of that repo).
+    ///
+    /// Every card path sits at least two components below the root (`worktreePath` cuts
+    /// `<root>/<repo>/<branch>`, `borrowPath` cuts `<root>/<repo>/orch-borrow-<branch>`), so the depth
+    /// check is exact. It matters because both those paths are plain JOINS: a degenerate branch
+    /// component collapses them upward — `""` onto the repo's container, `".."` onto the root holding
+    /// EVERY repo — and this is the one predicate gating `ensure`'s checkout AND every forced removal.
+    /// Without the depth floor a blank branch reported the shared container as a stale checkout to
+    /// delete, and `".."` force-removed `worktreesRoot` itself.
     private func isUnderOwnedRoots(_ p: String) -> Bool {
         let root = PathResolver.canonical(config.worktreesRoot)
-        let real = PathResolver.canonical(p)
-        return real == root || real.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+        let rootSlash = root.hasSuffix("/") ? root : root + "/"
+        let real = PathResolver.canonical(p)     // collapses `..` and resolves symlinks first
+        guard real.hasPrefix(rootSlash) else { return false }
+        return real.dropFirst(rootSlash.count).split(separator: "/").count >= 2
     }
 
     // MARK: - release (single removal policy)

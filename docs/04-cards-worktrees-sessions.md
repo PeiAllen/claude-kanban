@@ -47,8 +47,9 @@ is no separate stored bit.
 
 **Removal routes through one policy — `release(cardId:cards:force:)`.** It removes the card's tree only
 when **all** of: no sibling still references it, the tree is clean (or `force`), a marker is present
-(`created`), and the path is under the registry's owned roots (`config.worktreesRoot`, which also covers
-`orch-borrow-*` dirs). A missing tree is an idempotent success, never an error, and `release` never
+(`created`), and the path is a per-card entry under the registry's owned roots — at least two components
+below `config.worktreesRoot` (which also covers `orch-borrow-*` dirs), so the root itself and a repo's
+shared container `<worktreesRoot>/<repo>` are never removable. A missing tree is an idempotent success, never an error, and `release` never
 throws in a way that could lose data — every ambiguous case resolves to "keep the tree."
 
 Sibling counts are **computed on demand** from the `[Task]` the caller passes in — there is no stored

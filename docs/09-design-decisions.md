@@ -566,13 +566,29 @@ same file, a compile-time guarantee that nothing else can call a git worktree op
   the marker check and the checkout, so the mailbox alone makes two concurrent same-branch calls run
   one-at-a-time and `git worktree add` fire once. This globally serializes worktree git ops — a
   conservative superset of "per branch" — acceptable for a single-user tool.
-- **Owned roots = under `config.worktreesRoot`.** This single prefix covers ordinary card worktrees and
-  `orch-borrow-*` dirs alike. Both `release` and `sweepOrphanBorrows` gate every removal on
-  `isUnderOwnedRoots`, a stricter check than `PathResolver.assertAllowed` (which also admits
-  `reposRoot`) — so neither path can ever remove outside `worktreesRoot`, even though `manager.remove`'s
-  own `assertAllowed` call alone would permit it. Borrow paths are additionally borrow-derived by
-  construction (`borrowPath` always returns a `worktreesRoot`-rooted path), so the guard is normally a
-  no-op for them; it exists to keep the pledge true by construction, not by convention.
+- **Owned roots = a per-card entry *at least two components below* `config.worktreesRoot`.** The prefix
+  covers ordinary card worktrees and `orch-borrow-*` dirs alike. Both `release` and `sweepOrphanBorrows`
+  gate every removal on `isUnderOwnedRoots`, a stricter check than `PathResolver.assertAllowed` (which
+  also admits `reposRoot`) — so neither path can ever remove outside `worktreesRoot`, even though
+  `manager.remove`'s own `assertAllowed` call alone would permit it. Borrow paths are additionally
+  borrow-derived by construction (`borrowPath` always returns a `worktreesRoot`-rooted path), so the
+  guard is normally a no-op for them; it exists to keep the pledge true by construction, not by
+  convention.
+- **The depth floor is what makes the prefix safe.** "Under `worktreesRoot`" alone also admits the root
+  itself and a repo's shared *container* `<worktreesRoot>/<repo>` — the directory that holds every live
+  worktree of that repo. Neither is a checkout, and neither belongs to any card. Every real card path
+  sits two or more components below the root (`<root>/<repo>/<branch>` and
+  `<root>/<repo>/orch-borrow-<branch>`), so the floor is exact. It is load-bearing because both paths
+  are plain string joins: a degenerate branch component collapses them upward — `""` onto the repo's
+  container, `".."` onto the root that holds every repo. `isUnderOwnedRoots` is the one predicate gating
+  `ensure`'s checkout *and* every forced removal, so the floor closes both directions at once: the
+  registry can neither cut a checkout over shared infrastructure nor delete it.
+- **A worktree card needs `repo` **and** `branch`; `spawn` rejects the half-specified form.** `branch` is
+  optional on the wire (it decodes to `""`), so a caller who passed `repo` + `base` but no `branch` used
+  to address the repo's container and land a dead card whose remediation text named shared
+  infrastructure to delete. `spawn` now fails that input synchronously with `invalidParams`, before any
+  card exists, and points the caller at the two valid shapes — `repo` + `branch`, or `cwd` for a
+  freeform card. The macOS Spawn sheet already enforced the same rule client-side.
 - **Persisted borrows survive a daemon-only crash.** `[borrowerCardId: path]` is written as atomic JSON
   beside the inbox (`Config.borrowsPath`); a fresh registry instance re-reads it on restart, so a live
   borrower's dir can't be mistaken for a stray `orch-borrow-*` dir by the orphan sweep.

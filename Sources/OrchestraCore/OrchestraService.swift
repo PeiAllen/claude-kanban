@@ -431,6 +431,16 @@ public actor OrchestraService {
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything (synchronous fail-fast).
             realRepo = try resolver.resolveRepo(input.repo)
+            // A worktree card is `repo` + `branch` — omit BOTH for a freeform `cwd` card. `branch` is
+            // optional on the wire (it decodes to ""), and `worktreePath` is a plain join, so a
+            // half-specified spawn used to address `<worktreesRoot>/<repoName>/`: the SHARED container
+            // holding every live worktree of that repo. Reject it here, where the caller still gets a
+            // fixable error, instead of letting the card go dead pointing at shared infrastructure.
+            guard !input.branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OrchestraError.invalidParams(
+                    "branch is required for a worktree card — pass `branch` with `repo`, "
+                    + "or pass `cwd` instead for a freeform card")
+            }
             // S2-6: co-located `.worktree` cards sharing one branch/worktree are still permitted (the
             // cwd-keyed archive refcount + worktreeSiblings badge depend on it; full 1:1 enforcement is
             // the separate worktree-coupling design). But every derived parent-card lookup must be
