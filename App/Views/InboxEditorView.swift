@@ -8,9 +8,13 @@ struct InboxEditorView: View {
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
     let task: Task
-    /// Non-nil only for the DEBUG headless snapshot: seeds `messages` and skips the daemon load + the
-    /// scroll view (which ImageRenderer cannot lay out). Nil in the real app.
-    private let preview: [InboxMessage]?
+    /// Rows for a DEBUG screenshot harness, standing in for the daemon. Nil in the real app.
+    private let debugMessages: [InboxMessage]?
+    /// Renders the list as a plain stack instead of a scroll view, because `ImageRenderer` cannot lay
+    /// a `ScrollView` out. Set ONLY by the headless snapshot. A harness driving the REAL window leaves
+    /// it false and gets the real scroll view, arriving on the real (async) schedule — the shipped
+    /// path, and the only one in which this panel's sizing can be judged.
+    private let flattenForRenderer: Bool
 
     @State private var messages: [InboxMessage] = []
     @State private var appendText = ""
@@ -18,11 +22,15 @@ struct InboxEditorView: View {
     @State private var editingId: UUID?
     @State private var editText = ""
     @FocusState private var editorFocused: Bool
+    /// The measured height of the message list, which drives the viewport — see `listViewport`.
+    @State private var contentHeight: CGFloat = 0
 
-    init(task: Task, preview: [InboxMessage]? = nil) {
+    init(task: Task, debugMessages: [InboxMessage]? = nil, flattenForRenderer: Bool = false) {
         self.task = task
-        self.preview = preview
-        if let preview { _messages = State(initialValue: preview) }
+        self.debugMessages = debugMessages
+        self.flattenForRenderer = flattenForRenderer
+        // ImageRenderer draws in one pass, so the headless snapshot cannot wait for a load.
+        if flattenForRenderer, let debugMessages { _messages = State(initialValue: debugMessages) }
     }
 
     private var unresolved: [InboxMessage] { messages.filter { $0.state != .handedOff } }
@@ -34,6 +42,8 @@ struct InboxEditorView: View {
     /// surfaces (the Done popover is 460 x 380) instead of the chip-sized panel it started as.
     private static let panelWidth: CGFloat = 480
     private static let listMaxHeight: CGFloat = 420
+    /// The viewport floor, so a list that is measured late (or not at all) still shows a row.
+    private static let listMinHeight: CGFloat = 76
     /// How many wrapped lines a row shows before it truncates. Unresolved work is what you have to
     /// read to act on it, so it gets the room; handed-off history only has to be recognisable.
     private static let unresolvedLines = 6
@@ -55,22 +65,39 @@ struct InboxEditorView: View {
             if messages.isEmpty {
                 Text("No inbox messages.").font(F.ui(12.5)).foregroundColor(theme.text3)
                     .padding(.vertical, 8)
-            } else if preview != nil {
-                // ImageRenderer cannot lay out a ScrollView, so the snapshot clips at the same cap
-                // the real viewport scrolls at — the shot then shows the popover's true full size.
-                VStack(alignment: .leading, spacing: 6) { messageSections }
-                    .frame(maxHeight: Self.listMaxHeight, alignment: .top).clipped()
+            } else if flattenForRenderer {
+                // The snapshot clips at the same cap the real viewport scrolls at, so the shot still
+                // shows the popover's true full size.
+                messageList.frame(maxHeight: Self.listMaxHeight, alignment: .top).clipped()
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) { messageSections }
-                }
-                .frame(maxHeight: Self.listMaxHeight)
+                ScrollView { messageList.background(heightReader) }
+                    // A ScrollView reports no content-driven ideal height, so a popover sizes itself
+                    // from everything AROUND the list — and the inbox arrives one daemon round trip
+                    // AFTER the popover opens, i.e. while the list is still the empty state. The
+                    // popover kept that opening height and squeezed every message into the leftover
+                    // sliver. Measuring the rows and pinning the viewport to them (capped) gives the
+                    // popover a real height to grow into when the messages land.
+                    .frame(height: min(max(contentHeight, Self.listMinHeight), Self.listMaxHeight))
             }
 
             appendBar
         }
         .padding(14).frame(width: Self.panelWidth)
-        .task { if preview == nil { await reload() } }
+        .task { if !flattenForRenderer { await reload() } }
+    }
+
+    private var messageList: some View {
+        VStack(alignment: .leading, spacing: 6) { messageSections }
+    }
+
+    /// Reports the list's laid-out height back into `contentHeight`. It sits in a `.background`, so it
+    /// measures the rows without ever influencing their layout.
+    private var heightReader: some View {
+        GeometryReader { geo in
+            Color.clear
+                .onAppear { contentHeight = geo.size.height }
+                .onChange(of: geo.size.height) { _, height in contentHeight = height }
+        }
     }
 
     @ViewBuilder private var messageSections: some View {
@@ -215,6 +242,46 @@ struct InboxEditorView: View {
         }
     }
 
+    // MARK: - Debug harness rows
+
+    #if DEBUG
+    /// Rows for the inbox harnesses. Real queued messages are PROMPTS, not labels — paragraph-length
+    /// ones, or a shot cannot show whether the panel is big enough to read what it holds.
+    static func debugRows(cardId: UUID) -> [InboxMessage] {
+        let card = cardId
+        return [
+            InboxMessage(cardId: card,
+                         text: "Review the auth refactor before merging. The token refresh path now "
+                             + "runs through the shared session actor, so check that no call site "
+                             + "still holds the old lock while it awaits.",
+                         state: .queued),
+            InboxMessage(cardId: card, text: "Rebase onto main once the status PR lands.",
+                         state: .queued),
+            InboxMessage(cardId: card,
+                         text: "Retry the unavailable provider — the app server was still starting "
+                             + "when this message went out.",
+                         state: .failed),
+            InboxMessage(cardId: card,
+                         text: "Branch context for the harness: this card owns feat/inbox-size and "
+                             + "its parent is feat/status-rework, so restack before you ship.",
+                         state: .handedOff),
+        ]
+    }
+
+    /// The same rows behind the REAL popover in a live window, when `ORCH_INBOX_MOCK=1`. The headless
+    /// snapshot cannot see how the panel sizes itself inside a popover, so the windowed harness drives
+    /// the shipped path — scroll view, async arrival and all — instead. `ORCH_INBOX_MOCK=many` stacks
+    /// enough rows to overrun the cap, which is the other half of the sizing: the panel must stop
+    /// growing and scroll.
+    static func debugRowsForWindow(cardId: UUID) -> [InboxMessage]? {
+        switch ProcessInfo.processInfo.environment["ORCH_INBOX_MOCK"] {
+        case "1": return debugRows(cardId: cardId)
+        case "many": return (0..<4).flatMap { _ in debugRows(cardId: cardId) }
+        default: return nil
+        }
+    }
+    #endif
+
     private func canMove(_ message: InboxMessage, by delta: Int) -> Bool {
         guard !hasFailed,
               let index = unresolved.firstIndex(where: { $0.id == message.id })
@@ -223,7 +290,16 @@ struct InboxEditorView: View {
         return unresolved.indices.contains(destination)
     }
 
-    private func reload() async { messages = await model.inboxPeek(task.id, includeHistory: true) }
+    private func reload() async {
+        if let debugMessages {
+            // Stand in for the daemon, INCLUDING its latency: the rows must land after the popover
+            // opens, because that ordering is what the panel has to survive.
+            try? await _Concurrency.Task.sleep(for: .milliseconds(300))
+            messages = debugMessages
+            return
+        }
+        messages = await model.inboxPeek(task.id, includeHistory: true)
+    }
 
     private func append() async {
         let text = appendText.trimmed

@@ -275,6 +275,45 @@ snap_hier
 echo "▶ capturing inbox editor…"
 snap "29-inbox"       env ORCH_SNAPSHOT_INBOX="$PWD/$OUT/29-inbox.png" ORCH_SNAP_DARK=1
 snap "30-inbox-light" env ORCH_SNAPSHOT_INBOX="$PWD/$OUT/30-inbox-light.png" ORCH_SNAP_DARK=0
+# 31 is the one that MATTERS for this panel, and the `snap` pair cannot replace it: ImageRenderer
+# never lays out the scroll view, so it cannot see the popover's own sizing — which is where this
+# panel broke (it opened before the rows arrived and then squeezed them into a sliver). This one
+# drives the shipped path: real popover, real scroll view, rows arriving after it opens. Opened with
+# a real `I` keypress, so it needs `keydrive.swift` (and Screen Recording, like every `shoot`).
+shoot_inbox() { # [mock-mode]  — "1" a short list, "many" enough rows to overrun the cap
+  local mock="${1:-1}"
+  local name="31-inbox-popover"; [[ "$mock" == "many" ]] && name="32-inbox-popover-full"
+  [[ -n "$ONLY" && "$name" != $ONLY ]] && return 0
+  HOME="$ISO_HOME" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_INBOX_MOCK="$mock" "$BIN" >/dev/null 2>&1 &
+  local pid=$!
+  SHOT_PID="$pid"
+  sleep 5
+  float_window_for_pid "$pid"
+  sleep 1
+  swift scripts/keydrive.swift keys "$pid" S-i    # the `I` verb opens the inbox editor
+  sleep 2
+  # The popover is its OWN window, so capture every window this pid owns and keep them all.
+  local i=0 wid dims
+  while read -r wid dims; do
+    screencapture -x -o -l"$wid" "$OUT/$name-$i-$dims.png" && echo "  ✓ $OUT/$name-$i-$dims.png"
+    i=$((i+1))
+  done < <(/usr/bin/swift - "$pid" <<'SWIFT'
+import CoreGraphics
+import Foundation
+let want = Int(CommandLine.arguments.dropFirst().first ?? "") ?? -1
+let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+for w in infos where (w[kCGWindowOwnerPID as String] as? Int) == want {
+    let b = w[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+    if let n = w[kCGWindowNumber as String] as? Int, (b["Height"] ?? 0) > 100 {
+        print("\(n) \(Int(b["Width"] ?? 0))x\(Int(b["Height"] ?? 0))")
+    }
+}
+SWIFT
+)
+  kill "$pid" 2>/dev/null || true; SHOT_PID=""
+}
+shoot_inbox
+shoot_inbox many
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
 
