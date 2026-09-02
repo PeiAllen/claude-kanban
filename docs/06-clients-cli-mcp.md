@@ -268,3 +268,6 @@ ephemeral native handle: Claude uses hook-supplied endpoint/token metadata, and 
 app-server peer for `turn/start`. A successful native request changes the row to `handedOff`, meaning only
 that the harness accepted it. Sender attempts are bounded and may retry briefly across a reconnect, but
 they do not create status, wait for a display state, wake/relaunch a session, or claim model-level receipt.
+A card-originated row submits `From Card <title> (<short id>):` above its body through either provider path;
+the header comes from the durable source snapshot while the queued row and its retry/acceptance checks retain
+the bare body. Human, Orchestra, and legacy rows submit their body unchanged.

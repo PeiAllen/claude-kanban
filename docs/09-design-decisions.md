@@ -2445,9 +2445,10 @@ decisions:
 
 - **A channel-neutral operator-relayed header, shared byte-for-byte across both delivery paths.**
   `StopDrain.inboxHeader` says `Message from the user (relayed to you via Orchestra):` (plural when needed).
-  It deliberately says nothing about *how* messages arrive ("turn-end", "hook", "seed") and does not render
-  card-to-card provenance in model-facing text, so the Claude Stop-drain (`compose`) and the Codex resume seed
-  (`HandoffSeed.compose`, the [C3](#shipped-feature-history) claim render) frame the inbox identically — agent-agnostic.
+  It deliberately says nothing about *how* messages arrive ("turn-end", "hook", "seed"), so the Claude
+  Stop-drain (`compose`) and the Codex resume seed (`HandoffSeed.compose`, the
+  [C3](#shipped-feature-history) claim render) frame the inbox identically — agent-agnostic. Current native
+  delivery adds Card provenance separately at its shared submission boundary, as described below.
   This is operator-authorized delivery language, not a claim that the human authored every body. In the
   busy-agent conflict probe, this user-relayed framing was acted on in 6/6 trials, versus 1–3/6 for the old
   inbox framing; the header rides only the inbox portion of a seed, so a pure handoff/fork seed is unchanged.
@@ -2460,11 +2461,10 @@ decisions:
   [`Inbox.claim`](03-data-model.md#the-inbox-store), leasing the fitted prefix and leaving the overflow durable
   for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
-- **A shared send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) uses
-  `StopDrain.maxMessageChars`, reserving the common operator-relayed header and separator, then validates the
-  body before enqueueing. Source metadata never changes that budget because it is deliberately absent from
-  the model delivery string. Put large content in a file in the worktree and reference it instead: the inbox
-  is a nudge channel, not a document transfer.
+- **A shared body cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) validates the
+  durable body against `Inbox.maxMessageChars` before enqueueing. Native Card provenance is derived after
+  persistence, so it is additional to that configured body budget. Put large content in a file in the worktree
+  and reference it instead: the inbox is a nudge channel, not a document transfer.
 
 Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
@@ -2473,11 +2473,11 @@ The same inbox later gained **stored source metadata**. `InboxMessage.source` re
 and external CLI/MCP sends without a card context, **Card** as a durable title/id snapshot from a card bridge, or
 **Orchestra** for daemon-generated/internal nudges (the direct `Inbox.enqueue` default), while remaining optional
 so legacy records still decode. This is structured
-metadata rather than a `From …` text prefix or render-time inference: an edit changes only the body,
+metadata rather than a mutable prefix in stored text or render-time inference: an edit changes only the body,
 persistence carries provenance through daemon restarts, and the snapshot remains stable when a source card
-is renamed or archived. The desktop and iOS inbox editors render that source as `From …`; the Stop-drain and
-resume seed deliberately do not, so the delivery text remains trusted operator-relayed context and no source
-title can reduce the delivery cap. No human-facing surface needs an edit-author history or a live card lookup.
+is renamed or archived. The desktop and iOS inbox editors render that source as `From …`; native delivery
+also sends a Card row as `From Card <title> (<short id>):` followed by its body, while all other sources keep
+their body unchanged. No human-facing surface needs an edit-author history or a live card lookup.
 Source is display provenance, **not authentication**: a local process can set the ambient card id, which is
 acceptable in the single-user local orchestration threat model where every sender is operator-authorized.
 If that threat model becomes adversarial, future work is session-credential-based non-spoofable attribution.

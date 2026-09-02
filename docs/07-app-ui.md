@@ -344,7 +344,8 @@ were removed in favor of it plus the natural-language → MCP delegation path:
   **Retry**; handed-off history is immutable except for **Remove**. Every operation uses the
   [`inbox*` commands](05-command-reference.md#registry-commands) and reloads the projection. Desktop and
   iOS show immutable `From …` provenance — Human, sending Card title plus short id, Orchestra, or legacy
-  Unknown — as human-facing metadata only. Inbox activity never changes `AgentState` or clears
+  Unknown. Card-originated native delivery reuses that Card title and short id as a `From Card …:` header,
+  while its stored row remains editable body text. Inbox activity never changes `AgentState` or clears
   `pendingQuestion`.
 
 **Handoff**, **Fork**, and board **Fan-out** are no longer buttons — those moves are driven by talking to

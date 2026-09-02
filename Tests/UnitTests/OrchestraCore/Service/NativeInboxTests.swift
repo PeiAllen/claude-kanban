@@ -27,6 +27,55 @@ struct NativeInboxTests {
         #expect(await env.svc.inbox.history(card.id).map(\.text) == ["deliver while running"])
     }
 
+    @Test("a card-originated row includes its source in the native payload but retains its editable body")
+    func rendersCardSourceOnlyAtTheDeliveryBoundary() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-source")
+        )
+        let sender = RecordingNativeInboxSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
+        let senderID = try #require(UUID(uuidString: "12345678-1234-5678-90AB-CDEF12345678"))
+
+        try await env.svc.send(
+            card.id,
+            "please check the diff",
+            sender: .card(id: senderID, title: "coordinate-review")
+        )
+
+        try await pollUntil("native sender receives the card provenance header") {
+            sender.messages == ["From Card coordinate-review (123456):\n\nplease check the diff"]
+        }
+        let delivered = try #require(await env.svc.inbox.history(card.id).first)
+        #expect(delivered.text == "please check the diff")
+        #expect(delivered.source == .card(id: senderID, title: "coordinate-review"))
+    }
+
+    @Test("a card title cannot split the native provenance header")
+    func flattensMultilineCardTitleInNativePayload() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "native-source-title")
+        )
+        let sender = RecordingNativeInboxSender()
+        let stored = try #require(await env.svc.store.get(card.id))
+        await env.svc.installNativeInboxSenderForTest(card: stored, sender: sender)
+        let senderID = try #require(UUID(uuidString: "12345678-1234-5678-90AB-CDEF12345678"))
+
+        try await env.svc.send(
+            card.id,
+            "please check the diff",
+            sender: .card(id: senderID, title: "coordinate\nreview")
+        )
+
+        try await pollUntil("native sender receives a one-line provenance header") {
+            sender.messages == ["From Card coordinate review (123456):\n\nplease check the diff"]
+        }
+    }
+
     @Test("three rejected submissions fail the FIFO head until its owner retries it")
     func failsAfterThreeAttemptsThenRetriesInFIFOOrder() async throws {
         let clock = TestClock()
