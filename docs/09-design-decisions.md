@@ -183,7 +183,8 @@ blocking Stop, or establishes a different prompt as a distinct turn when no turn
 queued input whose early `UserPromptSubmit` retained the prior prompt id. A terminal event without
 required current identity fails closed to unavailable, while a positively stale terminal is ignored.
 Because Ctrl-C emits no terminal hook, and Claude has no snapshot-on-bind, one global `claude agents
---json` snapshot — firing almost immediately after boot, then every ten seconds — may move an exact,
+--json` snapshot — firing right after boot recovery adopts every live card, then every ten seconds — may
+move an exact,
 unchanged, human-unblocked Claude session from running OR unavailable to waiting; it never promotes on
 a busy result, since a busy card already self-heals from its own next hook.
 

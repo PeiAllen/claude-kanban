@@ -251,7 +251,8 @@ observable. A non-`hooksPush` metadata input (for example a
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
 
 Claude omits `Stop` on Ctrl-C, and has no snapshot-on-bind after a daemon restart. The daemon therefore
-runs one global, non-overlapping `claude agents --json` snapshot — firing almost immediately after boot,
+runs one global, non-overlapping `claude agents --json` snapshot — firing right after boot recovery
+adopts every live card,
 then every ten seconds — while an exact Claude session remains locally running OR unavailable, with no
 provider human gate. An `idle` result becomes waiting only if the Card epoch, provider session,
 lifecycle, exact turn status, and observation generation are all unchanged after the subprocess returns.
@@ -349,7 +350,8 @@ from a subagent, without letting subagent activity mutate the main turn. Claude 
 read from transcripts or replayed after daemon restart, so a card enters (or a restart leaves it in)
 `unavailable` until the next current-session hook. The same global idle snapshot that repairs a
 hook-silent Ctrl-C also carries an `unavailable` card to `waiting` once the provider confirms it idle —
-firing almost immediately after boot, then on its normal ten-second cadence — but it never promotes on
+firing right after boot recovery adopts every live card, then on its normal ten-second cadence — but it
+never promotes on
 a `busy` result: a busy card already self-heals from its own next hook, and promoting here would leave
 no correlated turn id for that hook's eventual Stop to match.
 

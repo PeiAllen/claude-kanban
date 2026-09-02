@@ -56,12 +56,35 @@ _Concurrency.Task { await pushNotifier.run() }
 
 // Reboot/crash recovery — fired async so a slow revival never blocks the daemon coming up. Boot ORDER
 // (PR4b): orphan-scratch sweep → one-time marker migration → phase reconciliation (folds the old
-// recoverSessions; also wires corrupt-store conservative mode) → orphan-borrow sweep → watch-registry
-// reload (delivers conclusions for children terminal-at-reload) → remote watches → merge-request nudges.
+// recoverSessions; also wires corrupt-store conservative mode) → Claude-idle first snapshot (below,
+// causally AFTER adoption, not just after a fixed daemon-start delay) → orphan-borrow sweep →
+// watch-registry reload (delivers conclusions for children terminal-at-reload) → remote watches →
+// merge-request nudges.
 _Concurrency.Task {
     await service.sweepOrphanScratch()
     await service.stampMigratedWorktreeMarkersOnce()   // ONE-TIME (sentinel-gated) marker migration
     await service.reconcilePhasesAtBoot()  // re-drive stranded phases; revive .live cards; conservative mode
+    // Claude has no snapshot-on-bind after a restart (Codex restores its state from its attach response
+    // instead), so without this a card left `.unavailable` by boot adoption sits that way until a human
+    // happens to prompt it. This line is reached only once `reconcilePhasesAtBoot()` above has fully
+    // returned, so every live card's boot-adoption invalidate/reconcile signal has already been submitted
+    // into its own `AgentObservationCoordinator` FIFO (submit's append completes before its caller's
+    // `await` returns) — a causal guarantee, not a race against how long boot recovery happens to take.
+    // The `claudeIdleFirstPollDelay` sleep AFTER that point is a settling delay, not a head start: each
+    // boot-adoption invalidate's `transition()` reentrantly resubmits once through `reconcileAgentObservation`
+    // (see `AgentObservationCoordinator`'s doc comment for why), and that resettles in microseconds of pure
+    // actor scheduling — independent of board size — comfortably inside this delay. A chained call with NO
+    // settling delay here was tried and reverted: it lands inside that resettling window often enough to
+    // make the first heal flaky (never wrong, just skipped until the next tick).
+    try? await _Concurrency.Task.sleep(for: .seconds(service.claudeIdleFirstPollDelay))
+    await service.reconcileClaudeIdle()
+    // Steady cadence from here on, same generation/session/exact-status fences as the first call.
+    _Concurrency.Task {
+        while true {
+            try? await _Concurrency.Task.sleep(for: .seconds(service.claudeIdlePollInterval))
+            await service.reconcileClaudeIdle()
+        }
+    }
     await service.reconcileTranscriptMediaAtBoot()  // retain only current media for non-archived cards
     await service.sweepOrphanBorrows()     // O3: prune orch-borrow-* worktrees a crashed borrow left behind
     await service.sweepCardFiles()         // reap orphaned per-card launch-config files (backlog + crash residue)
@@ -78,21 +101,6 @@ _Concurrency.Task {
         try? await _Concurrency.Task.sleep(for: .seconds(service.reconcilePollInterval))
         await service.reconcile()
         await service.pollTelemetry()   // tail fileTail (Codex) rollouts → parse → report
-    }
-}
-
-// Claude hooks have no Ctrl-C terminal event, and no snapshot-on-bind for a card left `.unavailable`
-// by a restart (Codex restores its state from its attach response instead). One global provider
-// snapshot repairs both: the FIRST tick fires almost immediately (`claudeIdleFirstPollDelay`) so a
-// restart heals fast rather than sitting `.unavailable` until a human happens to prompt it; every tick
-// after repeats the same snapshot at `claudeIdlePollInterval`, so a later Ctrl-C also heals within one
-// interval. The service coalesces overlapping calls and otherwise leaves hook state untouched.
-_Concurrency.Task {
-    var delay = service.claudeIdleFirstPollDelay
-    while true {
-        try? await _Concurrency.Task.sleep(for: .seconds(delay))
-        delay = service.claudeIdlePollInterval
-        await service.reconcileClaudeIdle()
     }
 }
 

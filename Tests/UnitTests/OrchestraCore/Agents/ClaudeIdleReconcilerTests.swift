@@ -192,6 +192,33 @@ struct ClaudeIdleReconcilerTests {
         #expect(env.svc.claudeIdleFirstPollDelay > 0)
         #expect(env.svc.claudeIdleFirstPollDelay < env.svc.claudeIdlePollInterval)
     }
+
+    @Test("reconcileClaudeIdle heals once boot adoption's signal has fully drained — the causal ordering main.swift now relies on")
+    func healsAfterBootAdoptionSettles() async throws {
+        // main.swift's settling delay stands in for `waitForObservationQueueIdle` here: both give the
+        // boot-adoption invalidate's reentrant identity-rebuild resubmit (see `AgentObservationCoordinator`'s
+        // doc comment) time to fully apply before the first idle-heal tick reads the card. This test proves
+        // the ordering works once that settling has happened — no wall-clock sleep needed to prove it.
+        let original = TestEnv.make()
+        let card = try await runningCard(original)   // `.running` right before the simulated restart
+        let sessionID = try #require(card.agentSessionId)
+        let epoch = card.sessionEpoch
+
+        let proc = FakeProc()
+        proc.on([original.adapter.bin, "agents", "--json"]) { _ in
+            .init(stdout: #"[{"sessionId":"\#(sessionID)","status":"idle"}]"#, stderr: "", exitCode: 0)
+        }
+        // A fresh service over the same on-disk store, empty in-memory runtime — simulates the restart.
+        let restarted = TestEnv.remake(base: original.base, proc: proc)
+        restarted.sessions.setStampedEpoch(card.id, epoch)
+
+        await restarted.svc.reconcilePhasesAtBoot()
+        try await restarted.svc.waitForObservationQueueIdle(card.id)   // the settling delay's test analog
+        await restarted.svc.reconcileClaudeIdle()
+        try await restarted.svc.waitForObservationQueueIdle(card.id)
+
+        #expect(await restarted.svc.store.get(card.id)?.turnStatus == .waiting())
+    }
 }
 
 private typealias ReturnType = (

@@ -142,7 +142,8 @@ Claude's main-session hooks supply those turn edges. Exact-prompt `MessageDispla
 activity reopens a prompt after a blocking Stop; when no turn is active, activity carrying a different
 prompt id establishes the distinct turn whose queued `UserPromptSubmit` edge was not observable. Claude
 emits no terminal hook for Ctrl-C, and has no snapshot-on-bind after a daemon restart, so one global
-`claude agents --json` snapshot — firing almost immediately after boot, then every ten seconds — may
+`claude agents --json` snapshot — firing right after boot recovery adopts every live card, then every
+ten seconds — may
 repair an unchanged, human-unblocked `running` OR `unavailable` session to `waiting`; missing, busy,
 failed, or superseded observations do nothing. Codex uses only its app-server thread/turn stream.
 

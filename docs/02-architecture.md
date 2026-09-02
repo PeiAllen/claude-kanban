@@ -444,7 +444,8 @@ Claude accepts only prompt/session-correlated observations: delayed observations
 cannot change the main turn, while subagent permission/input hooks still roll up to the card's aggregate
 human need. A missing terminal identity fails closed to `unavailable`, and an older event is ignored.
 Because Claude emits no terminal hook on Ctrl-C, and has no snapshot-on-bind after a daemon restart, one
-global non-overlapping snapshot — firing almost immediately after boot, then every ten seconds — runs
+global non-overlapping snapshot — firing right after boot recovery adopts every live card, then every
+ten seconds — runs
 while an eligible Claude card remains `running` or `unavailable`. It can apply only an exact-session,
 unchanged-status, unchanged-generation `running`/`unavailable` → `waiting`; it never creates
 `running`/`unavailable`, changes `humanNeed`, or repairs `waiting`.
