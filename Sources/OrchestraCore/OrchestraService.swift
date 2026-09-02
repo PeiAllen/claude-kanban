@@ -177,6 +177,25 @@ public actor OrchestraService {
     /// Poll cadence the reconciler assumes (main.swift's loop). Also the unit the N=3 launch-readiness
     /// fallback's `threshold × interval < sessionLaunchTimeout` inequality is stated in.
     public nonisolated let reconcilePollInterval: TimeInterval = 2
+    /// main.swift sleeps this long, AFTER `reconcilePhasesAtBoot()` has fully returned, before the FIRST
+    /// `reconcileClaudeIdle` tick — not the full `claudeIdlePollInterval` — so a card left `.unavailable`
+    /// by a daemon restart (Claude has no snapshot-on-bind) heals almost immediately instead of waiting a
+    /// full interval. That ordering is causal, not a race against boot's own duration: by the time
+    /// `reconcilePhasesAtBoot()` returns, every live card's boot-adoption invalidate/reconcile signal has
+    /// already been submitted into its own `AgentObservationCoordinator` FIFO (a `submit` call's append
+    /// completes before its caller's `await` returns), regardless of how large the board is or how long
+    /// boot recovery took. This delay is not zero, though: each of those invalidate signals' `transition()`
+    /// reentrantly resubmits once through `reconcileAgentObservation` (see `AgentObservationCoordinator`'s
+    /// doc comment for why), and that resettles in microseconds of pure actor scheduling — independent of
+    /// board size — comfortably inside this delay. Two designs were tried and reverted before this one:
+    /// calling `reconcileClaudeIdle` chained onto boot with NO settling delay (lands inside that
+    /// resettling window often enough to flake), and sleeping this same delay from daemon START rather
+    /// than from boot-adoption completion (races boot's own duration on a large/slow-booting board instead
+    /// of the reentrant resettle).
+    public nonisolated let claudeIdleFirstPollDelay: TimeInterval = 2
+    /// Steady-state cadence for the same loop — unrelated to the daemon-restart case above (see
+    /// `reconcileClaudeIdle`'s doc comment for the hook-silent Ctrl-C gap this cadence repairs).
+    public nonisolated let claudeIdlePollInterval: TimeInterval = 10
 
     public init(config: Config,
                 store: TaskStore? = nil,

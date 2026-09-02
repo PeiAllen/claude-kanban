@@ -55,8 +55,10 @@ typed `hook` RPC back over the same socket), while Codex is `fileTail` (dotted a
 model, and display detail; they do not decide Codex session identity or live turn status.
 
 Provider observation is a separate seam. Claude's structured hooks carry the current session and prompt
-identity; a narrow global `claude agents --json` snapshot repairs only a hook-silent Ctrl-C left locally
-running. Codex's launch-local app-server owns both its thread identity and runtime state. An unbound
+identity; a global `claude agents --json` snapshot repairs a hook-silent Ctrl-C left locally running, and
+also carries a card left `unavailable` by a daemon restart (Claude has no snapshot-on-bind) to `waiting`
+once the provider confirms it idle. Codex's launch-local app-server owns both its thread identity and
+runtime state — it needs no such snapshot, since its attach response restores state directly. An unbound
 observer reads the app-server's loaded threads and accepts only one exact-cwd, launch-scoped root,
 non-ephemeral candidate; otherwise it waits for a matching `thread/started`. Once bound,
 `thread/resume` reconciles the snapshot and
@@ -441,9 +443,12 @@ reducer. Hook responses carry SessionStart orientation only:
 Claude accepts only prompt/session-correlated observations: delayed observations and subagent activity
 cannot change the main turn, while subagent permission/input hooks still roll up to the card's aggregate
 human need. A missing terminal identity fails closed to `unavailable`, and an older event is ignored.
-Because Claude emits no terminal hook on Ctrl-C, one global non-overlapping snapshot runs every ten seconds
-only while an eligible Claude card remains `running`. It can apply only exact-session, unchanged-generation
-`running → waiting`; it never creates `running`/`unavailable`, changes `humanNeed`, or repairs `waiting`.
+Because Claude emits no terminal hook on Ctrl-C, and has no snapshot-on-bind after a daemon restart, one
+global non-overlapping snapshot — firing right after boot recovery adopts every live card, then every
+ten seconds — runs
+while an eligible Claude card remains `running` or `unavailable`. It can apply only an exact-session,
+unchanged-status, unchanged-generation `running`/`unavailable` → `waiting`; it never creates
+`running`/`unavailable`, changes `humanNeed`, or repairs `waiting`.
 
 Codex uses the hook channel for SessionStart orientation, while its turn state and provider-human need come
 only from a launch-local app-server observer. The rollout tail is metadata only: it discovers the session

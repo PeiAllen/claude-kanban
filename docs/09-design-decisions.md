@@ -182,8 +182,11 @@ only session- and turn-correlated hook evidence. Exact main activity reactivates
 blocking Stop, or establishes a different prompt as a distinct turn when no turn is active. This covers
 queued input whose early `UserPromptSubmit` retained the prior prompt id. A terminal event without
 required current identity fails closed to unavailable, while a positively stale terminal is ignored.
-Because Ctrl-C emits no terminal hook, one global ten-second `claude agents --json` snapshot may only move
-an exact, unchanged, human-unblocked Claude session from running to waiting; every other result is silent.
+Because Ctrl-C emits no terminal hook, and Claude has no snapshot-on-bind, one global `claude agents
+--json` snapshot — firing right after boot recovery adopts every live card, then every ten seconds — may
+move an exact,
+unchanged, human-unblocked Claude session from running OR unavailable to waiting; it never promotes on
+a busy result, since a busy card already self-heals from its own next hook.
 
 `StatusReport` is metadata/lifecycle-only; it has no `run` or `turnCompleted` field. Decode-time
 compatibility preserves the live lifecycle while old status shapes and `activeRequests` become unavailable,
