@@ -491,6 +491,8 @@ Codex, and every later agent through one core seam). The three origins resolve d
 `repoRegistration`), a **scratch** dir Orchestra made empty is auto-trusted (`orchestra`) but
 **demotes to `needsGrant` if a foreign repo is later cloned into it** (a `.git` appears — external code
 is no longer Orchestra's to auto-trust), and a **borrowed** dir is `.needsGrant` until a human grants it.
+`trustCwd == false` adds no native grant, but it does not erase a provider's pre-existing user grant:
+Claude leaves its setting untouched and Codex omits the project key from its layered configuration.
 Filling a `needsGrant` is a **human decision, never the agent's**: an untrusted card still spawns — but
 **sandboxed** (writes blocked), with an actionable activity telling the human how to grant — and the
 grant flows through a `TrustGrantResolver` seam whose production `SurfaceGrantResolver` approves only
@@ -1897,8 +1899,8 @@ default permissioning, a read-only card gets the `-s read-only -a never` preset 
 **discovered** session id (it can't be seeded, so `sessionInfo` reads the newest native Codex
 `~/.codex/sessions/**/rollout-*.jsonl` back). B1 originally isolated its home with `env["CODEX_HOME"]` and
 wrote trust into `config.toml`; that global-file approach was later superseded by a per-launch profile file
-(`-p`), which preserves Codex's native home and explicitly applies both trusted and untrusted states without
-reading the `TrustLedger`. **B2** makes its
+(`-p`), which preserves Codex's native home and applies an explicit trusted core grant without
+overwriting a user's native trust decision when core has not granted it. **B2** makes its
 telemetry live end-to-end, and its two decisions are the interesting part:
 
 - **The daemon owns the transport; the adapter owns the parse.** Codex's TUI pushes no hook events but
@@ -2065,6 +2067,7 @@ see [the trust ledger](03-data-model.md#the-trust-ledger-t1)) and `OrchestraServ
 which maps a card's origin to a `TrustDecision` (`.trusted`/`.needsGrant`) and rides it onto the launch as
 `AdapterContext.trustCwd` — moving trust resolution into the **core** so each adapter merely *applies* the
 bool (Claude's `hasTrustDialogAccepted`, Codex's `config.toml` `trust_level`) and never reads the ledger.
+`false` deliberately omits a native change: it cannot erase a user's already accepted provider directory.
 **T2** then filled the `needsGrant` gap with the **grant surfaces**, and its decisions are the interesting
 part:
 
@@ -2083,8 +2086,10 @@ part:
   `trust` Command auto-surfaces as an MCP tool (registry↔MCP parity stays green; `"trust"` was added to
   `CommandsTests.expected`, the C2 full-set guard), and the CLI verb is the one hand-wired surface.
 - **Untrusted spawn is actionable, never blocking.** A `needsGrant` card still spawns — **sandboxed**
-  (`trustCwd == false`) — and emits a `.warning` activity naming the cwd and the exact `orchestra trust`
-  command to grant it. And `resolveTrust` **demotes a scratch dir that a foreign repo was cloned into**
+  (with no Orchestra provider pre-grant) — and emits a `.warning` activity naming the cwd and the exact
+  `orchestra trust` command to grant it. A pre-existing provider-native trust decision remains intact, so
+  Claude and Codex have the same behavior for an already accepted directory. And `resolveTrust` **demotes
+  a scratch dir that a foreign repo was cloned into**
   (a `.git` present) to borrowed semantics, so external code is never silently auto-trusted.
 
 Automated coverage uses a **`StubGrantResolver`** only (approve/deny fixtures) — the live
@@ -2170,7 +2175,7 @@ global files. The current design keeps the provider boundary explicit:
   sections into one `developer_instructions` value. Core never branches on a provider, and adapters
   choose only their native packaging surface.
 - **Codex is launch scoped through a per-launch profile FILE, not inline `-c`.** The first cut passed the
-  hooks, the trusted/untrusted project value, and the shared developer instructions as repeated `-c`
+  hooks, a trusted project grant when core supplied one, and the shared developer instructions as repeated `-c`
   overrides on the launch argv. That regressed every Codex card to a **`.spawnFailed` — "command too long"**
   death before it reached waiting: the developer instructions alone are ~16KB, and a session is created via
   `tmux new-session … -- codex …`, which packs the whole argv into a fixed ~16KB client→server buffer and

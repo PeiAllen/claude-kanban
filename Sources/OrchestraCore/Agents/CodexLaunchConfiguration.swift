@@ -70,8 +70,8 @@ enum CodexLaunchConfiguration {
     }
 
     /// Values the app-server itself must load. Remote TUI thread parameters forward model, permissions,
-    /// and developer instructions, but they intentionally do not forward hooks, project trust, or MCP
-    /// server tables, so those compact values are repeated on the server command line.
+    /// and developer instructions, but they intentionally do not forward hooks, an explicit core trust
+    /// grant, or MCP server tables, so those compact values are repeated on the server command line.
     private static func serverConfigurationFlags(context: AdapterContext, agentId: String) -> [String] {
         var overrides: [String] = []
         if let hooks = HooksRenderer.codexHooks(orchestraBin: context.orchestraBin, agentId: agentId) {
@@ -81,8 +81,9 @@ enum CodexLaunchConfiguration {
             }
         }
 
-        let trust = context.trustCwd ? "trusted" : "untrusted"
-        overrides.append("projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level=\(TOMLOverride.string(trust))")
+        if context.trustCwd {
+            overrides.append("projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level=\(TOMLOverride.string("trusted"))")
+        }
         overrides.append("mcp_servers.orchestra.command=\(TOMLOverride.string(context.orchestraMCPBin))")
         overrides.append("mcp_servers.orchestra.args=[]")
         overrides.append("mcp_servers.orchestra.default_tools_approval_mode=\(TOMLOverride.string("approve"))")
@@ -92,10 +93,10 @@ enum CodexLaunchConfiguration {
         return overrides.flatMap { ["-c", $0] }
     }
 
-    /// The profile body as TOML: the SAME hooks, per-project trust, and developer instructions the launch
-    /// used to inline via `-c`, now written to a file. Each former `-c key=value` becomes one `key = value`
-    /// line — dotted keys are valid TOML and the RHS is already TOML from `TOMLOverride`. Always non-empty
-    /// (trust is always set), so a written profile is never a no-op file `-p` would fail to layer.
+    /// The profile body as TOML: the SAME hooks, explicit core trust grant, and developer instructions the
+    /// launch used to inline via `-c`, now written to a file. Each former `-c key=value` becomes one `key = value`
+    /// line — dotted keys are valid TOML and the RHS is already TOML from `TOMLOverride`. An untrusted
+    /// context omits the project key, preserving any native Codex decision for that directory.
     static func profileTOML(context: AdapterContext, agentId: String) -> String {
         var lines: [String] = [ownershipMarker]   // first line: proves Orchestra authorship to the GC sweep
 
@@ -108,8 +109,9 @@ enum CodexLaunchConfiguration {
             }
         }
 
-        let trust = context.trustCwd ? "trusted" : "untrusted"
-        lines.append("projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level = \(TOMLOverride.string(trust))")
+        if context.trustCwd {
+            lines.append("projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level = \(TOMLOverride.string("trusted"))")
+        }
 
         if let instructions = AgentGuidance.developerInstructions(for: agentId) {
             lines.append("developer_instructions = \(TOMLOverride.string(instructions))")

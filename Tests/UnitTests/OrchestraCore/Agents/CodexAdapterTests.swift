@@ -169,6 +169,7 @@ struct CodexAdapterArgvTests {
                                            $0.contains("/abs/orchestra-mcp") })
         #expect(plan.serverArgv.contains { $0.contains("mcp_servers.orchestra.disabled_tools=") &&
                                            $0.contains("exec") })
+        #expect(!plan.serverArgv.contains { $0.contains(".trust_level=") })
         #expect(!plan.serverArgv.contains { $0.contains("developer_instructions") })
         #expect(adjacent(plan.clientArgv, "--remote", "unix:///runtime/codex-card.sock"))
         #expect(adjacent(plan.clientArgv, "-C", "/wt/with spaces"))
@@ -177,7 +178,7 @@ struct CodexAdapterArgvTests {
         #expect(testAdapter.start(ctx) == plan.argv)
     }
 
-    @Test("start and resume select the same profile file carrying the scoped hooks, trust, and instructions")
+    @Test("start and resume select the same profile file without shadowing untrusted native project trust")
     func launchScopedConfigIsSharedByStartAndResume() throws {
         let cwd = "/wt/with \"quote\" and \\ slash"
         let ctx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: "sess-9", prompt: "go",
@@ -193,7 +194,7 @@ struct CodexAdapterArgvTests {
         #expect(!resume.argv.contains("-c"))
 
         let lines = start.lines
-        #expect(lines.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level = \"untrusted\""))
+        #expect(!lines.contains { $0.contains(".trust_level") })
         #expect(lines.contains { $0.hasPrefix("hooks.SessionStart = ") && $0.contains("_report --event session --agent codex") })
         #expect(!lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") })
         #expect(!lines.contains { $0.hasPrefix("hooks.Stop = ") })
@@ -217,12 +218,16 @@ struct CodexAdapterArgvTests {
         #expect(result.lines.contains("disabled_tools = [\"exec\"]"))
     }
 
-    @Test("trust is explicitly trusted or untrusted in every Codex launch's profile")
-    func trustOverrideAlwaysReflectsContext() throws {
+    @Test("trusted Codex launches explicitly set project trust in both configuration surfaces")
+    func trustedContextSetsProjectTrust() throws {
         let trusted = try profile(AdapterContext(cwd: "/wt", trustCwd: true))
-        let untrusted = try profile(AdapterContext(cwd: "/wt", sessionId: "s", trustCwd: false), resume: true)
         #expect(trusted.lines.contains("projects.\"/wt\".trust_level = \"trusted\""))
-        #expect(untrusted.lines.contains("projects.\"/wt\".trust_level = \"untrusted\""))
+
+        let context = AdapterContext(cwd: "/wt", trustCwd: true,
+                                     observationEndpoint: .unixSocket(path: "/runtime/codex-card.sock"))
+        let launch = try #require(CodexLaunchConfiguration.appServerLaunch(
+            binary: "codex", context: context, agentId: "codex", clientArguments: [], positional: []))
+        #expect(launch.serverArgv.contains("projects.\"/wt\".trust_level=\"trusted\""))
     }
 
     @Test("the launch selects a per-cwd `-p` profile, deterministic and free of the 16KB inline payload")
