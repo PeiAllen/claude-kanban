@@ -250,11 +250,13 @@ observable. A non-`hooksPush` metadata input (for example a
 `fileTail` line) returns `nil` — Claude has no tail transport. See
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
 
-Claude omits `Stop` on Ctrl-C. The daemon therefore runs one global, non-overlapping
-`claude agents --json` snapshot every ten seconds only while an exact Claude session remains locally
-running with no provider human gate. An `idle` result becomes waiting only if the Card epoch, provider
-session, lifecycle, and observation generation are unchanged after the subprocess returns. Busy, missing,
-malformed, failed, or superseded results are no-ops; the snapshot never creates unavailable or running.
+Claude omits `Stop` on Ctrl-C, and has no snapshot-on-bind after a daemon restart. The daemon therefore
+runs one global, non-overlapping `claude agents --json` snapshot — firing almost immediately after boot,
+then every ten seconds — while an exact Claude session remains locally running OR unavailable, with no
+provider human gate. An `idle` result becomes waiting only if the Card epoch, provider session,
+lifecycle, exact turn status, and observation generation are all unchanged after the subprocess returns.
+Busy, missing, malformed, failed, or superseded results are no-ops; the snapshot never creates
+unavailable or running.
 
 ### The Codex adapter
 

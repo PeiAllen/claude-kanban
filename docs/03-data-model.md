@@ -347,9 +347,10 @@ Claude main-prompt `MessageDisplay` and `PreToolUse` observations are normalized
 coordinator keeps exact same-prompt continuation activity within the existing turn, but converts a different
 identity observed while no turn is active into `turnStarted`, which retires prior detail and
 `pendingQuestion`. A global provider snapshot may
-submit a waiting reconciliation only for an exact Claude session that stayed running with the same
-in-memory observation generation throughout the subprocess call; the generation is a correlation fence,
-not a second status copy.
+submit a waiting reconciliation only for an exact Claude session that stayed running OR unavailable — the
+same status, not just an eligible one — with the same in-memory observation generation throughout the
+subprocess call; the generation is a correlation fence, not a second status copy. The `unavailable` case
+also covers a card a daemon restart left with no snapshot-on-bind, so this same fence heals it too.
 
 For a fresh Codex launch, the structured observer may start while `agentSessionId` is nil. It makes one
 read-only pass over the app-server's loaded thread ids and `thread/read` snapshots, scoped by exact cwd and

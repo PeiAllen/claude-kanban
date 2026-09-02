@@ -5,6 +5,12 @@ private struct ClaudeIdleCandidate: Sendable {
     let sessionEpoch: Int
     let harnessSessionId: String
     let observationGeneration: UInt64
+    /// Captured at scan time; the recheck requires an EXACT match, not just membership in
+    /// `{.running, .unavailable}`. The generation counter bumps at signal SUBMIT, not at apply, so a
+    /// hook that submits between the scan and the recheck can leave the generation unchanged while the
+    /// durable state has already moved (e.g. `.unavailable` → `.running` via a genuine new turn). Pinning
+    /// the exact status closes that window: the recheck then sees a status it doesn't recognize and skips.
+    let turnStatus: TurnStatus
 }
 
 extension OrchestraService {
@@ -35,7 +41,8 @@ extension OrchestraService {
                 cardId: card.id,
                 sessionEpoch: card.sessionEpoch,
                 harnessSessionId: sessionID,
-                observationGeneration: generation
+                observationGeneration: generation,
+                turnStatus: state.turnStatus
             )
         }
         guard !candidates.isEmpty,
@@ -59,7 +66,7 @@ extension OrchestraService {
                   current.agentSessionId == candidate.harnessSessionId,
                   runtime[current.id]?.agentObservationGeneration == candidate.observationGeneration,
                   case .live(let state) = current.phase,
-                  state.turnStatus == .running || state.turnStatus == .unavailable,
+                  state.turnStatus == candidate.turnStatus,
                   state.humanNeed == nil
             else { continue }
 

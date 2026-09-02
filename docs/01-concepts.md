@@ -141,8 +141,9 @@ evidence and can take the Card to `dead`.
 Claude's main-session hooks supply those turn edges. Exact-prompt `MessageDisplay` or `PreToolUse`
 activity reopens a prompt after a blocking Stop; when no turn is active, activity carrying a different
 prompt id establishes the distinct turn whose queued `UserPromptSubmit` edge was not observable. Claude
-emits no terminal hook for Ctrl-C, so one global ten-second `claude agents --json`
-snapshot may repair only an unchanged, human-unblocked `running` session to `waiting`; missing, busy,
+emits no terminal hook for Ctrl-C, and has no snapshot-on-bind after a daemon restart, so one global
+`claude agents --json` snapshot — firing almost immediately after boot, then every ten seconds — may
+repair an unchanged, human-unblocked `running` OR `unavailable` session to `waiting`; missing, busy,
 failed, or superseded observations do nothing. Codex uses only its app-server thread/turn stream.
 
 An ordinary `waiting` card is idle, not automatically **Needs You**. A card needs a person only when its

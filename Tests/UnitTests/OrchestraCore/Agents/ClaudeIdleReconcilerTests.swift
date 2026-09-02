@@ -134,6 +134,8 @@ struct ClaudeIdleReconcilerTests {
         await env.svc.reconcileClaudeIdle()
         try await env.svc.waitForObservationQueueIdle(card.id)
 
+        // Proves this reached the busy path (a live subprocess call), not just "no candidate at all".
+        #expect(proc.calls.contains { $0.argv == [env.adapter.bin, "agents", "--json"] })
         #expect(await env.svc.store.get(card.id)?.turnStatus == .unavailable)
     }
 
@@ -149,6 +151,8 @@ struct ClaudeIdleReconcilerTests {
         await env.svc.reconcileClaudeIdle()
         try await env.svc.waitForObservationQueueIdle(card.id)
 
+        // Proves this reached the absent-from-snapshot path, not just "no candidate at all".
+        #expect(proc.calls.contains { $0.argv == [env.adapter.bin, "agents", "--json"] })
         #expect(await env.svc.store.get(card.id)?.turnStatus == .unavailable)
     }
 
@@ -177,11 +181,13 @@ struct ClaudeIdleReconcilerTests {
         #expect(await env.svc.store.get(card.id)?.turnStatus == .running)
     }
 
-    @Test("the Claude-idle loop's first tick fires sooner than its steady-state cadence")
-    func firstTickIsShorterThanSteadyStateCadence() async throws {
-        // main.swift's loop sleeps `claudeIdleFirstPollDelay` before its FIRST call so a card left
-        // `.unavailable` by a daemon restart heals almost immediately, then `claudeIdlePollInterval`
-        // thereafter. Asserted on the configured values — never by actually sleeping either duration.
+    @Test("the configured Claude-idle first-tick delay stays shorter than the steady-state cadence")
+    func firstTickDelayStaysShorterThanSteadyStateCadence() async throws {
+        // Pins the INVARIANT main.swift's loop relies on (delay once, then the full interval forever),
+        // asserted on the configured values rather than by sleeping either duration. It does not exercise
+        // main.swift's own sequencing — that executable has no unit-test target, and its loop is as thin
+        // as the neighboring (also untested) `reconcile()` poll loop it sits beside — so a regression in
+        // the LOOP ITSELF (e.g. reusing the short delay on every tick) would not be caught here.
         let env = TestEnv.make()
         #expect(env.svc.claudeIdleFirstPollDelay > 0)
         #expect(env.svc.claudeIdleFirstPollDelay < env.svc.claudeIdlePollInterval)

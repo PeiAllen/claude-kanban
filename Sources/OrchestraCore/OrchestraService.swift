@@ -179,13 +179,16 @@ public actor OrchestraService {
     public nonisolated let reconcilePollInterval: TimeInterval = 2
     /// `reconcileClaudeIdle`'s loop (main.swift) sleeps this long before its FIRST tick, not the full
     /// `claudeIdlePollInterval` — so a card left `.unavailable` by a daemon restart (Claude has no
-    /// snapshot-on-bind) heals almost immediately instead of waiting a full interval. Not zero: a boot-
-    /// adoption invalidate's `transition()` reentrantly resubmits through `reconcileAgentObservation`
+    /// snapshot-on-bind) usually heals almost immediately instead of waiting a full interval. Not zero: a
+    /// boot-adoption invalidate's `transition()` reentrantly resubmits through `reconcileAgentObservation`
     /// (see `AgentObservationCoordinator`'s doc comment), and that resettles in microseconds of actor
-    /// scheduling — comfortably inside this delay, never inside a full interval — so the first tick's
-    /// generation fence never races it. Calling `reconcileClaudeIdle` chained directly onto boot instead
-    /// of via this delay was tried and reverted: it lands inside that resettling window often enough to
-    /// make the first heal attempt flaky (never wrong, just skipped until the next tick).
+    /// scheduling — comfortably inside this delay for a typical board, so the first tick's generation
+    /// fence rarely races it. This delay is a head start, not a guarantee: a large board's own boot
+    /// prefix (orphan sweep, marker migration, per-card adoption) can still outrun it, in which case a
+    /// card simply isn't a candidate yet and heals on the NEXT tick instead — never wrong, just later.
+    /// Calling `reconcileClaudeIdle` chained directly onto boot instead of via this delay was tried and
+    /// reverted: it lands inside that resettling window often enough to make the first heal attempt
+    /// flaky for EVERY board size, not just large ones.
     public nonisolated let claudeIdleFirstPollDelay: TimeInterval = 2
     /// Steady-state cadence for the same loop — unrelated to the daemon-restart case above (see
     /// `reconcileClaudeIdle`'s doc comment for the hook-silent Ctrl-C gap this cadence repairs).
