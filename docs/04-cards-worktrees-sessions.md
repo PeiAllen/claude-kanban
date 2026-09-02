@@ -344,8 +344,12 @@ Claude uses the same normalized contract from live hooks: a distinct `UserPrompt
 a blocked Stop or establishes a different queued prompt when no turn is active. Known permission/input
 prompts update the aggregate `humanNeed`, including those
 from a subagent, without letting subagent activity mutate the main turn. Claude hook observations are not
-read from transcripts or replayed after daemon restart; the state is unavailable until the next
-current-session hook, while the narrow global idle snapshot repairs only hook-silent Ctrl-C.
+read from transcripts or replayed after daemon restart, so a card enters (or a restart leaves it in)
+`unavailable` until the next current-session hook. The same global idle snapshot that repairs a
+hook-silent Ctrl-C also carries an `unavailable` card to `waiting` once the provider confirms it idle —
+firing almost immediately after boot, then on its normal ten-second cadence — but it never promotes on
+a `busy` result: a busy card already self-heals from its own next hook, and promoting here would leave
+no correlated turn id for that hook's eventual Stop to match.
 
 **Codex native sender.** A queued message never rides a synthetic TUI keystroke. The app-server observer
 continues to own Codex status; a fresh, separate app-server peer uses the current live session handle to

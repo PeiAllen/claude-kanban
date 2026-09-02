@@ -8,9 +8,14 @@ private struct ClaudeIdleCandidate: Sendable {
 }
 
 extension OrchestraService {
-    /// Repair Claude's hook-silent Ctrl-C gap from one provider-native global snapshot. Hooks remain
-    /// authoritative for starts, Stops, continuations, and human gates; this can only narrow a still-
-    /// running, unchanged session to waiting.
+    /// Repair two Claude hook gaps from one provider-native global snapshot. Hooks remain authoritative
+    /// for starts, Stops, continuations, and human gates: this can only narrow a still-running,
+    /// unchanged session to waiting (the hook-silent Ctrl-C gap), or carry an `.unavailable` card left
+    /// by a daemon restart's boot-adoption invalidate to waiting once its session is confirmed idle
+    /// (Claude has no snapshot-on-bind; Codex restores its state from its attach response instead).
+    /// Never promotes `.unavailable` on a `busy` snapshot: with no correlated turn id, the eventual
+    /// Stop hook would fall through to `observationLost` and flicker the card back to unavailable —
+    /// busy cards instead self-heal from their own next `messagedisplay` hook.
     public func reconcileClaudeIdle() async {
         guard !claudeIdleReconcileInFlight else { return }
         claudeIdleReconcileInFlight = true
@@ -20,7 +25,7 @@ extension OrchestraService {
         let candidates: [ClaudeIdleCandidate] = cards.compactMap { card in
             guard card.agentId == "claude-code",
                   case .live(let state) = card.phase,
-                  state.turnStatus == .running,
+                  state.turnStatus == .running || state.turnStatus == .unavailable,
                   state.humanNeed == nil,
                   let sessionID = card.agentSessionId,
                   !sessionID.isEmpty,
@@ -54,7 +59,7 @@ extension OrchestraService {
                   current.agentSessionId == candidate.harnessSessionId,
                   runtime[current.id]?.agentObservationGeneration == candidate.observationGeneration,
                   case .live(let state) = current.phase,
-                  state.turnStatus == .running,
+                  state.turnStatus == .running || state.turnStatus == .unavailable,
                   state.humanNeed == nil
             else { continue }
 

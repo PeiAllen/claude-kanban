@@ -88,6 +88,104 @@ struct ClaudeIdleReconcilerTests {
         #expect(await env.svc.store.get(card.id)?.turnStatus == .running)
         #expect(await env.svc.store.get(card.id)?.agentState?.humanNeed == .permission)
     }
+
+    // MARK: - Snapshot-on-bind: healing a card left `.unavailable` by a daemon restart
+
+    /// A fresh live card defaults to `.unavailable` (provider state unknown) — exactly the shape a
+    /// daemon-restart adoption leaves a card in, without needing a real restart to produce it.
+    private func unavailableCard(_ env: ReturnType) async throws -> Task {
+        let spawned = try await TestEnv.spawnAndAwaitLive(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base), branch: "idle-probe-unavailable")
+        )
+        let card = try #require(await env.svc.store.get(spawned.id))
+        #expect(card.turnStatus == .unavailable)
+        return card
+    }
+
+    @Test("an unavailable card whose session reports idle heals to waiting")
+    func unavailableHealsOnIdleSnapshot() async throws {
+        let proc = FakeProc()
+        let env = TestEnv.make(proc: proc)
+        let card = try await unavailableCard(env)
+        let sessionID = try #require(card.agentSessionId)
+        proc.on([env.adapter.bin, "agents", "--json"]) { _ in
+            .init(stdout: #"[{"sessionId":"\#(sessionID)","status":"idle"}]"#, stderr: "", exitCode: 0)
+        }
+
+        await env.svc.reconcileClaudeIdle()
+        try await env.svc.waitForObservationQueueIdle(card.id)
+
+        #expect(await env.svc.store.get(card.id)?.turnStatus == .waiting())
+    }
+
+    @Test("an unavailable card whose session reports busy stays unavailable (no flicker promotion)")
+    func unavailableStaysOnBusySnapshot() async throws {
+        // Pins the anti-symmetry: promoting on `busy` would leave no correlated turn id, so the
+        // eventual Stop hook falls through to `observationLost` and flickers the card straight back.
+        let proc = FakeProc()
+        let env = TestEnv.make(proc: proc)
+        let card = try await unavailableCard(env)
+        let sessionID = try #require(card.agentSessionId)
+        proc.on([env.adapter.bin, "agents", "--json"]) { _ in
+            .init(stdout: #"[{"sessionId":"\#(sessionID)","status":"busy"}]"#, stderr: "", exitCode: 0)
+        }
+
+        await env.svc.reconcileClaudeIdle()
+        try await env.svc.waitForObservationQueueIdle(card.id)
+
+        #expect(await env.svc.store.get(card.id)?.turnStatus == .unavailable)
+    }
+
+    @Test("an unavailable card whose session is absent from the snapshot stays unavailable")
+    func unavailableStaysWhenSessionAbsent() async throws {
+        let proc = FakeProc()
+        let env = TestEnv.make(proc: proc)
+        let card = try await unavailableCard(env)
+        proc.on([env.adapter.bin, "agents", "--json"]) { _ in
+            .init(stdout: "[]", stderr: "", exitCode: 0)
+        }
+
+        await env.svc.reconcileClaudeIdle()
+        try await env.svc.waitForObservationQueueIdle(card.id)
+
+        #expect(await env.svc.store.get(card.id)?.turnStatus == .unavailable)
+    }
+
+    @Test("a turn starting mid-subprocess fences a stale idle snapshot for a healing unavailable card")
+    func generationFenceProtectsUnavailableCandidate() async throws {
+        let proc = FakeProc()
+        let gate = proc.gate(on: ["fake-agent", "agents", "--json"])
+        let env = TestEnv.make(proc: proc)
+        let card = try await unavailableCard(env)
+        let sessionID = try #require(card.agentSessionId)
+
+        async let reconcile: Void = env.svc.reconcileClaudeIdle()
+        await gate.reached()
+        // A real turn starts WHILE the subprocess is in flight — the fence must win over the stale
+        // snapshot, so the recheck's generation compare must skip the write.
+        await env.svc.receiveAgentSignals(
+            cardId: card.id,
+            signals: [.init(sessionEpoch: card.sessionEpoch, turnID: "prompt-mid-flight", kind: .turnStarted)]
+        )
+        gate.release(.init(
+            stdout: #"[{"sessionId":"\#(sessionID)","status":"idle"}]"#, stderr: "", exitCode: 0
+        ))
+        await reconcile
+        try await env.svc.waitForObservationQueueIdle(card.id)
+
+        #expect(await env.svc.store.get(card.id)?.turnStatus == .running)
+    }
+
+    @Test("the Claude-idle loop's first tick fires sooner than its steady-state cadence")
+    func firstTickIsShorterThanSteadyStateCadence() async throws {
+        // main.swift's loop sleeps `claudeIdleFirstPollDelay` before its FIRST call so a card left
+        // `.unavailable` by a daemon restart heals almost immediately, then `claudeIdlePollInterval`
+        // thereafter. Asserted on the configured values — never by actually sleeping either duration.
+        let env = TestEnv.make()
+        #expect(env.svc.claudeIdleFirstPollDelay > 0)
+        #expect(env.svc.claudeIdleFirstPollDelay < env.svc.claudeIdlePollInterval)
+    }
 }
 
 private typealias ReturnType = (

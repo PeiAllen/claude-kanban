@@ -81,11 +81,17 @@ _Concurrency.Task {
     }
 }
 
-// Claude hooks have no Ctrl-C terminal event. One global provider snapshot repairs only unchanged
-// running sessions; the service coalesces overlapping calls and otherwise leaves hook state untouched.
+// Claude hooks have no Ctrl-C terminal event, and no snapshot-on-bind for a card left `.unavailable`
+// by a restart (Codex restores its state from its attach response instead). One global provider
+// snapshot repairs both: the FIRST tick fires almost immediately (`claudeIdleFirstPollDelay`) so a
+// restart heals fast rather than sitting `.unavailable` until a human happens to prompt it; every tick
+// after repeats the same snapshot at `claudeIdlePollInterval`, so a later Ctrl-C also heals within one
+// interval. The service coalesces overlapping calls and otherwise leaves hook state untouched.
 _Concurrency.Task {
+    var delay = service.claudeIdleFirstPollDelay
     while true {
-        try? await _Concurrency.Task.sleep(for: .seconds(10))
+        try? await _Concurrency.Task.sleep(for: .seconds(delay))
+        delay = service.claudeIdlePollInterval
         await service.reconcileClaudeIdle()
     }
 }
