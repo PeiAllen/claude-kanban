@@ -196,9 +196,17 @@ private struct HeaderBar: View {
     /// Inbox (F3): view/reorder/edit/remove/append the card's durable queued messages.
     private func inboxAction(compact: Bool) -> some View {
         actionButton("Inbox", systemImage: "tray.full", compact: compact, isOn: $showInbox) {
+            // In DEBUG the screenshot harness can stand rows in for the daemon (ORCH_INBOX_MOCK=1),
+            // so the REAL popover can be looked at without one. Always nil otherwise.
+            #if DEBUG
+            InboxEditorView(task: task, debugMessages: InboxEditorView.debugRowsForWindow(cardId: task.id))
+                .environmentObject(model)
+                .environment(\.theme, theme)
+            #else
             InboxEditorView(task: task)
                 .environmentObject(model)
                 .environment(\.theme, theme)
+            #endif
         }
     }
 

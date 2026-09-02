@@ -543,26 +543,8 @@ private struct DebugLaunchHook: ViewModifier {
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/demo",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), initialPrompt: "demo")
-        // Real queued messages are PROMPTS, not labels — seed paragraph-length ones, or the shot
-        // cannot show whether the panel is big enough to read what it holds.
-        let seed = [
-            InboxMessage(cardId: card.id,
-                         text: "Review the auth refactor before merging. The token refresh path now "
-                             + "runs through the shared session actor, so check that no call site "
-                             + "still holds the old lock while it awaits.",
-                         state: .queued),
-            InboxMessage(cardId: card.id, text: "Rebase onto main once the status PR lands.",
-                         state: .queued),
-            InboxMessage(cardId: card.id,
-                         text: "Retry the unavailable provider — the app server was still starting "
-                             + "when this message went out.",
-                         state: .failed),
-            InboxMessage(cardId: card.id,
-                         text: "Branch context for the harness: this card owns feat/inbox-size and "
-                             + "its parent is feat/status-rework, so restack before you ship.",
-                         state: .handedOff),
-        ]
-        let view = InboxEditorView(task: card, preview: seed)
+        let seed = InboxEditorView.debugRows(cardId: card.id)
+        let view = InboxEditorView(task: card, debugMessages: seed, flattenForRenderer: true)
             .environmentObject(model)
             .environment(\.theme, theme)
             .background(theme.panelOpaque)
