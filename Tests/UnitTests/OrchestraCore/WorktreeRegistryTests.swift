@@ -148,6 +148,60 @@ struct WorktreeRegistryTests {
     // one root string so this test proves the liveness guard, and the canonicalization is asserted by
     // review of the `PathResolver.canonical` calls.)
 
+    // MARK: - a card worktree is always a FRESH per-branch subdirectory
+
+    /// A blank branch joins to nothing, so `worktreePath` collapses to the repo's SHARED container
+    /// (`<worktreesRoot>/<repoName>/`) — the directory that holds every live worktree of that repo.
+    /// The container is not a checkout, so `isDirty` fails safe and `ensure` reported it as a stale
+    /// half-created tree, telling the operator to delete shared infrastructure. `ensure` must refuse
+    /// the path outright, and must touch nothing on the way out.
+    @Test func test_ensureRejectsBlankBranchContainerPath() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let container = stub.path(repo: "app", branch: "")
+        try FileManager.default.createDirectory(atPath: container, withIntermediateDirectories: true)
+        let sibling = container + "/live-worktree"          // an unrelated card's tree lives here
+        try FileManager.default.createDirectory(atPath: sibling, withIntermediateDirectories: true)
+        stub.setDirty(container, true)                       // an unqueryable container reads as dirty
+
+        await #expect(throws: OrchestraError.pathNotAllowed(container)) {
+            _ = try await reg.ensure(repo: "app", branch: "", cardId: UUID())
+        }
+        #expect(stub.ensured.isEmpty)                        // no checkout cut
+        #expect(stub.removed.isEmpty)                        // and nothing removed
+        #expect(FileManager.default.fileExists(atPath: sibling))
+    }
+
+    /// Same class, one level worse: `..` climbs to `worktreesRoot` itself — the container of EVERY
+    /// repo. The depth guard, not the branch string, is what makes both unrepresentable.
+    @Test func test_ensureRejectsDotDotBranchEscapingToWorktreesRoot() async throws {
+        let (reg, stub, _) = makeRegistry()
+        try FileManager.default.createDirectory(
+            atPath: stub.path(repo: "app", branch: ""), withIntermediateDirectories: true)
+        await #expect(throws: OrchestraError.self) {
+            _ = try await reg.ensure(repo: "app", branch: "..", cardId: UUID())
+        }
+        #expect(stub.ensured.isEmpty)
+        #expect(stub.removed.isEmpty)
+    }
+
+    /// Depth alone is not ownership. `../<otherRepo>/<theirBranch>` canonicalizes to a path that is
+    /// still two components below the root, so a depth floor admits it — and because the marker is
+    /// keyed on the CANONICAL path, `ensure` would find the other repo's marker and hand repo A a card
+    /// running in repo B's live worktree (or force-remove it on the markerless-clean arm). The path
+    /// must belong to the REQUESTED repo's container, not merely sit deep enough under the root.
+    @Test func test_ensureRejectsLateralAliasIntoAnotherReposContainer() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let victim = try await reg.ensure(repo: "b", branch: "feature", cardId: UUID())   // repo B's live tree
+        let ensuredBefore = stub.ensured.count
+
+        await #expect(throws: OrchestraError.self) {
+            _ = try await reg.ensure(repo: "a", branch: "../b/feature", cardId: UUID())
+        }
+        #expect(stub.ensured.count == ensuredBefore)                     // no checkout cut
+        #expect(stub.removed.isEmpty)                                    // B's tree not removed
+        #expect(FileManager.default.fileExists(atPath: victim.path))     // and still there
+    }
+
     // MARK: - Task 3.4: release() — the single removal policy
 
     @Test func test_releaseNeverRemovesWhileReferenced() async throws {

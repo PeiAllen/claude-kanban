@@ -411,6 +411,10 @@ public actor OrchestraService {
         // user-chosen dir: no worktree is cut and the allowlist gate is skipped — the OS sandbox is the
         // trust boundary (the path may even be outside any repo). A normal spawn resolves+allowlists the
         // repo and cuts the worktree. Scratch takes precedence over `cwd`/worktree.
+        // Normalized ONCE, here: the guard below must not accept a branch whose whitespace then rides
+        // into the worktree path, the sibling lookup, and the card record (a `" foo "` branch checked as
+        // non-blank but joined verbatim yields a path git rejects, and a card dead on arrival).
+        let branch = input.branch.trimmingCharacters(in: .whitespacesAndNewlines)
         let realRepo: String
         let cwd: String
         let origin: CardOrigin
@@ -425,19 +429,45 @@ public actor OrchestraService {
             origin = .scratch
             realRepo = input.repo            // optional context only; never resolved/allowlisted
         } else if let borrowed = input.cwd {
+            // Same class as the blank-branch case below: an explicitly EMPTY `cwd` is non-nil, so it
+            // selects the freeform arm and lands a card whose cwd is "" — dead on arrival.
+            guard !borrowed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OrchestraError.invalidParams(
+                    "cwd is empty — pass an existing directory, or pass `repo` with `branch` "
+                    + "for a worktree card")
+            }
             cwd = borrowed
             origin = .borrowed
             realRepo = input.repo            // optional context only; never resolved/allowlisted
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything (synchronous fail-fast).
             realRepo = try resolver.resolveRepo(input.repo)
+            // A worktree card is `repo` + `branch` — omit BOTH for a freeform `cwd` card. `branch` is
+            // optional on the wire (it decodes to ""), and `worktreePath` is a plain join, so a
+            // half-specified spawn used to address `<worktreesRoot>/<repoName>/`: the SHARED container
+            // holding every live worktree of that repo. Reject it here, where the caller still gets a
+            // fixable error, instead of letting the card go dead pointing at shared infrastructure.
+            guard !branch.isEmpty else {
+                throw OrchestraError.invalidParams(
+                    "branch is required for a worktree card — pass `branch` with `repo`, "
+                    + "or pass `cwd` instead for a freeform card")
+            }
+            // `orch-borrow-` is the registry's throwaway-borrow namespace, and `borrowPath` flattens the
+            // branch's slashes — so a card branch `orch-borrow-main` computes the SAME path as a borrow
+            // of `main`. The orphan sweep classifies borrows by that basename alone, so allowing the
+            // collision puts a real card's tree in reach of a force-removal. Reserve the prefix.
+            guard !branch.hasPrefix("orch-borrow-") else {
+                throw OrchestraError.invalidParams(
+                    "branch names starting with `orch-borrow-` are reserved for Orchestra's "
+                    + "internal borrow checkouts — choose another name")
+            }
             // S2-6: co-located `.worktree` cards sharing one branch/worktree are still permitted (the
             // cwd-keyed archive refcount + worktreeSiblings badge depend on it; full 1:1 enforcement is
             // the separate worktree-coupling design). But every derived parent-card lookup must be
             // DETERMINISTIC (oldest live card wins — see `derivedCard`), not an arbitrary sibling. Warn on
             // multiplicity so the operator sees the ambiguity they just created.
             siblingCard = await store.all().first(where: {
-                !$0.archived && $0.origin == .worktree && $0.repo == realRepo && $0.branch == input.branch
+                !$0.archived && $0.origin == .worktree && $0.repo == realRepo && $0.branch == branch
             })
             // S2-3(i): normalize + VALIDATE a user-supplied base SYNCHRONOUSLY (must-fail-fast — the security
             // gate stays before anything is created). Strip a `refs/heads/` prefix; reject any other `refs/…`
@@ -457,7 +487,7 @@ public actor OrchestraService {
             }
             spawnBaseCarrier = (normalizedBase?.isEmpty == false) ? normalizedBase : nil
             // PURE cwd (no checkout — the MaterializeStepper cuts/adopts the tree from `spawnBase`).
-            cwd = worktrees.path(repo: realRepo, branch: input.branch)
+            cwd = worktrees.path(repo: realRepo, branch: branch)
             origin = .worktree
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
@@ -498,7 +528,7 @@ public actor OrchestraService {
         // The attached target is resolved ONCE, here: the launch needs a concrete `--name` immediately.
         let explicitTitle = input.title.map(CardNaming.normalize).flatMap { $0.isEmpty ? nil : $0 }
         let derived = CardNaming.derived(
-            origin: origin, branch: input.branch, cwd: cwd, access: input.access,
+            origin: origin, branch: branch, cwd: cwd, access: input.access,
             attachedTargetTitle: (origin != .worktree && input.access == .readOnly)
                 ? attachedTargetTitle(cwd: cwd, excluding: id, among: await store.all()) : nil,
             prompt: input.prompt)
@@ -518,7 +548,7 @@ public actor OrchestraService {
             id: id,
             title: title, titleSource: titleSource, awaitingFirstPrompt: awaitingFirstPrompt, desc: "",
             note: input.note.map(CardNaming.normalizeNote).flatMap { $0.isEmpty ? nil : $0 },
-            repo: realRepo, branch: input.branch, cwd: cwd,
+            repo: realRepo, branch: branch, cwd: cwd,
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, phase: .creatingWorktree,
@@ -541,7 +571,7 @@ public actor OrchestraService {
         // Emit the multiplicity warning only for the actual winner (captured before the create).
         if let sibling = siblingCard {
             emitActivity(.warning, sibling, source,
-                "spawning a second live card onto branch \(input.branch) (already owned by "
+                "spawning a second live card onto branch \(branch) (already owned by "
                 + "\(sibling.shortId)) — derived parent lookups use the oldest card")
         }
 

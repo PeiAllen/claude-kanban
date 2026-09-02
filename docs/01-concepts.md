@@ -172,8 +172,11 @@ the agent may write. Together these give four practical modes:
 | **Scratch** | `scratch` | `readWrite` | A fresh throwaway dir at `~/.orchestra/scratch/<id>` | Yes — `rm -rf` unconditionally on archive. |
 | **Read-only** | any | `readOnly` | As above, but writes are blocked | Per the origin above. |
 
-- **Worktree cards** are the default and the workflow's backbone. The repo must be on the allowlist;
-  Orchestra cuts an isolated worktree so parallel agents never share a working tree. These are the
+- **Worktree cards** are the default and the workflow's backbone. They need **both** `repo` and
+  `branch` — a spawn that gives one without the other is rejected, because the worktree path is
+  `<worktreesRoot>/<repo>/<branch>` and a missing half collapses it onto a directory no card owns. The
+  repo must be on the allowlist; Orchestra cuts an isolated worktree so parallel agents never share a
+  working tree. These are the
   cards that live in the Plan/Implementation/Review columns.
 - **Borrowed (freeform) cards** run an agent directly in a directory you already have — no worktree, no
   allowlist gate (the OS sandbox is the boundary). They live in a separate **freeform region** docked
