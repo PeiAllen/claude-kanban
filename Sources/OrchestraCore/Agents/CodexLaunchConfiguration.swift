@@ -42,7 +42,8 @@ enum CodexLaunchConfiguration {
 
     /// Absolute path of the profile file in the (native) Codex home. Codex only discovers profiles under
     /// `$CODEX_HOME`, so it must live there — clearly namespaced (`orch-…`) and separate from the user's
-    /// own `config.toml`/auth, which it never touches.
+    /// own `config.toml`/auth. The adapter mirrors only trusted cwd decisions into the former; this
+    /// generated profile remains separate from both.
     static func profilePath(cwd: String, codexHome: String) -> String {
         "\(codexHome)/\(profileName(cwd: cwd)).config.toml"
     }

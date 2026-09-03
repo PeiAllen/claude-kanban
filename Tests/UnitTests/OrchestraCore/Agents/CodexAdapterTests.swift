@@ -563,6 +563,56 @@ struct CodexModelRoutingTests {
 
 @Suite("CodexAdapter — launch-scoped guidance")
 struct CodexGuidanceTests {
+    @Test("trusted Codex launches persist native per-directory trust without disturbing existing configuration")
+    func trustedLaunchPersistsNativeProjectTrust() throws {
+        let home = NSTemporaryDirectory() + "codex-trust-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        let path = home + "/config.toml"
+        let existing = "model = \"gpt-5\"\n"
+        try existing.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let cwd = "/wt/quoted \"path\" and \\ slash"
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, trustCwd: true))
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, trustCwd: true))
+
+        let config = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(config.hasPrefix(existing))
+        #expect(config.components(separatedBy: "[projects.\"/wt/quoted \\\"path\\\" and \\\\ slash\"]").count == 2)
+        #expect(config.contains("trust_level = \"trusted\""))
+    }
+
+    @Test("untrusted Codex launches leave native per-directory trust unchanged")
+    func untrustedLaunchLeavesNativeProjectTrustUntouched() throws {
+        let home = NSTemporaryDirectory() + "codex-trust-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        let path = home + "/config.toml"
+        let existing = "model = \"gpt-5\"\n[projects.\"/previously-trusted\"]\ntrust_level = \"trusted\"\n"
+        try existing.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt/untrusted", trustCwd: false))
+
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == existing)
+    }
+
+    @Test("trusted Codex launches recognize an existing dotted native project trust entry")
+    func trustedLaunchRecognizesExistingDottedNativeTrust() throws {
+        let home = NSTemporaryDirectory() + "codex-trust-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        let path = home + "/config.toml"
+        let existing = "projects.\"/wt/already-trusted\".trust_level = \"trusted\"\n"
+        try existing.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt/already-trusted", trustCwd: true))
+
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == existing)
+    }
+
     @Test("guidance is carried by the launch profile file, not the command line")
     func guidanceIsLaunchScoped() throws {
         let home = NSTemporaryDirectory() + "codexcfg-\(UUID().uuidString)"
