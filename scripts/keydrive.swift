@@ -3,7 +3,8 @@
 //   swift keydrive.swift windowid <pid>            → prints that pid's largest on-screen window id
 //   swift keydrive.swift keys <pid> <tok> <tok>…   → posts key events to that pid WITHOUT activating it
 //
-// Key tokens: a single char (a,j,/,: …) or a name (cr, esc, space). Prefix with modifiers + "-":
+// Key tokens: a single char (a,j,/,: …) or a name (cr, esc, space, left, right, up, down). Prefix
+// with modifiers + "-":
 //   C- control, M- command, S- shift. e.g.  C-l  M-w  S-h  S-;  (":" is S-;).
 // Events are delivered via CGEvent.postToPid, so the target need not be frontmost (non-intrusive).
 import AppKit
@@ -15,7 +16,10 @@ let vk: [Character: CGKeyCode] = [
     "r":15,"y":16,"t":17,"o":31,"u":32,"i":34,"p":35,"l":37,"j":38,"k":40,"n":45,"m":46,
     "/":44,";":41,".":47,",":43,"1":18,"2":19,"3":20,
 ]
-let named: [String: CGKeyCode] = ["cr":36,"return":36,"esc":53,"escape":53,"space":49,"tab":48]
+let named: [String: CGKeyCode] = [
+    "cr":36,"return":36,"esc":53,"escape":53,"space":49,"tab":48,
+    "left":123,"right":124,"down":125,"up":126,
+]
 
 func keycode(_ base: String) -> CGKeyCode? {
     if let n = named[base.lowercased()] { return n }

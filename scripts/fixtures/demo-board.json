@@ -1,6 +1,6 @@
 {
   "_comment": "Curated demo board for the documentation screenshots (scripts/docs-shots.sh). Fictional repos/branches only \u2014 never the user's real work. Each entry is spawned through the ISOLATED daemon's `orchestra` CLI, so every card is a genuine worktree running a genuine agent; nothing here is faked telemetry. Keep the prompts small and bounded: they run for real and they bill.",
-  "_notes": "`col` is the card's FINAL column. `spawn --col` is start-only (plan|impl by design), so a `review` card is spawned into impl and then moved with `orchestra move` \u2014 the same two steps a human would take. The codex card picks its backend via `model` (the agent is inferred from the model id). Cards are told not to move themselves: the SessionStart orientation nudges an agent to move its own card as work changes phase, which is right in real use but empties the Review column mid-screenshot. Columns are RE-APPLIED right before the stills: agents move their own cards (the SessionStart orientation tells them to), so the board drifts from the fixture during the work window. Implementation is left holding only the pagination card so `g i` selects it deterministically for the inspector/diff shots.",
+  "_notes": "`col` is the card's FINAL column. `spawn --col` is start-only (plan|impl by design), so a `review` card is spawned into impl and then moved with `orchestra move` \u2014 the same two steps a human would take. The codex card picks its backend via `model` (the agent is inferred from the model id). Cards are told not to move themselves: the SessionStart orientation nudges an agent to move its own card as work changes phase, which is right in real use but empties the Review column mid-screenshot. Columns are RE-APPLIED right before the stills: agents move their own cards (the SessionStart orientation tells them to), so the board drifts from the fixture during the work window. Implementation is left holding only the pagination card so `g i` selects it deterministically for the inspector/diff shots. The reviewer card sets `attachBranch` instead of its own `branch` \u2014 the drive script spawns it `--cwd <the pagination card's worktree> --read-only` (a branchless, borrowed reviewer; `orchestra spawn` only threads `--read-only` through the `--cwd` path today, not `--repo`/`--branch`, so this is the CLI-supported way to attach one) so it hangs off the pagination card by directory match. That makes the pagination card a hierarchy root with a live attached-agents eye \u2014 without it none of the board-hierarchy/attachment UI has anything to render. Its `col` is `impl` (matching its spawn start), never `review`: a read-only reviewer always embeds behind its target and never becomes its own column card, so unlike the worktree cards above it must NOT be `move`d after spawn \u2014 the daemon rejects a column move on a freeform-origin card outright.",
   "repos": {
     "api": {
       "desc": "a small HTTP service \u2014 the repo most demo cards work in",
@@ -39,7 +39,14 @@
       "branch": "feat/pagination",
       "agent": "claude-code",
       "col": "impl",
-      "prompt": "Add a small cursor-based pagination helper to src/ (a new file plus a couple of routes wired into src/server.js). Keep it under ~60 lines total. Write the code only \u2014 do not start the server, curl it, or run any other shell commands to test it."
+      "prompt": "Add a small cursor-based pagination helper to src/ (a new file plus a couple of routes wired into src/server.js). Keep it under ~60 lines total. Also write a short notes/pagination.md (under 15 lines) explaining the cursor format for a reviewer. Write the code and doc only \u2014 do not start the server, curl it, or run any other shell commands to test it."
+    },
+    {
+      "repo": "api",
+      "attachBranch": "feat/pagination",
+      "agent": "claude-code",
+      "col": "impl",
+      "prompt": "Read the pagination helper and notes/pagination.md, then report anything you'd want changed before merge. Do not edit any files, and do not move this card."
     },
     {
       "repo": "infra",

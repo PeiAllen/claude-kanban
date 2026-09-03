@@ -81,7 +81,13 @@ note() { echo "  · $*"; }
 
 # `orchestra` against the ISOLATED daemon. ORCHESTRA_SOCK is the steering lever the CLI reads
 # (Sources/orchestra/main.swift) — without it the CLI would hit the LIVE socket.
-oc() { HOME="$ISO_HOME" ORCHESTRA_SOCK="$SOCK" "$CLI" "$@"; }
+# ORCHESTRA_TASK_ID cleared too: running this script FROM an Orchestra card (as any agent card
+# doing docs work would) exports the CALLER's own real card id into this shell. Left alone, `oc
+# send` tags every message with that id as sender — the isolated daemon has never heard of it, the
+# sender lookup fails, and `send` silently no-ops (the orchestrate phase then sleeps out its whole
+# FANOUT_WAIT for a nudge the orchestrator never received). Empty, not unset: the CLI treats an
+# empty ORCHESTRA_TASK_ID the same as absent (`!id.isEmpty` guards, Sources/orchestra/CLIRunner.swift).
+oc() { HOME="$ISO_HOME" ORCHESTRA_SOCK="$SOCK" ORCHESTRA_TASK_ID="" "$CLI" "$@"; }
 kv() { grep -m1 "^$1=" "$STATE" 2>/dev/null | cut -d= -f2-; }
 
 # ---------------------------------------------------------------- teardown
@@ -95,6 +101,13 @@ cmd_down() {
   fi
   pkill -f "$DD/Build/Products/Debug/Orchestra.app" 2>/dev/null || true
   tmux -L "$ISO_TMUX_SOCKET" kill-server 2>/dev/null || true
+  # Codex's `app-server` is a persistent per-card backend, deliberately built to survive its tmux
+  # pane closing (so a client can reconnect) — killing tmux above does NOT reach it. The daemon's
+  # normal per-card archive flow terminates it explicitly; a blanket teardown like this one bypasses
+  # that flow, so it leaked on every prior run (found via `lsof` after a stuck retry: four orphaned
+  # `codex app-server` processes going back to this branch's very first capture attempt). Kill by
+  # the isolated $DATA path in its argv — unique to this throwaway run, never a live path.
+  pkill -f "codex app-server --listen unix://$DATA/" 2>/dev/null || true
   rm -rf "$ROOT"
   echo "  ✓ down. Live daemon/app untouched."
 }
@@ -130,20 +143,26 @@ caffeinate -d -i -u -w $$ &
 CAFFEINATE_PID=$!
 
 # ---------------------------------------------------------------- 1. build
+# Every build goes through the machine-wide build mutex (scripts/lib/with-lock.sh) — a bare `swift
+# build`/`xcodebuild` here re-creates the contention problem for every other card on the machine
+# (see docs/08-building-operations.md). `-skipPackagePluginValidation`: a fresh $DD has no recorded
+# trust for SwiftTerm's build-tool plugin, and there is no one here to click "Trust & Enable" —
+# without it the FIRST build in a fresh $DD fails on "Validate plug-in SwiftTermBuildInfoPlugin"
+# (the same flag scripts/iso-stack.sh and scripts/orch-ui-shot.sh already carry for this reason).
 if [[ "$BUILD" == 1 ]]; then
   echo "▶ building daemon + CLI + MCP bridge (debug)…"
-  swift build --package-path "$REPO_ROOT" --product orchestrad
-  swift build --package-path "$REPO_ROOT" --product orchestra
-  swift build --package-path "$REPO_ROOT" --product orchestra-mcp
+  scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestrad
+  scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestra
+  scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestra-mcp
   echo "▶ building Mac app (Debug)…"
   xcodegen generate --spec App/project.yml --project App >/dev/null
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
-    -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
+  scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+    -destination 'platform=macOS' -derivedDataPath "$DD" -skipPackagePluginValidation build >/dev/null
   if has_phase ios; then
     echo "▶ building iPhone app (Debug)…"
     xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
-    xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
-      -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build >/dev/null
+    scripts/lib/with-lock.sh build -- xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
+      -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO build >/dev/null
   fi
 fi
 for b in "$DAEMON" "$CLI" "$MCP_BIN"; do [[ -x "$b" ]] || fail "not built: $b (drop --no-build)"; done
@@ -241,7 +260,10 @@ def trust(path):
     e["hasTrustDialogAccepted"] = True
     e["hasCompletedProjectOnboarding"] = True
 for c in spec["cards"] + [spec["orchestrator"]]:
-    trust(os.path.join(root, "worktrees", c["repo"], c["branch"]))
+    # A card with `attachBranch` instead of its own `branch` is a borrowed reviewer — its cwd IS
+    # another card's worktree, already trusted by that card's own entry below.
+    if "branch" in c:
+        trust(os.path.join(root, "worktrees", c["repo"], c["branch"]))
 for name in spec["repos"]:
     trust(os.path.join(root, name))
 trust(root)
@@ -359,11 +381,19 @@ rec_start() {
   REC_DIR="$FRAMES/$1"; rm -rf "$REC_DIR"; mkdir -p "$REC_DIR"
   resolve_wid || true
   local wid="$WID" pid="$APP_PID"
+  # screencapture's stderr used to go to /dev/null, so a recording that captured ZERO frames for its
+  # whole duration (seen repeatedly on the `keyboard` phase — not yet root-caused) left no trace of
+  # WHY. Log it instead — cheap, and the only way a future occurrence is diagnosable rather than
+  # another guess-and-rerun.
   ( i=0; while :; do
       printf -v n "%04d" "$i"
-      if ! screencapture -x -o -l"$wid" "$REC_DIR/f-$n.png" 2>/dev/null; then
+      if ! screencapture -x -o -l"$wid" "$REC_DIR/f-$n.png" 2>>"$REC_DIR.err.log"; then
         # stale window id mid-recording → re-resolve rather than emit a run of empty frames
         wid="$(swift scripts/keydrive.swift windowid "$pid" 2>/dev/null || echo "$wid")"
+        rm -f "$REC_DIR/f-$n.png"
+      elif [[ ! -s "$REC_DIR/f-$n.png" ]]; then
+        # exit 0 but a zero-byte file (a fully occluded/degenerate window) is still not a frame.
+        echo "f-$n: zero-byte capture (wid=$wid)" >>"$REC_DIR.err.log"
         rm -f "$REC_DIR/f-$n.png"
       fi
       i=$((i+1)); sleep "$FPS_DELAY"
@@ -373,7 +403,11 @@ rec_start() {
 rec_stop() {  # rec_stop <name> → assembles docs/images/<name>.gif
   kill "$REC_PID" 2>/dev/null || true; wait "$REC_PID" 2>/dev/null || true
   local n; n="$(ls "$REC_DIR"/f-*.png 2>/dev/null | wc -l | tr -d ' ')"
-  [[ "$n" -gt 1 ]] || { echo "  ✗ $1: only $n frames — no GIF"; return 1; }
+  if [[ "$n" -le 1 ]]; then
+    echo "  ✗ $1: only $n frames — no GIF"
+    [[ -s "$REC_DIR.err.log" ]] && { echo "    · capture errors:"; tail -5 "$REC_DIR.err.log" | sed 's/^/      | /'; }
+    return 1
+  fi
   # A real fan-out takes minutes, and every captured frame is a full-window PNG — dumping all of them
   # into a GIF produced an 18MB file nobody's README should carry. So keep every Nth frame: the GIF
   # becomes a TIME-LAPSE of the real run (never a re-enactment of it), and the docs say so.
@@ -403,18 +437,28 @@ for c in spec["cards"]:
     start = "impl" if col == "review" else col
     # "-" sentinel, never an empty field: tab is IFS *whitespace*, so bash's `read` collapses
     # consecutive tabs and an empty column would silently shift every later field left.
-    print("\t".join([root + "/" + c["repo"], c["branch"], c.get("model", "-"), start, col, c["prompt"]]))
+    print("\t".join([root + "/" + c["repo"], c.get("branch", "-"), c.get("model", "-"), start, col,
+                      c.get("attachBranch", "-"), c["prompt"]]))
 PY
-while IFS=$'\t' read -r repo branch model start col prompt; do
+while IFS=$'\t' read -r repo branch model start col attach prompt; do
   [[ -n "$repo" ]] || continue
   [[ "$model" == "-" ]] && model=""
+  [[ "$branch" == "-" ]] && branch=""
+  [[ "$attach" == "-" ]] && attach=""
   # The agent backend is inferred from the model id (a gpt-* model ⇒ the Codex adapter).
-  if [[ -n "$model" ]]; then
-    ref="$(oc spawn --prompt "$prompt" --repo "$repo" --branch "$branch" --model "$model" --col "$start" | grep -oE '[0-9a-f]{6}' | head -1)"
+  args=(--prompt "$prompt" --col "$start")
+  if [[ -n "$attach" ]]; then
+    # A branchless, read-only, BORROWED reviewer: attach by directory match to the worktree card
+    # already sitting on $repo/$attach (needs that card to have spawned first — fixture order
+    # puts it earlier in `cards`). `orchestra spawn` only threads `--read-only` through the
+    # `--cwd` path today, not `--repo`/`--branch`, so cwd is the CLI-supported way to attach one.
+    args+=(--cwd "$ROOT/worktrees/$(basename "$repo")/$attach" --read-only --repo "$repo" --title "Review: $attach")
   else
-    ref="$(oc spawn --prompt "$prompt" --repo "$repo" --branch "$branch" --col "$start" | grep -oE '[0-9a-f]{6}' | head -1)"
+    args+=(--repo "$repo" --branch "$branch")
+    [[ -n "$model" ]] && args+=(--model "$model")
   fi
-  note "spawned $(basename "$repo")/$branch → $start${model:+ (model $model)}  [$ref]"
+  ref="$(oc spawn "${args[@]}" | grep -oE '[0-9a-f]{6}' | head -1)"
+  note "spawned $(basename "$repo")/${branch:-"→ $attach (attached, read-only)"} → $start${model:+ (model $model)}  [$ref]"
   echo -e "$ref\t$col" >> "$ROOT/refs.tsv"
   if [[ "$col" != "$start" && -n "$ref" ]]; then
     oc move "$ref" --col "$col" >/dev/null && note "moved $ref → $col"
@@ -452,8 +496,9 @@ if has_phase stills; then
   # one); moving the selection is itself what opens that card's inspector.
   keys g i; sleep 4                # Implementation holds only the pagination card → deterministic
   shot inspector
-  keys d; sleep 4;  shot diff      # `d` toggles the inspector Agent ↔ Diff view
-  keys d; sleep 1                  # back to the agent terminal
+  keys d; sleep 4;  shot diff      # `d` CYCLES the inspector Agent → Diff → Docs → Agent
+  keys d; sleep 4;  shot docs      # second `d`: Diff → Docs (the document reader)
+  keys d; sleep 1                  # third `d`: Docs → back to the agent terminal
   keys c; sleep 3;  shot spawn     # `c` opens the spawn sheet
   keys esc; sleep 1
 fi
@@ -503,6 +548,17 @@ if has_phase keyboard; then
   keys /;      sleep 1;     keys esc        # search
   keys "S-;";  sleep 1.5;   keys esc        # : command palette
   keys "S-/";  sleep 2;     keys esc        # ? keymap overlay
+  # Drill: search-select the orchestrator root (board position isn't fixed once the fan-out has
+  # run, so search is the deterministic way to land on it) and walk into / out of its subtree — the
+  # scope axis the board-hierarchy redesign added, `→`/`←`.
+  keys /; sleep 0.3
+  # ONE `keys` call for the whole word, not nine: each call launches a fresh `swift
+  # scripts/keydrive.swift` process (real compile/launch overhead, uncached — Swift script mode),
+  # and nine of those in a row burned most of this phase's wall-clock for a hidden reason the
+  # recording still had to sit through, starving `rec_start`'s frame loop.
+  keys r a t e l i m i t
+  sleep 0.4; keys cr; sleep 1
+  keys right; sleep 1.5;    keys left; sleep 1
   rec_stop keyboard || true
 fi
 
@@ -514,11 +570,21 @@ if has_phase ios; then
     UDID="$(xcrun simctl list devices available | grep -m1 '    iPhone ' | grep -oE '[0-9A-Fa-f-]{36}' | head -1 || true)"
     [[ -n "$UDID" ]] && xcrun simctl boot "$UDID" 2>/dev/null || true
   fi
-  if [[ -n "$UDID" ]]; then
+  if [[ -n "$UDID" ]] && [[ ! -d App-iOS/OrchestraiOS.xcodeproj ]]; then
+    # `xcodegen generate` for App-iOS only runs above under `if [[ "$BUILD" == 1 ]]` — with
+    # --no-build (and no prior `ios`-phase run) the .xcodeproj was never generated. Without this
+    # guard, `xcodebuild -showBuildSettings` on a nonexistent project fails instantly, its stderr is
+    # swallowed by `2>/dev/null` below, and — because that failure sits in an unguarded `IOS_APP=$(…
+    # | awk …)` command substitution — `set -e -o pipefail` silently kills the WHOLE script right
+    # here: no error, no "done" banner, nothing after the "▶ iPhone shots…" line above. That is
+    # exactly what made every earlier `--no-build ios` run in this branch's history look like an
+    # unexplained hang instead of the ordinary, fixable gap it actually is.
+    echo "  ✗ App-iOS/OrchestraiOS.xcodeproj not generated (needs a run without --no-build first) — skipping iPhone shots"
+  elif [[ -n "$UDID" ]]; then
     xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
     IOS_APP="$(xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
       -destination 'generic/platform=iOS Simulator' -showBuildSettings 2>/dev/null \
-      | awk -F' = ' '/ BUILT_PRODUCTS_DIR / {d=$2} / FULL_PRODUCT_NAME / {n=$2} END {print d "/" n}')"
+      | awk -F' = ' '/ BUILT_PRODUCTS_DIR / {d=$2} / FULL_PRODUCT_NAME / {n=$2} END {print d "/" n}')" || true
     if [[ -d "$IOS_APP" ]]; then
       xcrun simctl install "$UDID" "$IOS_APP"
       SIMCTL_CHILD_ORCH_DEV_SOCKET="$SOCK" xcrun simctl launch "$UDID" "$IOS_BUNDLE" >/dev/null
