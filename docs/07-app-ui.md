@@ -49,6 +49,8 @@ view so the inspector overlay renders on top of it.
 
 ### Hierarchy: roots, peek, and drill
 
+![A root card after a real fan-out: the L4 subtree line summarizes its lineage children and attached reviewer](images/board-fanout.png)
+
 Related cards group under one root, derived — never stored — from two relations the cards already carry:
 
 - **Lineage** (the citizenship axis): a worktree card's `parentBranch` resolves to the live card owning
@@ -385,6 +387,8 @@ The **agent chrome** stacks, top to bottom:
 5. a **shell panel** — either the shell tabs, or a "New terminal" button when none are open.
 ### The document reader
 
+![The document reader: a card's markdown documents, read in place](images/docs.png)
+
 The **Docs** tab reads the markdown documents in a card's working directory, and lets you comment on a
 passage without leaving the board.
 
@@ -665,7 +669,7 @@ The shipped bindings:
 | `g` then `p`/`i`/`r`/`f`/`a`/`d`/`s` | Go to Plan / Implementation / Review / Freeform / Activity / Done / Settings |
 | `c` | New card (opens the spawn sheet) |
 | `H` / `L` | **Carry** the selected card one column left / right (shift = grab the card) |
-| `a` · `o` · `O` · `d` · `I` · `t` | Archive · open the card's **notes** (Obsidian vault) · View changes in Zed · toggle Agent/Diff view · open the inbox editor · new shell tab |
+| `a` · `o` · `O` · `d` · `I` · `t` | Archive · open the card's **notes** (Obsidian vault) · View changes in Zed · cycle the inspector Agent → Diff → Docs view · open the inbox editor · new shell tab |
 | `y c` / `y t` / `y p` / `y i` | Copy chat link / tmux target / cwd path / card reference |
 | `/` · `n` / `N` | **Search / filter cards** — opens the `SearchBar` (matches title / branch / repo); typing dims non-matches and jumps to the first hit, `Enter` commits back to the board where `n`/`N` cycle matches, `Esc` clears |
 | `f` | **Link-hints** — overlay a short home-row label on every visible card; type the label to jump to it (`Esc` aborts) |

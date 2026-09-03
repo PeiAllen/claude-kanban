@@ -54,6 +54,13 @@ intercepts keys meant for the live agent terminal:
 - **Four card modes.** **Worktree** (isolated git branch), **Borrowed/Freeform** (run in any existing
   directory you point at), **Scratch** (a fresh throwaway dir Orchestra makes and deletes), and a
   **Read-only** access mode that lets an agent read/search/`git` but physically cannot write.
+- **Related cards group into a hierarchy.** A card that spawned another, or a read-only reviewer
+  attached to one, groups under a root. Select the root to see its subordinates as inline rows.
+  Drill in (`→`) to re-scope the board to that subtree
+  ([Hierarchy](docs/07-app-ui.md#hierarchy-roots-peek-and-drill)).
+- **The board shows what needs you.** A solid amber chip marks a card that is genuinely blocked on a
+  human action — a question, a permission, or a stalled run. Every other signal on a card stays
+  muted, so amber always means "look here" ([the attention system](docs/09-design-decisions.md#the-attention-system)).
 - **Live state, provider-owned.** A card's lifecycle stays separate from its current provider state:
   `running`, `waiting`, or `unavailable`. Claude supplies strictly correlated hook observations (with a
   narrow provider-native idle repair), Codex supplies app-server thread/turn state, and a newly live card remains
@@ -63,6 +70,9 @@ intercepts keys meant for the live agent terminal:
   and the inspector has a read-only **Diff** view (difftastic-rendered when `difft` is installed, git's
   colored diff otherwise; a working / branch baseline toggle) — so you can review an agent's changes
   without leaving Orchestra for Zed.
+- **Read and comment on a card's docs.** The inspector's **Docs** tab renders a card's markdown
+  files in place. Select a passage and leave a comment. It lands in the agent's inbox, addressed to
+  the exact passage you picked ([the document reader](docs/07-app-ui.md#the-document-reader)).
 - **Crash & reboot recovery.** The daemon tracks each agent's native session id and eagerly resumes
   sessions after a crash or reboot; unrecoverable cards surface a Recovery panel. Even a finished card
   isn't terminal — **Reopen** a Done card and the daemon recreates its worktree and resumes the agent.
