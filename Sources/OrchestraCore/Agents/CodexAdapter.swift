@@ -382,6 +382,7 @@ public struct CodexAdapter: Adapter {
             _ = MCPConfiguration.installCodexGlobally(command: ctx.orchestraMCPBin,
                                                        at: codexHome + "/config.toml")
         }
+        CodexTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd, codexHome: codexHome)
         try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)
             .write(toFile: path, atomically: true, encoding: .utf8)
     }
@@ -474,6 +475,53 @@ public struct CodexAdapter: Adapter {
         return UUID(uuidString: candidate) != nil ? candidate.lowercased() : nil
     }
 
+}
+
+/// Mirrors an already-approved Orchestra trust decision into Codex's native per-directory configuration.
+/// It deliberately never resolves trust itself: `ctx.trustCwd` remains the sole input, and an untrusted
+/// context leaves every existing Codex decision alone.
+enum CodexTrust {
+    private static let lock = NSLock()
+
+    static func apply(trusted: Bool, cwd: String, codexHome: String) {
+        guard trusted else { return }
+        lock.lock()
+        defer { lock.unlock() }
+
+        let path = "\(codexHome)/config.toml"
+        let fm = FileManager.default
+        let existing: String
+        if fm.fileExists(atPath: path) {
+            guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+            existing = contents
+        } else {
+            existing = ""
+        }
+
+        let project = "projects.\(TOMLOverride.quotedKey(cwd))"
+        let header = "[\(project)]"
+        let dottedTrust = "\(project).trust_level"
+        guard !alreadyConfigured(in: existing, header: header, dottedTrust: dottedTrust) else { return }
+
+        var updated = existing
+        if !updated.isEmpty && !updated.hasSuffix("\n") { updated += "\n" }
+        updated += "\n\(header)\ntrust_level = \"trusted\"\n"
+        do {
+            try fm.createDirectory(atPath: codexHome, withIntermediateDirectories: true)
+            try updated.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            // Native trust is an optional convenience; a profile write remains the load-bearing launch step.
+        }
+    }
+
+    private static func alreadyConfigured(in text: String, header: String, dottedTrust: String) -> Bool {
+        text.split(whereSeparator: \.isNewline).contains { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line == header { return true }
+            guard line.hasPrefix(dottedTrust) else { return false }
+            return line.dropFirst(dottedTrust.count).trimmingCharacters(in: .whitespaces).hasPrefix("=")
+        }
+    }
 }
 
 public extension AgentCapabilities {
