@@ -1814,6 +1814,39 @@ cannot lay out an `NSViewRepresentable` — it draws a placeholder. The snapshot
 text view offscreen and shows the bitmap, so the screenshot is the shipping renderer rather than a
 parallel preview implementation that could drift from it.
 
+The rows themselves are built **once per load**, by `DiffPrepared` in OrchestraKit, and never inside a
+SwiftUI `body`. Each pane carries a `contentKey`, unique per (load, layout, side, file), and the view
+rebuilds its text storage only when that key or the palette changes. Both rules exist because SwiftUI
+calls `body` and `updateNSView` on every update of the observed model, not only when the diff changed.
+Building rows in `body` re-parses the whole diff each time, and re-applying the text costs a full
+re-layout of the file and throws the user's text selection away. Keying the apply makes an unrelated
+update cost nothing and keeps a selection alive across it.
+
+### A published write that changes nothing must not publish
+
+Every `@Published` write on the board model is idempotent: it compares first and returns when the value
+is unchanged. This is a correctness rule, not tidiness.
+
+`@Published` publishes on assignment, not on change, and the board model is observed by essentially the
+whole view tree. A SwiftUI `Picker` writes its binding back during the view update that renders it, so
+the inspector's Agent/Diff/Docs picker ran `BoardUX.inspectorMode`'s setter from inside
+`InspectorView.body`. Writing the value already there still fired `objectWillChange`, which invalidated
+every observing view *mid-update* — SwiftUI's "Publishing changes from within view updates is not
+allowed" fault, logged once per invalidated view. The update re-entered, and under the continuous
+layout load of scrolling the diff it stopped converging: the main thread pegged, the app beachballed,
+and the only way out was a force quit. Measured on the reporting machine, one instance logged 342 such
+faults in four minutes, 340 of them from that one setter.
+
+The same rule covers `WindowActivityMonitor.active`, whose one remaining case had a second cause worth
+naming: `bind(to:)` runs from `viewDidMoveToWindow`, which AppKit calls *during* the hosting view's
+`layout()`. At launch the value genuinely changes there (the app is not active yet), so an equality
+guard cannot cover it and the initial recompute is deferred to the next main-queue turn instead.
+
+The invariant to hold the app to is simple, and it is checkable: a healthy session logs **zero**
+`com.apple.runtime-issues:SwiftUI` faults. Those faults carry a full backtrace in the unified log, so
+`log show --predicate 'category == "SwiftUI"' --style json` plus `atos` names the offending setter
+directly — which is how this one was found, from the log of the session that had already frozen.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
