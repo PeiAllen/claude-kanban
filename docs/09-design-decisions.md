@@ -1824,8 +1824,14 @@ update cost nothing and keeps a selection alive across it.
 
 ### A published write that changes nothing must not publish
 
-Every `@Published` write on the board model is idempotent: it compares first and returns when the value
-is unchanged. This is a correctness rule, not tidiness.
+A `@Published` write on the board model that can run during a view update must be idempotent: it
+compares first and returns when the value is unchanged. This is a correctness rule, not tidiness.
+
+The rule is scoped to writes reachable from a view update, and it is enforced on the two that were —
+`BoardUX.inspectorMode` and `WindowActivityMonitor.active`. It is not a claim that every published
+write on the model is guarded today. Writes that only ever run from a completed RPC or a user action
+still assign unconditionally (`BoardStore.endSpawn`, for one), which is harmless there and would be
+worth guarding only if such a write ever became reachable from `body`.
 
 `@Published` publishes on assignment, not on change, and the board model is observed by essentially the
 whole view tree. A SwiftUI `Picker` writes its binding back during the view update that renders it, so
