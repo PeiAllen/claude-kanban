@@ -54,6 +54,41 @@ scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE a
 > are banned from the unit tier and live in `ContractTests`). New tests go in the mirror position of
 > the source file they cover.
 
+> **`--all` must be deterministic under load, not just when idle.** A test can hand-deliver a
+> readiness signal directly (a `report(sessionSource:)` call that resolves a launch's readiness
+> waiter). That signal then races the production readiness **grace timeout** — a real
+> `Clock.sleep`, on `TestEnv`'s own default clock when a test omits `clock:`. Under normal
+> scheduling the signal always wins by a wide margin. Under a loaded machine (another card's
+> concurrent build) it can lose, and the card then parks in `.launching` forever. `TestEnv.make`
+> already accepts an injected `TestClock` for this: pass one, and never advance it, so the timeout
+> can never fire. Use this pattern whenever a test hand-delivers a readiness signal outside the
+> shared, self-healing `TestEnv.spawnAwaited`/`reconcileToLive` helpers — those helpers already
+> retry past this race and need no injected clock.
+>
+> **Freezing the clock is only safe when something else still bounds the test.** `awaitReadiness`'s
+> continuation has no cancellation handling, so if a test `await`s the production step directly
+> (an `async let`, with no `pollUntil` wrapping it), a frozen clock removes the ONLY way a genuine
+> regression could ever resolve the wait — a red test becomes an indefinite hang of `--all` instead,
+> which is worse than the flake it replaces. Freeze the clock only where an outer `pollUntil` (or
+> equivalent bounded wait) still owns the test's own timeout; otherwise keep the real, generous
+> `grace:` the test already had.
+>
+> **A `ContractTests` deadline test may legitimately race a real clock.** Proving that a real
+> socket write or connect enforces its own deadline is this tier's job, and no injected clock can
+> fake a kernel `poll(2)` timeout. But the assertion's bound must absorb scheduling noise, not race
+> it with a thin margin. Measured under one concurrent build, a socket-write deadline test overshot
+> its 2.5s bound (a 2s deadline plus 500ms of slack) by 210ms. The fix widens the margin — a flat
+> addition (scheduler-noticing latency doesn't scale with the configured deadline), sized by
+> extrapolating that one measurement against this project's own documented worst-case build-
+> contention multiplier rather than picking a round number, and reasoned in the code
+> (`ClaudeMessageSenderTests.deadlineMargin`) — never the deadline itself. A same-file rendezvous
+> helper that hops through a low-QoS (`.utility`)
+> dispatch queue to wait on a real peer thread should use `.userInitiated` instead, so the wait
+> itself does not get deprioritized under load. For pacing an in-flight exchange so a deadline
+> reliably interrupts it mid-stream, use a real per-frame delay (a small `Thread.sleep` between
+> writes), as `CodexAppServerTransportTests`'s notification-flood tests already do. Racing raw read
+> throughput against a fixed frame count instead breaks the other way, on a fast, idle machine.
+
 > **Always build through `scripts/` — never a bare `swift build`.** Builds here are
 > **contention-bound, not CPU-bound**. Measured: one cold `swift build --build-tests` takes
 > **165s**, but **three concurrent ones take 520s *each*** — degradation is super-linear, so

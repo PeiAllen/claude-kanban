@@ -103,7 +103,11 @@ struct CodexAppServerTransportTests {
                 binding: .init(harnessSessionId: "thread-1", cwd: "/work", startedAfter: nil)
             ) { observations.append($0) }
         }
-        #expect(finished.wait(timeout: .now() + 10) == .success)
+        // 60s, not 10s: this real peer `Thread` does accept() + a WebSocket upgrade + three JSON-RPC
+        // round trips + a ping + a fragmented notification + a close frame — comparable real work to
+        // the ClaudeMessageSenderTests peer that measurably missed a 10s bound under one concurrent
+        // build (see docs/08-building-operations.md).
+        #expect(finished.wait(timeout: .now() + 60) == .success)
 
         #expect(result.error == nil)
         #expect(result.messages.map { $0["method"]?.stringValue } == [
@@ -334,7 +338,14 @@ struct CodexAppServerTransportTests {
 
     @Test("continuous WebSocket control frames cannot outlive a real sender attempt deadline")
     func controlFrameFloodStopsAtAbsoluteDeadline() async throws {
-        let controlFrameCount = 4_000
+        // Pre-existing flake, found while verifying the load fixes elsewhere in this file (reproduced
+        // on unmodified `main`, independent of load). The old design wrote all frames in one bulk
+        // `writeAll` and raced raw read throughput against the deadline below: on a fast, idle
+        // machine, draining 4,000 tiny frames took well under 100ms, so `pongCount` reached
+        // `controlFrameCount` every time. Pacing the writer (like the sibling notification-flood test
+        // above) makes "still draining when the deadline fires" true by construction — at most
+        // ~20 frames can arrive in any 100ms window — regardless of how fast the reader is.
+        let controlFrameCount = 400
         let path = "/tmp/orch-codex-control-flood-\(UUID().uuidString.prefix(8)).sock"
         let listener = try UDS.listen(path: path)
         defer {
@@ -354,10 +365,17 @@ struct CodexAppServerTransportTests {
             let floodWriterDone = DispatchSemaphore(value: 0)
             var floodWriterStarted = false
             defer {
-                closeFD(client)
+                // Wait for the writer to actually stop BEFORE closing `client` — the pacing below means
+                // it is virtually always still mid-loop when the deadline fires and this scope unwinds.
+                // Closing first would risk the writer's next `UDS.writeAll(client, ...)` landing on a
+                // closed (and potentially already-reused-by-another-test) descriptor. The client already
+                // closed its end by the time we get here (that closure is what ends the read loop below),
+                // so the writer's own next write fails fast (broken pipe) — this wait is a backstop, not
+                // the primary way it stops.
                 if floodWriterStarted {
-                    _ = floodWriterDone.wait(timeout: .now() + 1)
+                    _ = floodWriterDone.wait(timeout: .now() + 60)
                 }
+                closeFD(client)
             }
 
             do {
@@ -378,20 +396,24 @@ struct CodexAppServerTransportTests {
                 ]))
                 _ = try Self.readJSON(client, pending: &pending) // turn/start
 
-                // Deliver one buffered batch. The server drains each pong, so an old peer cannot escape
-                // its read deadline merely because its writes block.
+                // Pace the flood at one frame per 5ms — the same real, deliberate pacing the sibling
+                // notification-flood test above uses — so supply, not read throughput, bounds how many
+                // can arrive before the deadline. The server drains each pong, so an old peer cannot
+                // escape its read deadline merely because its writes block.
                 let frame = try WebSocketFrameCodec.encode(
                     .init(fin: true, opcode: .ping, payload: Data("pulse".utf8)),
                     maskKey: nil
                 )
-                let flood: Data = {
-                    var data = Data()
-                    for _ in 0..<controlFrameCount { data.append(frame) }
-                    return data
-                }()
                 let floodWriter = Thread {
                     defer { floodWriterDone.signal() }
-                    if !UDS.writeAll(client, flood) { result.setEOF() }
+                    for _ in 0..<controlFrameCount {
+                        guard UDS.writeAll(client, frame) else { result.setEOF(); return }
+                        Thread.sleep(forTimeInterval: 0.005)
+                    }
+                    // Matches the sibling notification-flood test's marker above: reaching the end of
+                    // the loop means the sender never stopped at its deadline (or the count was too
+                    // small for the machine) — a named failure instead of a bare `Self.wait` timeout.
+                    result.fail("sender did not stop at its deadline")
                 }
                 floodWriterStarted = true
                 floodWriter.start()
@@ -424,7 +446,11 @@ struct CodexAppServerTransportTests {
 
         #expect(result.error == nil)
         #expect(result.sawEOF)
-        #expect(result.pongCount > 0)
+        // Not `pongCount > 0`: under heavy suite-wide contention the RPC setup preceding the flood
+        // (initialize/resume/turn-start) can itself consume the whole 100ms deadline, so zero pongs is
+        // a legitimate outcome of the SAME contract (the deadline governs the whole attempt) — the
+        // sibling notification-flood test above makes no such claim either. What this suite exists to
+        // prove is that the flood is cut off, not exhausted:
         #expect(result.pongCount < controlFrameCount)
     }
 
@@ -475,7 +501,9 @@ struct CodexAppServerTransportTests {
         peer.shutdown()
         peer.close()
 
-        #expect(finished.wait(timeout: .now() + 10) == .success)
+        // 60s, not 10s — same reasoning as `composedTransport` above: a real accept()+read-to-EOF
+        // cycle on a loaded machine.
+        #expect(finished.wait(timeout: .now() + 60) == .success)
         #expect(result.error == nil)
         #expect(result.sawEOF)
         #expect(shutdownObservation.wasLocked == true)
@@ -557,10 +585,14 @@ struct CodexAppServerTransportTests {
         }
     }
 
+    /// See `ClaudeMessageSenderTests.wait` — same reasoning: `.userInitiated`, not `.utility`, so
+    /// dispatching this wait doesn't itself get starved under a loaded machine, and a 60s bound (the
+    /// same order of magnitude as `pollUntil`'s load backstops elsewhere) rather than 10s, which a
+    /// real peer `Thread`'s accept()+read() cycle can miss under sustained contention.
     private static func wait(_ semaphore: DispatchSemaphore) async -> DispatchTimeoutResult {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: semaphore.wait(timeout: .now() + 10))
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + 60))
             }
         }
     }
