@@ -228,6 +228,15 @@ struct LaunchStepperTests {
 
     @Test("test_launchStepReachesLiveOnReady_claude")   // .sessionStartHook awaits the signal
     func test_launchStepReachesLiveOnReady_claude() async throws {
+        // NOT a frozen TestClock, deliberately (see receiving-review note in the commit history): this
+        // test directly `await`s the step via `async let`, a STRUCTURED child of this function — unlike
+        // HandleHookTests' equivalent fix, there is no `pollUntil` backstop around it. `awaitReadiness`'s
+        // continuation (OrchestraService+Recovery.swift) has no cancellation handling, so if `report(...)`
+        // ever failed to resolve the waiter, a frozen clock's timeout would never fire either — the
+        // `async let` would hang forever, and so would this test (and the whole suite behind it: Swift
+        // implicitly awaits an un-awaited `async let` at scope exit). `grace: 10` is a real backstop:
+        // the poll below only proceeds once the waiter is registered, so the report that follows is a
+        // single, immediate actor hop — 10 real seconds of margin for that is already generous.
         let env = TestEnv.make(grace: 10, capabilities: .claudeCode, proc: cfgFake())
         let card = try await seedLaunchingAwaited(env, branch: "b")
         let ctx = await env.svc.convergeContext()
@@ -243,6 +252,7 @@ struct LaunchStepperTests {
 
     @Test("test_launchStepReachesLiveOnReady_codex")
     func test_launchStepReachesLiveOnReady_codex() async throws {
+        // Real clock, deliberately — see the claude variant above for why.
         let env = TestEnv.make(grace: 10, capabilities: ReadinessSignalTests.codexStubCaps, proc: cfgFake())
         let card = try await seedLaunchingAwaited(env, branch: "b")
         let ctx = await env.svc.convergeContext()

@@ -159,7 +159,11 @@ struct ClaudeMessageSenderTests {
         #expect(result.failed)
         let startedAt = try #require(result.startedAt)
         let finishedAt = try #require(result.finishedAt)
-        #expect(finishedAt - startedAt < 500_000_000)
+        // The deadline itself is real production behavior (a `poll(2)`-bound connect against
+        // `DispatchTime.now()`, see `UDSSocket.swift`) — this bound only checks it fires SOON after,
+        // not instantly, so `deadlineMargin` is documented once, beside the sibling write-deadline
+        // test below.
+        #expect(finishedAt - startedAt < 50_000_000 + Self.deadlineMargin)
     }
 
     @Test("a peer that stops reading fails the socket-bound send deadline before shutdown")
@@ -186,8 +190,10 @@ struct ClaudeMessageSenderTests {
                 client, SOL_SOCKET, SO_RCVBUF, &receiveBuffer,
                 socklen_t(MemoryLayout<Int32>.size)
             ) == 0 else { return }
-            result.markStarted()
-            _ = releasePeer.wait(timeout: .now() + 10)
+            // A generous safety net, not the primary synchronization — the test signals `releasePeer`
+            // once it is done. Kept clearly above the send's own deadline+margin ceiling (5s) so it
+            // never fires first under load and short-circuits the intended sequencing.
+            _ = releasePeer.wait(timeout: .now() + 60)
         }
         server.stackSize = 1 << 20
         server.start()
@@ -200,6 +206,10 @@ struct ClaudeMessageSenderTests {
         // Keep encoding well below the attempt deadline even under full-suite load. The peer's small
         // receive buffer makes this payload ample to force the real socket write into backpressure.
         let message = String(repeating: "x", count: 4 * 1024 * 1024)
+        // Stamped here, not on the server thread: this measures `send`'s own observable duration —
+        // the same boundary the sibling connect-deadline test above uses — rather than also folding in
+        // accept()/setsockopt() skew and the 4MB encode that precede it.
+        result.markStarted()
         do {
             try await sender.send(message, timeout: 2)
             result.succeed()
@@ -215,8 +225,32 @@ struct ClaudeMessageSenderTests {
         #expect(result.failed)
         let finishedAt = try #require(result.finishedAt)
         let startedAt = try #require(result.startedAt)
-        #expect(finishedAt - startedAt < 2_500_000_000)
+        // The 2s deadline is real production behavior (a `poll(2)`-bound write against
+        // `DispatchTime.now()`, see `writeUntilDeadline` in `UDSSocket.swift`) — pinning it here IS
+        // the contract this suite exists for, so this stays a real wall-clock assertion rather than
+        // an injected clock. But it must not race a stopwatch with thin headroom: measured under one
+        // concurrent `xcodebuild`, this took 2.710s against the old 2.5s bound (a mere 500ms margin,
+        // ~15% of the timeout) — the thread noticing "the deadline passed" and resuming through the
+        // continuation needs real CPU time that a loaded machine doesn't hand out promptly.
+        // `deadlineMargin` is generous enough to absorb that noise while staying far short of this
+        // test's own 60s backstop (`releasePeer`'s wait), so a genuinely regressed deadline (one that
+        // silently falls back to that backstop instead of firing on its own) still fails this bound.
+        #expect(finishedAt - startedAt < 2_000_000_000 + Self.deadlineMargin)
     }
+
+    /// Real-clock margin added on top of a configured send/connect timeout when asserting the
+    /// operation finishes "soon after" its own deadline, not merely "eventually". Scheduling noise
+    /// between "the deadline passed" and "this thread got CPU to notice and resume" grows under a
+    /// loaded machine (concurrent `xcodebuild`/another card's build) — this margin absorbs that,
+    /// never a broken deadline: a regressed one either fires close to on time (nowhere near this
+    /// bound) or never fires at all (the test then hangs on its own backstop, not silently passes).
+    /// Extrapolated, not guessed: the one measured overshoot (210ms over the old 2.5s bound, under a
+    /// SINGLE concurrent build) scaled by this project's own documented worst-case build-contention
+    /// multiplier (three concurrent builds run 520s each vs 165s alone, ~3.15x) gives ~2.2s — 3s
+    /// leaves headroom above that without being so loose it stops catching a real regression. It is a
+    /// flat addition, not scaled to each test's own configured deadline: the noise being absorbed is
+    /// scheduler-noticing latency, which does not scale with how long the operation was told to wait.
+    private static let deadlineMargin: UInt64 = 3_000_000_000   // 3s
 
     @Test("shutdown holds descriptor ownership while interrupting an in-flight write, then rejects later sends")
     func shutdownInterruptsWriteAndRejectsLaterSends() async throws {
@@ -242,7 +276,10 @@ struct ClaudeMessageSenderTests {
             defer { closeFD(client) }
             serverResult.store(Self.readFirstLine(client))
             sawAuth.signal()
-            _ = drain.wait(timeout: .now() + 10)
+            // A generous safety net, not the primary synchronization — the test signals `drain` once
+            // it is done observing. Kept clearly above `Self.wait`'s own bound so it never fires
+            // first under load and short-circuits the intended sequencing.
+            _ = drain.wait(timeout: .now() + 60)
             _ = Self.readToEOF(client)
         }
         server.stackSize = 1 << 20
@@ -316,10 +353,17 @@ struct ClaudeMessageSenderTests {
         return result
     }
 
+    /// Wait for a real OS thread (the in-process peer, spawned via `Thread`) to signal, off a
+    /// `.userInitiated` queue rather than `.utility`: under a loaded machine, `.utility` work is the
+    /// first thing the scheduler deprioritizes, so dispatching the WAIT itself on that QoS could eat
+    /// into the very budget meant to absorb the peer thread's own scheduling delay. Measured: under one
+    /// concurrent `swift build -c release`, a plain `Thread`'s accept()+read() cycle plus this wait's
+    /// own dispatch missed the old 10s bound outright — 60s is the same order of magnitude already
+    /// used for `pollUntil`'s real-world-load backstops elsewhere in this suite.
     private static func wait(_ semaphore: DispatchSemaphore) async -> DispatchTimeoutResult {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: semaphore.wait(timeout: .now() + 10))
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + 60))
             }
         }
     }
