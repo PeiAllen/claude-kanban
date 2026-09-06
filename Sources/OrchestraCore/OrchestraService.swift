@@ -517,8 +517,15 @@ public actor OrchestraService {
         case .seeded:     sid = adapter.newSessionId()
         case .discovered: sid = nil
         }
-        // Resolve the chosen launch id (explicit / config default / adapter's first) to a full model.
-        let modelId = input.model ?? config.defaultModel ?? adapter.models().first?.id ?? ""
+        // A persisted default is valid only for the selected adapter. This keeps stale/foreign settings
+        // from bypassing its catalog, while an explicitly supplied model retains its existing pass-through
+        // behavior for callers that intentionally pair it with an explicit agent.
+        let models = adapter.models()
+        let configuredDefault = config.defaultModel.flatMap { candidate in
+            models.contains { $0.id == candidate } ? candidate : nil
+        }
+        // Resolve the chosen launch id (explicit / adapter-scoped config default / adapter's first) to a full model.
+        let modelId = input.model ?? configuredDefault ?? models.first?.id ?? ""
         let model = adapter.model(for: modelId)
         let startIn = input.startIn ?? .plan
         // Fork / fan-out: an authored seed (parent slice / handoff context) is delivered to a FRESH card

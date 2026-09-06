@@ -30,7 +30,7 @@
       "repo": "web",
       "branch": "feat/dark-mode",
       "agent": "codex",
-      "model": "gpt-5.5",
+      "model": "gpt-6-astra",
       "col": "review",
       "prompt": "In src/theme.css, add a dark colour scheme behind a prefers-color-scheme media query, reusing the existing custom properties. Keep it to that one file. Do not run any orchestra CLI commands, and do not move this card between columns."
     },

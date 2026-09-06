@@ -233,7 +233,7 @@ struct SpawnSheet: View {
                 }
 
                 field("Model") {
-                    // A WRAPPING grid, not a single row: an agent's catalog grows (Codex ships 8 models),
+                    // A WRAPPING grid, not a single row: an agent's catalog grows,
                     // and a fixed HStack silently truncates every label past ~6 — which made the three
                     // GPT-5.6 variants render as an identical "GPT-5.6…". Flowing onto a second row keeps
                     // every model legible at any catalog size.

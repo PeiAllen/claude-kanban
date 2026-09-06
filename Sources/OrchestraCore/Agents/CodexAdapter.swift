@@ -84,10 +84,10 @@ public struct CodexAdapter: Adapter {
     }
 
     private static let fallbackModels: [AgentModel] = [
+        AgentModel(id: "gpt-6-astra", displayName: "GPT-6 Astra", family: "gpt"),
         AgentModel(id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", family: "gpt"),
         AgentModel(id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", family: "gpt"),
         AgentModel(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", family: "gpt"),
-        AgentModel(id: "gpt-5.5", displayName: "GPT-5.5", family: "gpt"),
     ]
 
     /// Codex's thread id is `.discovered` from its app-server after launch, so Orchestra mints nothing
