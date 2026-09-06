@@ -59,9 +59,20 @@ public final class BoardUX: BoardStore {
     @Published public var inspectorModeByCard: [UUID: InspectorMode] = [:]
     /// The selected card's Agent/Diff mode. Hoisted here so the `d` verb can toggle it from the board;
     /// reads/writes route through `inspectorModeByCard` for the current selection.
+    /// The write is IDEMPOTENT, and that is load-bearing rather than tidiness. A SwiftUI `Picker`
+    /// writes its binding back during the view update that renders it, so this setter runs *inside*
+    /// `InspectorView.body`. `@Published` publishes on every assignment — equal values included — and
+    /// this model is observed by the whole view tree, so a no-op echo invalidated every view mid-update
+    /// ("Publishing changes from within view updates is not allowed"). Guarding on equality removes the
+    /// re-entrant update entirely. See `BoardUXInspectorModeTests`.
     public var inspectorMode: InspectorMode {
         get { selectedId.flatMap { inspectorModeByCard[$0] } ?? .agent }
-        set { if let id = selectedId { inspectorModeByCard[id] = newValue } }
+        set {
+            // Compare the EFFECTIVE value, not the raw entry: an unset card already reads `.agent`, so
+            // writing `.agent` to it must stay silent too.
+            guard let id = selectedId, (inspectorModeByCard[id] ?? .agent) != newValue else { return }
+            inspectorModeByCard[id] = newValue
+        }
     }
     /// A one-shot pulse the inspector observes to open its Inbox popover (from the `I` verb).
     @Published public var requestInboxOpen = false

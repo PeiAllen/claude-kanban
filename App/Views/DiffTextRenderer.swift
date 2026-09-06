@@ -66,6 +66,9 @@ final class DiffTextView: NSTextView {
     var gutterWidth: CGFloat = 0
     /// Unified shows old AND new numbers; split shows one per side.
     var showsBothNumbers = true
+    /// The `contentKey` of the rows currently in the text storage, or nil before the first apply.
+    /// `updateNSView` compares against it so an update that changes nothing rebuilds nothing.
+    var appliedKey: String?
 
     private static let numberFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
 
@@ -152,10 +155,9 @@ final class DiffTextView: NSTextView {
 /// outer `ScrollView` scrolls the whole file stack, exactly as it did with the row views. `scrollsHorizontally`
 /// gives the unified layout its long-line scrolling back; the split layout clips instead, as it always has.
 struct DiffTextRenderer: NSViewRepresentable {
-    let rows: [DiffTextRow]
+    let pane: DiffTextPane
     let palette: DiffTextPalette
     let gutterWidth: CGFloat
-    let showsBothNumbers: Bool
     let scrollsHorizontally: Bool
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -184,10 +186,25 @@ struct DiffTextRenderer: NSViewRepresentable {
         return scroll
     }
 
+    /// SwiftUI calls this on EVERY update of the observed model, not only when the diff changed, and
+    /// rebuilding the text storage costs a full re-layout of the file and throws the user's selection
+    /// away. So re-assert the cheap geometry, and touch the text only when its content or colours
+    /// actually differ.
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let text = scroll.documentView as? DiffTextView else { return }
         scroll.hasHorizontalScroller = scrollsHorizontally
-        apply(to: text)
+
+        let contentChanged = text.appliedKey != pane.contentKey || text.palette != palette
+        let geometryChanged = text.gutterWidth != gutterWidth || text.showsBothNumbers != pane.showsBothNumbers
+        guard contentChanged || geometryChanged else { return }
+
+        if contentChanged {
+            apply(to: text)                      // sets geometry too
+        } else {
+            text.gutterWidth = gutterWidth
+            text.showsBothNumbers = pane.showsBothNumbers
+            text.needsDisplay = true             // the gutter is drawn, so a redraw is enough
+        }
     }
 
     @MainActor
@@ -203,7 +220,7 @@ struct DiffTextRenderer: NSViewRepresentable {
     private func apply(to text: DiffTextView) {
         text.palette = palette
         text.gutterWidth = gutterWidth
-        text.showsBothNumbers = showsBothNumbers
+        text.showsBothNumbers = pane.showsBothNumbers
 
         let storage = NSMutableAttributedString()
         var lines: [DiffTextLine] = []
@@ -211,7 +228,7 @@ struct DiffTextRenderer: NSViewRepresentable {
         var offset = 0
         let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
 
-        for row in rows {
+        for row in pane.rows {
             starts.append(offset)
             lines.append(DiffTextLine(kind: row.kind, oldNum: row.oldNum,
                                       newNum: row.newNum, filler: row.filler))
@@ -227,6 +244,7 @@ struct DiffTextRenderer: NSViewRepresentable {
         text.textStorage?.setAttributedString(storage)
         text.lines = lines
         text.lineStarts = starts
+        text.appliedKey = pane.contentKey
         text.needsDisplay = true
     }
 
@@ -279,28 +297,5 @@ extension DiffTextRenderer {
         let image = NSImage(size: text.bounds.size)
         image.addRepresentation(rep)
         return image
-    }
-}
-
-/// The renderer's input row — the common shape of `DiffRow` (unified) and one side of a
-/// `DiffSplitRow` (split), so both layouts drive the same text view.
-struct DiffTextRow {
-    let kind: DiffRow.Kind
-    let oldNum: Int?
-    let newNum: Int?
-    let text: String
-    /// See `DiffTextLine.filler`. Always false in the unified layout, which has no empty cells.
-    let filler: Bool
-
-    init(kind: DiffRow.Kind, oldNum: Int?, newNum: Int?, text: String, filler: Bool = false) {
-        self.kind = kind
-        self.oldNum = oldNum
-        self.newNum = newNum
-        self.text = text
-        self.filler = filler
-    }
-
-    init(_ row: DiffRow) {
-        self.init(kind: row.kind, oldNum: row.oldNum, newNum: row.newNum, text: row.text)
     }
 }

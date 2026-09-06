@@ -186,6 +186,118 @@ public enum DiffSplitRows {
     }
 }
 
+// MARK: - Prepared render model
+
+/// The inspector's two diff layouts. Public because the prepared rows differ per layout.
+public enum DiffTextLayout: String, Sendable, CaseIterable { case unified, split }
+
+/// One line as the text renderer needs it — the common shape of a `DiffRow` (unified) and of one side
+/// of a `DiffSplitRow` (split), so both layouts drive the same text view.
+public struct DiffTextRow: Equatable, Sendable {
+    public let kind: DiffRow.Kind
+    public let oldNum: Int?
+    public let newNum: Int?
+    public let text: String
+    /// Split layout only: this side of a change has no counterpart (a pure add or pure remove), so it
+    /// gets the "nothing here" wash rather than reading as an ordinary context line.
+    public let filler: Bool
+
+    public init(kind: DiffRow.Kind, oldNum: Int?, newNum: Int?, text: String, filler: Bool = false) {
+        self.kind = kind
+        self.oldNum = oldNum
+        self.newNum = newNum
+        self.text = text
+        self.filler = filler
+    }
+
+    public init(_ row: DiffRow) {
+        self.init(kind: row.kind, oldNum: row.oldNum, newNum: row.newNum, text: row.text)
+    }
+}
+
+/// The rows for ONE text view — a whole file in the unified layout, one side of it in split.
+///
+/// `contentKey` is the point of this type. The renderer rebuilds an `NSTextView`'s entire text storage
+/// to apply rows, which discards the user's selection and invalidates the file's layout, so it must do
+/// that only when the rows actually changed. Comparing the arrays would be O(rows) on every SwiftUI
+/// update; comparing the key is O(1), and the key is unique per (load, layout, side, file).
+public struct DiffTextPane: Equatable, Sendable {
+    public let contentKey: String
+    public let rows: [DiffTextRow]
+    /// Unified shows old AND new numbers; split shows one per side.
+    public let showsBothNumbers: Bool
+    /// The widest line number the gutter must fit. Data, not geometry — the view sizes the column.
+    public let maxLineNumber: Int
+}
+
+/// One file's rows, built for the CURRENT layout.
+public struct DiffPreparedFile: Identifiable, Equatable, Sendable {
+    public let section: DiffFileSection
+    public let body: Body
+    public var id: String { section.id }
+
+    public enum Body: Equatable, Sendable {
+        case unified(DiffTextPane)
+        case split(remove: DiffTextPane, add: DiffTextPane)
+    }
+}
+
+/// Turns parsed diff sections into renderer-ready rows.
+///
+/// This runs ONCE per load, and again on a layout change — never inside a SwiftUI `body`. Building
+/// rows in `body` re-parses the whole diff on every update pass, so any unrelated republish on the
+/// observed model charges the full cost of the diff again.
+public enum DiffPrepared {
+    /// `generation` distinguishes successive loads of the same file, so reloading changed content
+    /// yields a different `contentKey` even though the file id and layout are identical.
+    public static func make(_ sections: [DiffFileSection],
+                            layout: DiffTextLayout,
+                            generation: Int) -> [DiffPreparedFile] {
+        sections.map { section in
+            let rows = DiffRows.make(section.lines)
+            switch layout {
+            case .unified:
+                let cells = rows.map(DiffTextRow.init)
+                return DiffPreparedFile(section: section, body: .unified(
+                    pane(cells, key: key(generation, section.id, layout, "u"), showsBothNumbers: true)))
+            case .split:
+                let split = DiffSplitRows.make(from: rows)
+                return DiffPreparedFile(section: section, body: .split(
+                    remove: pane(side(split, .remove), key: key(generation, section.id, layout, "l"),
+                                 showsBothNumbers: false),
+                    add: pane(side(split, .add), key: key(generation, section.id, layout, "r"),
+                              showsBothNumbers: false)))
+            }
+        }
+    }
+
+    /// One column of the split layout. A `nil` cell on a `change` row means that side has no
+    /// counterpart (a pure add or pure remove), and renders as a blank filler line.
+    private static func side(_ rows: [DiffSplitRow], _ side: DiffRow.Kind) -> [DiffTextRow] {
+        rows.map { row in
+            if row.kind == .hunk {
+                return DiffTextRow(kind: .hunk, oldNum: nil, newNum: nil, text: row.heading)
+            }
+            let text = side == .remove ? row.oldText : row.newText
+            let num = side == .remove ? row.oldNum : row.newNum
+            let kind: DiffRow.Kind = (row.kind == .change && text != nil) ? side : .context
+            return DiffTextRow(kind: kind, oldNum: num, newNum: nil, text: text ?? "",
+                               filler: row.kind == .change && text == nil)
+        }
+    }
+
+    private static func pane(_ rows: [DiffTextRow], key: String, showsBothNumbers: Bool) -> DiffTextPane {
+        let widest = rows.reduce(0) { max($0, max($1.oldNum ?? 0, $1.newNum ?? 0)) }
+        return DiffTextPane(contentKey: key, rows: rows,
+                            showsBothNumbers: showsBothNumbers, maxLineNumber: widest)
+    }
+
+    private static func key(_ generation: Int, _ fileId: String,
+                            _ layout: DiffTextLayout, _ pane: String) -> String {
+        "\(generation)#\(layout.rawValue)#\(pane)#\(fileId)"
+    }
+}
+
 public enum ANSIEscape {
     public static func strip(_ raw: String) -> String {
         let chars = Array(raw)
