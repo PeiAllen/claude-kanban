@@ -305,8 +305,8 @@ core handles the difference purely through the descriptor:
   setting. It is **build-probed** via
   `<bin> --help` and cached, so a stock `codex-rs` build (which lacks both the trust gate and the flag)
   still launches; the change is Codex-local — Claude's argv is untouched.
-- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (the `gpt-5.6`
-  family — Sol / Terra / Luna — = 372 000-token window; `gpt-5.5` = 272 000), `.copy`-bundled
+- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-6-astra`
+  = 1 050 000-token window; the `gpt-5.6` family — Sol / Terra / Luna — = 372 000), `.copy`-bundled
   so the app stays fully offline. This
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*
   (tokens ÷ window), because the Codex TUI reports no percentage of its own.

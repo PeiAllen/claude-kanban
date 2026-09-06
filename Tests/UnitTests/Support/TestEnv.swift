@@ -42,6 +42,7 @@ enum TestEnv {
     static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .stub,
                      grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                      registry: AgentRegistry? = nil,
+                     defaultModel: String? = nil,
                      extraAgents: [(id: String, models: [String])] = [],
                      clock: any Clock<Duration> = ContinuousClock(),
                      now: (@Sendable () -> Date)? = nil,
@@ -51,6 +52,7 @@ enum TestEnv {
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            defaultModel: defaultModel,
                             allowlist: [PathResolver.canonical(base)],
                             maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace,
                             // A launch timeout the test cannot outlive. The product default is 30s, which is

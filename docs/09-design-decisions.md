@@ -1947,7 +1947,7 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   (`hooksPush`) is never tailed, so its push path is byte-identical.
 - **`ctxPct` is derived from a vendored offline model table, and the parse is rename-tolerant.** Because
   Codex reports no context percentage, the parse computes it as tokens ÷ the context window from a
-  **vendored** `Resources/codex-models.json` (`gpt-5.5` = 272 000), never the rollout's own reported
+  **vendored** `Resources/codex-models.json` (`gpt-6-astra` = 1 050 000; `gpt-5.6` models = 372 000), never the rollout's own reported
   window — keeping the app fully offline. That per-adapter **offline model table** on `Adapter.models()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
   PR — **E1**, a root off `main` — which B2 consumes here; it is the
@@ -2181,7 +2181,7 @@ This change is pure **reachability wiring**, no new launch behavior:
 - **Model→adapter routing — Codex startable from a model-only pick.** `spawn` now resolves its adapter in
   three steps: an explicit **`agentId`** wins → else the adapter that **owns the chosen model**
   (new `AgentRegistry.adapter(forModel:)`, catalog-driven) → else the **configured default**. So the app's
-  flat model picker, which sends only a model id, lands a `gpt-5.5` selection on the Codex adapter.
+  flat model picker, which sends only a model id, lands a `gpt-6-astra` selection on the Codex adapter.
 - **Two surfaces for the picker.** `OrchestraService.models(nil)` now returns the **union** across every
   enabled adapter (default agent first), keeping the flat/default-model surfaces (e.g. Settings) working;
   a new `agents()` + `AgentInfo` + [`agents` RPC](05-command-reference.md#server-only-built-in-methods)
