@@ -174,7 +174,7 @@ question or changes `wait` semantics.
 ### The Claude Code adapter
 
 `ClaudeCodeAdapter` (`id = "claude-code"`, `bin = "claude"`) catalogs the available models — Opus 5,
-Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
+Fable 5.1, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
 
 - **start**: `claude [--model <id>] [--permission-mode auto for plan] [read-only flags] [--session-id
   <uuid>] --settings <one file> [--name <title>] [<prompt>]`. The session id is

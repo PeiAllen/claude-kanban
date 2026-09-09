@@ -92,7 +92,7 @@ struct SpawnSheet: View {
         id: "claude-code", name: "Claude Code", icon: "sparkle",
         models: [
             AgentModel(id: "claude-opus-5", displayName: "Opus 5", family: "claude"),
-            AgentModel(id: "claude-fable-5", displayName: "Fable 5", family: "claude"),
+            AgentModel(id: "claude-fable-5-1", displayName: "Fable 5.1", family: "claude"),
             AgentModel(id: "claude-sonnet-5", displayName: "Sonnet 5", family: "claude"),
             AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
         ],

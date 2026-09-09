@@ -37,7 +37,7 @@ orchestra send <ref> "use a token bucket"
 orchestra inbox <ref>                # list unresolved inbox messages; includeHistory returns handed-off history
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
 orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card with authored context
-orchestra handoff <ref> "summary…" --model claude-fable-5   # …and RE-SEAT it onto a stronger model
+orchestra handoff <ref> "summary…" --model claude-fable-5-1   # …and RE-SEAT it onto a stronger model
 orchestra trust <path>               # grant a human's write-trust for a dir (interactive only)
 orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
