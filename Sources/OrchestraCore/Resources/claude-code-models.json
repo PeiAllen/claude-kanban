@@ -1,7 +1,7 @@
 [
   { "id": "claude-opus-5",    "displayName": "Opus 5",    "family": "claude", "contextWindow": 200000,
     "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "claude-fable-5",   "displayName": "Fable 5",   "family": "claude", "contextWindow": 200000,
+  { "id": "claude-fable-5-1", "displayName": "Fable 5.1", "family": "claude", "contextWindow": 200000,
     "flags": { "toolCall": true, "reasoning": true, "vision": true } },
   { "id": "claude-sonnet-5",  "displayName": "Sonnet 5",  "family": "claude", "contextWindow": 200000,
     "flags": { "toolCall": true, "reasoning": true, "vision": true } },
