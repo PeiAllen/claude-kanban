@@ -111,7 +111,7 @@ public struct AdapterContext: Sendable {
     public let orchestraMCPBin: String // absolute path of the bundled `orchestra-mcp` server
     public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags
     public let trustCwd: Bool       // Orchestra owns cwd (e.g. a scratch dir it made) → pre-trust it outright
-    public let autoInstallMCPGlobally: Bool // opt-in add-only global MCP setup during launch preparation
+    public let autoInstallMCPGlobally: Bool // opt-in global MCP setup and stale-entry reconciliation during launch preparation
     public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
                                     // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
     public let observationEndpoint: AgentObservationEndpoint?

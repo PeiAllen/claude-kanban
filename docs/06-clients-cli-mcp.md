@@ -149,9 +149,12 @@ and appends an idempotent PATH block to the user's shell profile. The daemon-lau
 already includes `~/.local/bin`, so cards started by the app see the commands even before a new shell
 loads the profile.
 
-Existing same-name MCP entries, files, or symlinks are left untouched, and disabling the toggle does not
-remove anything it previously installed. Global MCP config uses the resolved bundled `orchestra-mcp`
-path directly, so a conflicting user-local shim cannot change which bridge a configured host launches.
+Existing same-name MCP entries, files, or symlinks are left untouched while the toggle is enabled. When
+the toggle is off, the next card launch removes the canonical `orchestra` entry from the two user MCP
+configs, preserving unrelated settings; it leaves the CLI symlinks and shell PATH block in place. Global
+MCP config uses the resolved bundled `orchestra-mcp` path directly, so a conflicting user-local shim
+cannot change which bridge a configured host launches. A host that already has an open MCP session must
+be restarted or reconnected before it drops a previously discovered server.
 The app and Linux deployment bundle ship `orchestrad`, `orchestra`, and `orchestra-mcp` together, so
 normal card setup does not require a separate CLI or MCP download.
 
