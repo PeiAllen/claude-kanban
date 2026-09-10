@@ -165,8 +165,8 @@ struct ClaudeDelegationTests {
         }
     }
 
-    @Test("global MCP installation is opt-in and add-only")
-    func globalMCPInstallIsOptIn() throws {
+    @Test("global MCP installation is opt-in and disabling it removes the stale Claude entry")
+    func globalMCPInstallIsOptInAndReconciles() throws {
         let home = tmpCwd()
         let cwd = tmpCwd()
         defer {
@@ -191,6 +191,13 @@ struct ClaudeDelegationTests {
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
         #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
             .contains("Orchestra user-local command path"))
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
+        let removedData = try Data(contentsOf: URL(fileURLWithPath: path))
+        let removedRoot = try #require(JSONSerialization.jsonObject(with: removedData) as? [String: Any])
+        let removedServers = try #require(removedRoot["mcpServers"] as? [String: Any])
+        #expect(removedServers["orchestra"] == nil)
     }
 
     @Test("start(ctx) argv + env are unchanged by the added materialization")

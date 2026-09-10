@@ -74,7 +74,7 @@ struct SettingsView: View {
                     .padding(.horizontal, 13).padding(.vertical, 11)
                     rowDivider
                     toggleRow("Install Orchestra MCP and CLI globally",
-                              "Add missing MCP entries and user-local orchestra commands; existing files are left unchanged.",
+                              "Add missing global MCP entries and user-local commands; turning it off removes global Orchestra entries on the next card launch.",
                               isOn: $autoInstallMCPGlobally)
                 }
 

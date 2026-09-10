@@ -686,8 +686,8 @@ struct CodexGuidanceTests {
         #expect(!adapter.start(ctx).contains("-c"))
     }
 
-    @Test("global MCP installation is opt-in and uses the Codex home")
-    func globalMCPInstallIsOptIn() throws {
+    @Test("global MCP installation is opt-in and disabling it removes the stale Codex entry")
+    func globalMCPInstallIsOptInAndReconciles() throws {
         let home = NSTemporaryDirectory() + "codex-mcp-" + UUID().uuidString
         defer { try? FileManager.default.removeItem(atPath: home) }
         let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false, userHome: home)
@@ -707,6 +707,11 @@ struct CodexGuidanceTests {
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
         #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
             .contains("Orchestra user-local command path"))
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
+        let removed = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!removed.contains("[mcp_servers.orchestra]"))
     }
 
     @Test("prepareToLaunch is load-bearing: no profile file → `-p` would resolve nothing")

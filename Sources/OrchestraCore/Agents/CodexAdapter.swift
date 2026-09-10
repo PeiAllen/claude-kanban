@@ -381,6 +381,10 @@ public struct CodexAdapter: Adapter {
                                                       home: userHome)
             _ = MCPConfiguration.installCodexGlobally(command: ctx.orchestraMCPBin,
                                                        at: codexHome + "/config.toml")
+        } else {
+            // Global installation is opt-in. Reconcile registrations created by an earlier opt-in so
+            // disabling the setting actually removes the external entry point; launch-local MCP remains.
+            _ = MCPConfiguration.removeCodexGlobally(at: codexHome + "/config.toml")
         }
         CodexTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd, codexHome: codexHome)
         try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)

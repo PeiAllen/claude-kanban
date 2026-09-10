@@ -70,6 +70,36 @@ struct MCPConfigurationTests {
         #expect(try String(contentsOfFile: path, encoding: .utf8) == malformed)
     }
 
+    @Test("Claude global cleanup removes only Orchestra and preserves unrelated servers")
+    func removeClaudeGlobalRemovesOnlyOrchestra() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/claude.json"
+        try """
+        {"theme":"dark","mcpServers":{"other":{"type":"stdio","command":"/other"},"orchestra":{"type":"stdio","command":"/bin/orchestra-mcp"}}}
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.removeClaudeGlobally(at: path))
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(root["mcpServers"] as? [String: Any])
+        #expect(servers["orchestra"] == nil)
+        #expect(servers["other"] != nil)
+        #expect(MCPConfiguration.removeClaudeGlobally(at: path) == false)
+    }
+
+    @Test("Claude global cleanup leaves malformed JSON untouched")
+    func removeClaudeGlobalIgnoresMalformedFile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/claude.json"
+        let malformed = "not json"
+        try malformed.write(toFile: path, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.removeClaudeGlobally(at: path) == false)
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == malformed)
+    }
+
     @Test("Codex global install appends Orchestra and preserves existing text")
     func installCodexGlobalAddsOnlyMissingServer() throws {
         let directory = try temporaryDirectory()
@@ -109,6 +139,58 @@ struct MCPConfigurationTests {
 
         #expect(MCPConfiguration.installCodexGlobally(command: "/other", at: path) == false)
         #expect(try String(contentsOfFile: path, encoding: .utf8) == existing)
+    }
+
+    @Test("Codex global cleanup removes the Orchestra table and nested tables")
+    func removeCodexGlobalRemovesNestedOrchestraTables() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/config.toml"
+        let existing = """
+        model = "gpt-5"
+        [mcp_servers.orchestra]
+        command = "/bin/orchestra-mcp"
+        [mcp_servers.orchestra.tools]
+        spawn = "approve"
+        [mcp_servers.other]
+        command = "/other"
+        mcp_servers.orchestra.dotted = "remove"
+        """
+        try existing.write(toFile: path, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.removeCodexGlobally(at: path))
+        let result = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(result.contains("model = \"gpt-5\""))
+        #expect(result.contains("[mcp_servers.other]"))
+        #expect(result.contains("command = \"/other\""))
+        #expect(!result.contains("mcp_servers.orchestra"))
+        #expect(MCPConfiguration.removeCodexGlobally(at: path) == false)
+    }
+
+    @Test("Codex global cleanup recognizes quoted Orchestra table")
+    func removeCodexGlobalRecognizesQuotedServer() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/config.toml"
+        let existing = "[mcp_servers.\"orchestra\"]\ncommand = \"/old\"\n[mcp_servers.other]\ncommand = \"/other\"\n"
+        try existing.write(toFile: path, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.removeCodexGlobally(at: path))
+        let result = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!result.contains("orchestra"))
+        #expect(result.contains("[mcp_servers.other]"))
+    }
+
+    @Test("Codex global cleanup leaves malformed config untouched")
+    func removeCodexGlobalIgnoresMalformedFile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/config.toml"
+        let malformed = "model = \"gpt-5\"\n[mcp_servers.orchestra\ncommand = \"/bin/orchestra-mcp\"\n"
+        try malformed.write(toFile: path, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.removeCodexGlobally(at: path) == false)
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == malformed)
     }
 
     @Test("user command install creates both shims and an idempotent PATH block")

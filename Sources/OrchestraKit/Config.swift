@@ -23,7 +23,8 @@ public struct Config: Codable, Sendable, Equatable {
     public var statusLineMode: StatusLineMode
     public var customStatusLine: String?
     /// When enabled, the next card launch adds Orchestra's MCP server to missing global Claude and
-    /// Codex entries. Existing same-name entries are never replaced.
+    /// Codex entries. When disabled, the next card launch removes the canonical global Orchestra
+    /// entries while leaving launch-local card configuration and user-local CLI shims in place.
     public var autoInstallMCPGlobally: Bool
 
     /// Wall-clock bound (seconds) for a `git worktree add` checkout — generous because a cold

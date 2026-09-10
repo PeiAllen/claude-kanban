@@ -277,6 +277,10 @@ public struct ClaudeCodeAdapter: Adapter {
                                                       home: claudeHome)
             _ = MCPConfiguration.installClaudeGlobally(command: ctx.orchestraMCPBin,
                                                         at: claudeHome + "/.claude.json")
+        } else {
+            // Global installation is opt-in. Reconcile registrations created by an earlier opt-in so
+            // disabling the setting actually removes the external entry point; launch-local MCP remains.
+            _ = MCPConfiguration.removeClaudeGlobally(at: claudeHome + "/.claude.json")
         }
         // Apply the CORE's trust decision (resolved into ctx.trustCwd by OrchestraService.resolveTrust).
         // The adapter only *mirrors* that decision into Claude's native per-directory trust — it never
