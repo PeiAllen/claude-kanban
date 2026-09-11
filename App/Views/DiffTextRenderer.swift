@@ -24,7 +24,7 @@ import OrchestraCore
 /// `Equatable` so `updateNSView` can tell a real theme change from an ordinary re-render.
 struct DiffTextPalette: Equatable {
     let code, addText, removeText, gutterText, hunkText: NSColor
-    let addTint, removeTint, hunkBand, gutterBg, fillerTint: NSColor
+    let addTint, removeTint, hunkBand, gutterBg, fillerTint, hair, headerBackground: NSColor
 
     init(theme: Theme) {
         code = NSColor(theme.term)
@@ -37,17 +37,9 @@ struct DiffTextPalette: Equatable {
         hunkBand = NSColor(theme.accent.opacity(theme.dark ? 0.10 : 0.06))
         gutterBg = NSColor(theme.dark ? Color.white.opacity(0.03) : Color.black.opacity(0.025))
         fillerTint = NSColor(theme.termPrompt)
+        hair = NSColor(theme.hair)
+        headerBackground = NSColor(theme.termPrompt)
     }
-}
-
-/// One rendered line: what to draw in the gutter, and how to tint the row.
-struct DiffTextLine {
-    let kind: DiffRow.Kind
-    let oldNum: Int?
-    let newNum: Int?
-    /// Split layout only: this side of a change has no counterpart (a pure add or pure remove), so it
-    /// gets the "nothing here" wash rather than reading as an ordinary context line.
-    let filler: Bool
 }
 
 // MARK: - The text view
@@ -69,6 +61,9 @@ final class DiffTextView: NSTextView {
     /// The `contentKey` of the rows currently in the text storage, or nil before the first apply.
     /// `updateNSView` compares against it so an update that changes nothing rebuilds nothing.
     var appliedKey: String?
+    /// Kept separately from `appliedKey`: a palette change can redraw existing glyphs without
+    /// replacing the attributed string or clearing the user's selection.
+    var appliedPalette: DiffTextPalette?
 
     private static let numberFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
 
@@ -147,6 +142,60 @@ final class DiffTextView: NSTextView {
     }
 }
 
+extension DiffTextView {
+    static func makeConfiguredTextView() -> DiffTextView {
+        let text = DiffTextView(frame: .zero)
+        text.isEditable = false
+        text.isSelectable = true
+        text.drawsBackground = false
+        text.textContainerInset = NSSize(width: 0, height: DiffPreparedText.verticalInset)
+        text.isHorizontallyResizable = true
+        text.isVerticallyResizable = true
+        let unbounded = CGFloat.greatestFiniteMagnitude
+        text.maxSize = NSSize(width: unbounded, height: unbounded)
+        text.textContainer?.widthTracksTextView = false
+        text.textContainer?.size = NSSize(width: unbounded, height: unbounded)
+        text.textContainer?.lineFragmentPadding = DiffPreparedText.lineFragmentPadding
+        return text
+    }
+
+    /// Returns whether string/metadata changed. Geometry and colours are deliberately independent:
+    /// reconfiguring an unchanged file must keep both its selection and its already-computed layout.
+    @discardableResult
+    func apply(document: DiffPreparedText, palette: DiffTextPalette) -> Bool {
+        let contentChanged = appliedKey != document.contentKey
+        let paletteChanged = appliedPalette != palette
+        let geometryChanged = gutterWidth != document.gutterWidth ||
+            showsBothNumbers != document.showsBothNumbers
+
+        if contentChanged {
+            textStorage?.setAttributedString(document.attributedString(palette: palette))
+            lines = document.lines
+            lineStarts = document.lineStarts
+            appliedKey = document.contentKey
+            appliedPalette = palette
+        } else if paletteChanged, let storage = textStorage {
+            document.applyColors(to: storage, palette: palette)
+            appliedPalette = palette
+        }
+
+        if geometryChanged {
+            gutterWidth = document.gutterWidth
+            showsBothNumbers = document.showsBothNumbers
+        }
+        if contentChanged, let layoutManager, let textContainer {
+            // Short unified panes can otherwise paint their bands and gutter before code appears.
+            // Materialize this mounted editor's glyphs before its first display.
+            layoutManager.ensureLayout(for: textContainer)
+        }
+        if contentChanged || geometryChanged || paletteChanged {
+            self.palette = palette
+            needsDisplay = true
+        }
+        return contentChanged
+    }
+}
+
 // MARK: - SwiftUI wrapper
 
 /// Hosts a `DiffTextView` for one file (or one side of the split layout).
@@ -161,18 +210,7 @@ struct DiffTextRenderer: NSViewRepresentable {
     let scrollsHorizontally: Bool
 
     func makeNSView(context: Context) -> NSScrollView {
-        let text = DiffTextView(frame: .zero)
-        text.isEditable = false
-        text.isSelectable = true
-        text.drawsBackground = false
-        text.textContainerInset = NSSize(width: 0, height: 4)
-        text.isHorizontallyResizable = true
-        text.isVerticallyResizable = true
-        let unbounded = CGFloat.greatestFiniteMagnitude
-        text.maxSize = NSSize(width: unbounded, height: unbounded)
-        text.textContainer?.widthTracksTextView = false
-        text.textContainer?.size = NSSize(width: unbounded, height: unbounded)
-        text.textContainer?.lineFragmentPadding = 6
+        let text = DiffTextView.makeConfiguredTextView()
 
         let scroll = NSScrollView(frame: .zero)
         scroll.documentView = text
@@ -193,18 +231,8 @@ struct DiffTextRenderer: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let text = scroll.documentView as? DiffTextView else { return }
         scroll.hasHorizontalScroller = scrollsHorizontally
-
-        let contentChanged = text.appliedKey != pane.contentKey || text.palette != palette
-        let geometryChanged = text.gutterWidth != gutterWidth || text.showsBothNumbers != pane.showsBothNumbers
-        guard contentChanged || geometryChanged else { return }
-
-        if contentChanged {
-            apply(to: text)                      // sets geometry too
-        } else {
-            text.gutterWidth = gutterWidth
-            text.showsBothNumbers = pane.showsBothNumbers
-            text.needsDisplay = true             // the gutter is drawn, so a redraw is enough
-        }
+        let document = DiffPreparedText(pane: pane, gutterWidth: gutterWidth)
+        _ = text.apply(document: document, palette: palette)
     }
 
     @MainActor
@@ -219,50 +247,7 @@ struct DiffTextRenderer: NSViewRepresentable {
 
     private func apply(to text: DiffTextView) {
         text.palette = palette
-        text.gutterWidth = gutterWidth
-        text.showsBothNumbers = pane.showsBothNumbers
-
-        let storage = NSMutableAttributedString()
-        var lines: [DiffTextLine] = []
-        var starts: [Int] = []
-        var offset = 0
-        let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-
-        for row in pane.rows {
-            starts.append(offset)
-            lines.append(DiffTextLine(kind: row.kind, oldNum: row.oldNum,
-                                      newNum: row.newNum, filler: row.filler))
-            let body = row.kind == .hunk ? row.text : marker(row.kind) + " " + row.text
-            let piece = (body as NSString).length + 1
-            storage.append(NSAttributedString(string: body + "\n", attributes: [
-                .font: font,
-                .foregroundColor: color(for: row.kind, palette: palette),
-            ]))
-            offset += piece
-        }
-
-        text.textStorage?.setAttributedString(storage)
-        text.lines = lines
-        text.lineStarts = starts
-        text.appliedKey = pane.contentKey
-        text.needsDisplay = true
-    }
-
-    private func marker(_ kind: DiffRow.Kind) -> String {
-        switch kind {
-        case .add: "+"
-        case .remove: "\u{2212}"
-        default: " "
-        }
-    }
-
-    private func color(for kind: DiffRow.Kind, palette: DiffTextPalette) -> NSColor {
-        switch kind {
-        case .add: palette.addText
-        case .remove: palette.removeText
-        case .hunk: palette.hunkText
-        case .context: palette.code
-        }
+        _ = text.apply(document: DiffPreparedText(pane: pane, gutterWidth: gutterWidth), palette: palette)
     }
 }
 
@@ -275,14 +260,8 @@ extension DiffTextRenderer {
     /// included, which is the whole point of the headless path.
     @MainActor
     func snapshotImage(width: CGFloat) -> NSImage {
-        let text = DiffTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10))
-        text.isEditable = false
-        text.drawsBackground = false
-        text.textContainerInset = NSSize(width: 0, height: 4)
-        text.textContainer?.lineFragmentPadding = 6
-        text.textContainer?.widthTracksTextView = false
-        text.textContainer?.size = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                                          height: CGFloat.greatestFiniteMagnitude)
+        let text = DiffTextView.makeConfiguredTextView()
+        text.frame = NSRect(x: 0, y: 0, width: width, height: 10)
         apply(to: text)
 
         guard let lm = text.layoutManager, let tc = text.textContainer else { return NSImage(size: .zero) }
