@@ -2,7 +2,7 @@ import Foundation
 
 /// The provider-specific spelling of Orchestra's launch-local MCP server and its optional global
 /// installation. Local configuration is always emitted by the adapters; global writes are explicitly
-/// opt-in and add-only so an existing user choice remains authoritative when the name is already used.
+/// opt-in, and stale Orchestra registrations are removed when that option is disabled.
 enum MCPConfiguration {
     static let serverName = "orchestra"
     private static let userPathMarker = "# Orchestra user-local command path"
@@ -86,6 +86,25 @@ enum MCPConfiguration {
         return write(data: data, to: url)
     }
 
+    /// Remove the canonical Orchestra server from Claude's user config. A malformed or unreadable file is
+    /// left untouched; unrelated top-level settings and MCP servers are retained by the JSON round-trip.
+    @discardableResult
+    static func removeClaudeGlobally(at path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              var root = object as? [String: Any],
+              var servers = root["mcpServers"] as? [String: Any],
+              servers.removeValue(forKey: serverName) != nil
+        else { return false }
+
+        root["mcpServers"] = servers
+        guard let updated = try? JSONSerialization.data(withJSONObject: root,
+                                                         options: [.sortedKeys, .prettyPrinted])
+        else { return false }
+        return write(data: updated, to: url)
+    }
+
     /// Add the Orchestra table to a Codex user config only when no equivalent table or dotted key is
     /// already present. Appending keeps every existing byte intact and remains valid after a final table.
     @discardableResult
@@ -100,6 +119,48 @@ enum MCPConfiguration {
         if !updated.isEmpty { updated.append("\n") }
         updated.append(codexTOML(command: command))
         return write(text: updated, to: URL(fileURLWithPath: path))
+    }
+
+    /// Remove the canonical Orchestra table, including nested tables and dotted keys, from Codex's native
+    /// config. This is intentionally line-scoped: it preserves every unrelated setting and fails closed
+    /// when the file cannot be read.
+    @discardableResult
+    static func removeCodexGlobally(at path: String) -> Bool {
+        guard let existing = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+
+        let prefix = "mcp_servers.\(serverName)"
+        var removingTable = false
+        var changed = false
+        var kept: [String] = []
+
+        for raw in existing.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map(String.init) {
+            var line = raw
+            if let comment = line.firstIndex(of: "#") { line.removeSubrange(comment...) }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let header = codexHeader(trimmed), let normalized = normalizedCodexPath(header) {
+                removingTable = normalized == prefix || normalized.hasPrefix(prefix + ".")
+                if removingTable { changed = true } else { kept.append(raw) }
+                continue
+            }
+
+            let key = String(trimmed.split(separator: "=", maxSplits: 1,
+                                             omittingEmptySubsequences: false)[0])
+            let normalizedKey = normalizedCodexPath(key)
+            if normalizedKey == prefix || normalizedKey?.hasPrefix(prefix + ".") == true {
+                changed = true
+                continue
+            }
+            if removingTable {
+                changed = true
+                continue
+            }
+            kept.append(raw)
+        }
+
+        guard changed else { return false }
+        return write(text: kept.joined(separator: "\n"), to: URL(fileURLWithPath: path))
     }
 
     /// Add user-local command shims and a shell PATH block. Existing files and links are preserved;

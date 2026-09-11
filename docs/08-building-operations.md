@@ -490,7 +490,9 @@ Settings, or via `setConfig` over RPC). The keys and defaults are in
 - **`autoInstallMCPGlobally`** — when enabled, the next card launch adds missing `orchestra` entries
   to `~/.claude.json` and `~/.codex/config.toml`, creates user-scoped `orchestra` and `orchestra-mcp`
   shims in `~/.local/bin`, and adds an idempotent PATH block to a shell profile. It never replaces an
-  existing same-name config entry or file, and the bridge still requires the separately managed daemon.
+  existing same-name config entry or file. When disabled, the next card launch removes the canonical
+  global `orchestra` entries while leaving launch-local card configuration and user-local CLI shims in
+  place; the bridge still requires the separately managed daemon.
 
 All daemon/app state is keyed off `$HOME`, not the bundle location, so it follows the user. To wipe it,
 use `scripts/reset-state.sh`. (On a Linux daemon the data dir is instead `$XDG_DATA_HOME/orchestra` →
