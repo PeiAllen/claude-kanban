@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import TestSupport
 @testable import OrchestraCore
@@ -38,14 +39,12 @@ struct CodexAppServerLauncherTests {
             clientStop: oldStop,
             clientMode: "exit"
         )
-        var successor: Process?
+        var successor: RunningLauncher?
 
         defer {
-            if old.isRunning { old.terminate() }
-            old.waitUntilExit()
+            old.stop()
             touch(newStop)
-            if let successor, successor.isRunning { successor.terminate() }
-            successor?.waitUntilExit()
+            successor?.stop()
         }
 
         try await pollUntil("predecessor client entered", timeout: .seconds(8)) {
@@ -71,8 +70,8 @@ struct CodexAppServerLauncherTests {
             FileManager.default.fileExists(atPath: newReady)
         }
 
-        #expect(!old.isRunning)
-        old.waitUntilExit()
+        #expect(!old.process.isRunning)
+        #expect(old.waitForExit(), "predecessor exit notification did not arrive")
         #expect(FileManager.default.fileExists(atPath: socket))
     }
 
@@ -86,7 +85,7 @@ struct CodexAppServerLauncherTests {
         clientEntered: String,
         clientStop: String,
         clientMode: String
-    ) throws -> Process {
+    ) throws -> RunningLauncher {
         let server = try #require(fixture("codex-launcher-server", extension: "py"))
         let client = try #require(fixture("codex-launcher-client", extension: "py"))
         let launcher = try #require(launcherPath())
@@ -103,8 +102,37 @@ struct CodexAppServerLauncherTests {
         process.arguments = [launcher, socket, log, "\(serverArgv.count)"] + serverArgv + clientArgv
         process.standardOutput = Pipe()
         process.standardError = Pipe()
-        try process.run()
-        return process
+        return try RunningLauncher(process: process)
+    }
+
+    private struct RunningLauncher {
+        let process: Process
+        let exited: DispatchGroup
+
+        init(process: Process) throws {
+            self.process = process
+            let exited = DispatchGroup()
+            self.exited = exited
+            exited.enter()
+            process.terminationHandler = { _ in exited.leave() }
+            try process.run()
+        }
+
+        func waitForExit() -> Bool {
+            exited.wait(timeout: .now() + .seconds(8)) == .success
+        }
+
+        func stop() {
+            if process.isRunning { process.terminate() }
+            // The full concurrent suite exposed waitUntilExit() stuck in Foundation after the
+            // launcher and its children had exited. Observe the handler with a bounded wait,
+            // as Proc does, so failed cleanup reports an issue instead of hanging the suite.
+            guard !waitForExit() else { return }
+            Issue.record("launcher cleanup did not finish within eight seconds")
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            #expect(exited.wait(timeout: .now() + .seconds(2)) == .success,
+                    "launcher exit notification did not arrive after forced cleanup")
+        }
     }
 
     private func launcherPath() -> String? {
