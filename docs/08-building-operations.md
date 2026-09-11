@@ -28,6 +28,43 @@ scripts/test.sh --e2e        # + built-binary / slow-repo e2e
 scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE at the merge gate
 ```
 
+The diff inspector also has native AppKit checks, because SwiftPM's unit tests do not mount the app's
+views or enter `NSScroller`'s mouse-tracking loop. Run these on a Mac with a logged-in desktop; scroll,
+benchmark, and inspection modes also require it to be unlocked so the private test window can become active:
+
+```sh
+scripts/test-diff-inspector.sh
+scripts/test-diff-inspector.sh --skip-build --mode scroll --files 500
+scripts/test-diff-inspector.sh --skip-build --mode scroll --split --churn
+scripts/test-diff-inspector.sh --skip-build --mode scroll --gesture wheel
+scripts/test-diff-inspector.sh --skip-build --mode benchmark --files 100
+scripts/test-diff-inspector.sh --skip-build --mode inspect --split
+```
+
+The script compiles current `App/` sources and `Tests/AppTests/` into a private, optimized app under
+`.scratch/diff-inspector-tests`, using the shared build mutex. The default checks cover cached geometry,
+Unicode text height, bounded editor creation, selection through reuse, collapse anchoring, unified
+and split layouts, and nested wheel routing. Scroll mode opens the real board and inspector hierarchy with an in-memory diff
+transport, then drives native scrollbar drags or wheel events. It checks that the main loop responds
+and the unchanged diff keeps a stable document height; knob drags must reach both endpoints. An
+external watchdog samples and terminates only the private test process if it stalls. Logs, source and
+binary hashes, and timing results stay in the scratch directory. The runner neither installs the app
+nor connects to the live daemon.
+
+The full-app fixture uses a fixed 2560×1409 window on the primary display, matching the investigation's
+viewport, and rejects a moved or resized window. The display's usable area must fit that frame.
+Accessory test windows omit the close button so AeroSpace leaves them unmanaged; the runner closes
+the process after the checks. Functional gestures may continue after focus changes, while benchmark
+loading still requires an active, visible window.
+
+Use `--fixture path/to/file.diff` to replay a captured patch. `--swiftterm-products /path/to/Release`
+optionally links an existing matching SwiftTerm build; without it, the surrounding terminal surface
+uses the app's conditional fallback. Benchmark numbers describe the whole private app process, so
+keep that build option and the fixture fixed when comparing changes. `--skip-build` reuses the last
+test binary and is only appropriate while its sources are unchanged.
+Inspection mode holds the private window open for 75 seconds for a visual check, without driving
+scroll gestures. The private test process keeps the display awake while it is running.
+
 > **The suite is tiered into three targets that mirror `Sources/`.** `Tests/UnitTests` (the mirror
 > layout, directory-for-directory with `Sources/`) runs everything over `FakeProc` + `TestClock` in
 > per-test private roots and **forks nothing** — pure, parallel-safe, instant. `Tests/ContractTests`

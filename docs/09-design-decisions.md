@@ -1783,7 +1783,8 @@ Durable agent-to-human messages close it, and that work is tracked separately.
 
 ### Render the diff as text, not as views
 
-The diff view renders one `NSTextView` per file. It does not build a view per diff line.
+The diff view renders file rows in an AppKit `NSTableView`, with one `NSTextView` per mounted unified
+file or two in split mode. The table reuses those views as files enter and leave the viewport.
 
 A view per line is the obvious SwiftUI shape, and it is what the inspector's other scrollable surfaces
 deliberately avoid: the agent terminal is one `LocalProcessTerminalView` drawing with Core Graphics, and
@@ -1793,9 +1794,27 @@ over. SwiftUI charges per view for layout, hit-testing and attribute-graph nodes
 about 8.5 ms per hit test and a 2000-row file about 50 ms — and roughly 0.2 MB per row, so a large branch
 diff reached hundreds of megabytes to well over a gigabyte simply by being open.
 
-Both costs scaled with the diff. Neither scales now: the same content measures ~0.05 ms and stays flat,
-and a 2000-row diff adds about 5 MB in the running app. The content is an attributed string rather than
-thousands of live view objects.
+Moving the lines into text storage reduced the measured hit test to about 0.05 ms and the added memory
+for a 2000-row diff to about 5 MB. Text and metadata still scale with the diff's size, but they no longer
+require thousands of live view objects.
+
+`DiffFileList` also owns vertical scrolling and file-row layout in AppKit. Its table delegate returns
+cached, explicit row heights; it never measures text or changes model state while AppKit asks for a row
+height. A single reusable TextKit layout stack measures each prepared pane using the same font, insets,
+and UTF-16 text as the visible renderer. Unified rows include a horizontal scrollbar's height when the
+system uses legacy scrollbars and the text overflows; split rows clip each pane independently. Width or
+scrollbar-style changes update the row geometry without rebuilding the prepared text.
+Each newly populated editor prepares its own glyph layout before its first display, so short unified
+panes paint their code alongside the custom bands and gutters.
+The unified pane's horizontal scroll view forwards non-Shift wheel events, including gesture lifecycle
+events, to the outer scroller while retaining native horizontal handling. This lets vertical and diagonal
+gestures reach the file list; Shift-wheel stays in the horizontal pane.
+
+This boundary keeps native scrollbar tracking out of SwiftUI's lazy file placement and document-height
+estimation. SwiftUI owns the inspector, its toolbar, and one `NSViewRepresentable` frame; AppKit owns
+the reusable rows below that frame. Selection and horizontal offsets are saved by pane content key
+before a row is reused, and collapse changes preserve the visible file's scroll anchor. Only explicit
+header actions write the SwiftUI collapse binding.
 
 Two things the row views provided are drawn by hand instead, and both are bounded to the line fragments
 intersecting the dirty rect, which is what keeps the cost flat:
@@ -1815,12 +1834,13 @@ text view offscreen and shows the bitmap, so the screenshot is the shipping rend
 parallel preview implementation that could drift from it.
 
 The rows themselves are built **once per load**, by `DiffPrepared` in OrchestraKit, and never inside a
-SwiftUI `body`. Each pane carries a `contentKey`, unique per (load, layout, side, file), and the view
-rebuilds its text storage only when that key or the palette changes. Both rules exist because SwiftUI
+SwiftUI `body`. Each pane carries a `contentKey`, unique per (load, layout, side, file), and a mounted
+editor rebuilds its text storage only when that key changes. Palette changes recolor the existing
+storage without discarding its selection. These rules exist because SwiftUI
 calls `body` and `updateNSView` on every update of the observed model, not only when the diff changed.
 Building rows in `body` re-parses the whole diff each time, and re-applying the text costs a full
 re-layout of the file and throws the user's text selection away. Keying the apply makes an unrelated
-update cost nothing and keeps a selection alive across it.
+update avoid text layout and keeps a selection alive across it.
 
 ### A published write that changes nothing must not publish
 

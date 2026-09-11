@@ -133,12 +133,12 @@ struct DiffInspectorView: View {
             // text in a plain container at the top.
             fileStack.frame(maxHeight: .infinity, alignment: .top)
         } else {
-            ScrollView(.vertical) { fileStack }
+            DiffFileList(files: files, collapsedFiles: $collapsedFiles, theme: theme)
         }
     }
 
     private var fileStack: some View {
-        LazyVStack(spacing: 10) {
+        VStack(spacing: 10) {
             ForEach(files) { fileSection($0) }
         }
         .padding(10)

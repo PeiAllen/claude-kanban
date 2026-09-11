@@ -3,7 +3,10 @@ import OrchestraUI
 import AppKit
 import OrchestraCore
 
+// Native UI checks supply their own main while compiling the same board/window hierarchy.
+#if !ORCHESTRA_DIFF_CHECKS
 @main
+#endif
 struct OrchestraApp: App {
     @StateObject private var model = BoardModel(platform: MacPlatform.ui)
     @StateObject private var boardZoom = BoardZoom()
