@@ -2004,10 +2004,16 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   in the existing 2-second poll loop. This reuses A2's `adapter.parse` seam from a *different* transport
   and stays strictly split — the tailer never inspects JSON, the parse never touches files. Claude
   (`hooksPush`) is never tailed, so its push path is byte-identical.
-- **`ctxPct` is derived from a vendored offline model table, and the parse is rename-tolerant.** Because
-  Codex reports no context percentage, the parse computes it as tokens ÷ the context window from a
-  **vendored** `Resources/codex-models.json` (`gpt-6-astra` = 1 050 000; `gpt-5.6` models = 372 000), never the rollout's own reported
-  window — keeping the app fully offline. That per-adapter **offline model table** on `Adapter.models()`
+- **`ctxPct` prefers the rollout's own reported window, and the parse is rename-tolerant.** Because
+  Codex reports no context percentage, the parse computes it as tokens ÷ a context window. The window
+  comes from the rollout's own `model_context_window` first — a live agent knows its actual entitlement
+  (tier, gateway overrides) — and falls back to the **vendored** `Resources/codex-models.json`
+  (`gpt-6-astra` = 1 050 000; `gpt-5.6` models = 372 000) only when the rollout names none. The table
+  is a local, PR-updated file either way, so this stays fully offline — the earlier design preferred the
+  table on the reasoning that it kept the app offline, but a rollout is a local file too, not a fetch;
+  the real reason to prefer the table would have been availability, and the table is only the
+  fallback now because a measured probe found it 44% too large for `gpt-5.6-terra` against a real
+  rollout. That per-adapter **offline model table** on `Adapter.models()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
   PR — **E1**, a root off `main` — which B2 consumes here; it is the
   same offline-model-table decision the [roadmap](10-roadmap.md) records for the model-providers axis. And because the rollout schema drifts, the parse

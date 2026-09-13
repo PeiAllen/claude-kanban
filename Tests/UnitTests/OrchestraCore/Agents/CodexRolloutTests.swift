@@ -79,19 +79,21 @@ struct CodexRolloutParseTests {
         #expect(r.snapshot?.modelId == nil)
     }
 
-    @Test("test_ctxpct_from_model_table: ctxPct denominator is the OFFLINE model window, not the rollout's")
+    @Test("test_ctxpct_from_model_table: ctxPct denominator is the ROLLOUT'S reported window, not the table's")
     func ctxPctFromModelTable() throws {
-        // Rollout carries a bogus in-line window; parse must ignore it and use codex-models.json (372000).
-        let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.6-sol","model_context_window":999,"total_token_usage":{"total_tokens":186000}}}}"#
+        // codex-models.json says gpt-5.6-sol = 372000, but that vendored table can drift stale (measured
+        // 44% too large for gpt-5.6-terra — docs/09). The rollout reports its own real entitlement, and
+        // that must win.
+        let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.6-sol","model_context_window":258400,"total_token_usage":{"total_tokens":129200}}}}"#
         let r = try #require(tail(line))
-        #expect(r.snapshot?.ctxPct == 50.0)   // 186000 / 372000, NOT 186000/999
+        #expect(r.snapshot?.ctxPct == 50.0)   // 129200 / 258400, NOT 129200/372000
     }
 
-    @Test("GPT-6 Astra token usage uses its catalog context window")
-    func astraTokenUsageUsesCatalogWindow() throws {
-        let line = #"{"timestamp":"2026-09-05T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","model_context_window":999,"total_token_usage":{"total_tokens":525000}}}}"#
+    @Test("GPT-6 Astra token usage uses the rollout's reported window over the catalog's")
+    func astraTokenUsageUsesRolloutWindow() throws {
+        let line = #"{"timestamp":"2026-09-05T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","model_context_window":1024000,"total_token_usage":{"total_tokens":512000}}}}"#
         let report = try #require(tail(line))
-        #expect(report.snapshot?.ctxPct == 50.0) // 525000 / 1050000, not 525000 / 999
+        #expect(report.snapshot?.ctxPct == 50.0) // 512000 / 1024000 (the rollout's window), not / 1050000
         #expect(report.snapshot?.modelId == "gpt-6-astra")
     }
 

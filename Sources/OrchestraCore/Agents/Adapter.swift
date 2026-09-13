@@ -240,15 +240,18 @@ public extension Adapter {
         models().first { $0.id == id } ?? AgentModel(id: id)
     }
 
-    /// Shared policy for token-based context reporters: prefer the adapter's model table when a model id
-    /// is present, and fall back to an explicit telemetry window only when the model window is unknown.
+    /// Shared policy for token-based context reporters: prefer the telemetry's OWN reported context
+    /// window, and fall back to the adapter's offline model table only when telemetry reports none.
+    /// A live agent knows its actual entitlement (tier, gateway overrides); the vendored table is a
+    /// last-resort estimate that can drift stale — measured 44% too large for `gpt-5.6-terra` against
+    /// a real Codex rollout (docs/09).
     func tokenContextPercent(usedTokens: Int?, modelId: String?, reportedContextWindow: Int?) -> Double? {
         guard let usedTokens else { return nil }
-        if let modelId, let pct = model(for: modelId).ctxPct(usedTokens: usedTokens) {
-            return pct
+        if let window = reportedContextWindow, window > 0 {
+            return min(100, max(0, Double(usedTokens) / Double(window) * 100))
         }
-        guard let window = reportedContextWindow, window > 0 else { return nil }
-        return min(100, max(0, Double(usedTokens) / Double(window) * 100))
+        guard let modelId else { return nil }
+        return model(for: modelId).ctxPct(usedTokens: usedTokens)
     }
 }
 
