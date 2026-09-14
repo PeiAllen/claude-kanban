@@ -88,9 +88,9 @@ struct CodexRolloutParseTests {
 
     @Test("test_ctxpct_from_model_table: ctxPct denominator is the ROLLOUT'S reported window, not the table's")
     func ctxPctFromModelTable() throws {
-        // codex-models.json's vendored gpt-5.6-sol window can drift stale (measured 44% too large for
-        // gpt-5.6-terra at one point — docs/09). The rollout reports its own real entitlement, and that
-        // must win regardless of what the table currently says.
+        // codex-models.json's vendored gpt-5.6-sol window can drift stale (see 6769aec's commit body for
+        // a measured example). The rollout reports its own real entitlement, and that must win regardless
+        // of what the table currently says.
         let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.6-sol","model_context_window":258400,"total_token_usage":{"total_tokens":129200}}}}"#
         let r = try #require(tail(line))
         #expect(r.snapshot?.ctxPct == 50.0)   // 129200 / 258400 (the rollout's window), never the table's

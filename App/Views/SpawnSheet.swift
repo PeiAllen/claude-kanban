@@ -91,6 +91,24 @@ struct SpawnSheet: View {
     /// The selected agent's models — the Model picker's options.
     private var modelOptions: [AgentModel] { selectedAgent?.models ?? [] }
 
+    /// The Model grid's column count, chosen to BALANCE rows instead of greedy-filling them: the
+    /// largest count that fits (`maxFit`, from the sheet's fixed geometry — see the constants below)
+    /// determines the row count, then the column count divides the catalog evenly across those rows.
+    /// 6 models -> 3+3, 8 -> 4+4, 4 -> 4 (one row), 5 -> 3+2 — never a ragged last row with empty slots.
+    private var modelGridColumnCount: Int {
+        let n = modelOptions.count
+        guard n > 0 else { return 1 }
+        // Sheet width (470) minus the Body VStack's horizontal padding (19 * 2) minus the grid's own
+        // padding (2 * 2) — see field("Model")'s .padding(2) and the Body VStack's .padding(.horizontal, 19).
+        let available: CGFloat = 470 - 19 * 2 - 2 * 2
+        let minItemWidth: CGFloat = 88
+        let spacing: CGFloat = 2
+        var maxFit = 1
+        while CGFloat(maxFit + 1) * minItemWidth + CGFloat(maxFit) * spacing <= available { maxFit += 1 }
+        let rows = Int((Double(n) / Double(maxFit)).rounded(.up))
+        return Int((Double(n) / Double(rows)).rounded(.up))
+    }
+
     /// The default model for the selected agent: the configured default when it belongs to this agent,
     /// else the agent's first model. Used on appear and whenever the agent changes.
     private func defaultModelForAgent() -> String {
@@ -237,7 +255,13 @@ struct SpawnSheet: View {
                     // and a fixed HStack silently truncates every label past ~6 — which made the three
                     // GPT-5.6 variants render as an identical "GPT-5.6…". Flowing onto a second row keeps
                     // every model legible at any catalog size.
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
+                    //
+                    // BALANCED columns, not `.adaptive` greedy-fill: `.adaptive` packs as many columns as
+                    // fit then wraps the remainder, so 6 models (Codex's post-refresh count) rendered 4+2 —
+                    // a ragged last row with two empty slots. modelGridColumnCount instead picks the column
+                    // count that divides the catalog evenly (6 -> 3+3, 8 -> 4+4, 4 -> 4, 5 -> 3+2).
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2),
+                                              count: modelGridColumnCount), spacing: 2) {
                         ForEach(modelOptions, id: \.id) { m in
                             let active = m.id == modelSel
                             Button { modelSel = m.id } label: {
