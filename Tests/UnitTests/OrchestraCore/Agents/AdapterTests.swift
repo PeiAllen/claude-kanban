@@ -55,6 +55,21 @@ struct AdapterTests {
         #expect(!argv.contains("claude-opus-5"))   // only the bracketed launchId appears in argv
     }
 
+    @Test("start(ctx) still launches a DEMOTED model on its launchId — modelFlag reads catalog(), not the filtered models()")
+    func startArgvDemotedModelKeepsLaunchId() throws {
+        // A model that left the picker (listed: false) but still carries a launchId from when it was
+        // probed. modelFlag must resolve this through catalog() (every row) — reading models() (the
+        // picker-filtered set) would silently drop the launchId the moment a model is demoted, exactly
+        // the downgrade bug this PR exists to fix, reopened for the demoted case.
+        let demoted = ClaudeCodeAdapter(catalogOverride: [
+            AgentModel(id: "claude-retired-5", displayName: "Retired 5", family: "claude",
+                       launchId: "claude-retired-5[1m]", listed: false),
+        ])
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-retired-5", sessionId: "id", prompt: "hi")
+        #expect(adjacent(demoted.start(ctx), "--model", "claude-retired-5[1m]"))
+        #expect(adjacent(try #require(demoted.resume(ctx)), "--model", "claude-retired-5[1m]"))
+    }
+
     @Test("start(ctx) with no catalog launchId (e.g. sonnet) passes the plain id unchanged")
     func startArgvNoLaunchIdPassesPlainId() {
         let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-5", sessionId: "id", prompt: "hi")

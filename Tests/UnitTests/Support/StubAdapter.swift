@@ -35,16 +35,27 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     /// The stub's model catalog. Per-instance so a test can stand up two adapters with DISJOINT catalogs
     /// and prove a cross-adapter `--model` (a Codex id on a claude-code card) is rejected.
     let modelIds: [String]
+    /// Optional id -> launchId, for tests proving the report-path canonicalizes a vendor's echoed
+    /// launchId (e.g. `"m2[1m]"`) back to its catalog entry, same as a dated id.
+    let launchIds: [String: String]
     init(transcriptDir: String, capabilities: AgentCapabilities = .stub,
-         id: String = "claude-code", name: String = "Stub", modelIds: [String] = ["m1", "m2", "m3"]) {
+         id: String = "claude-code", name: String = "Stub", modelIds: [String] = ["m1", "m2", "m3"],
+         launchIds: [String: String] = [:]) {
         self.transcriptDir = transcriptDir
         self.capabilities = capabilities
         self.id = id
         self.name = name
         self.modelIds = modelIds
+        self.launchIds = launchIds
     }
 
-    func catalog() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
+    func catalog() -> [AgentModel] {
+        modelIds.map { id in
+            var m = AgentModel(id: id)   // preserves the existing heuristic displayName/family (humanize/detectFamily)
+            m.launchId = launchIds[id]
+            return m
+        }
+    }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
     /// Claude-shaped (`.stub`, `telemetry: .hooksPush`) gets the same unconditional push-only endpoint
     /// as `ClaudeCodeAdapter` — permanently, not opt-in, so the ~1,050 unit tests built on `StubAdapter`

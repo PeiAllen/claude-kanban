@@ -145,15 +145,49 @@ existing_claude > "$SCRATCH/c7.json"   # unused by this case; the harness always
 python3 -c "
 import json
 rows = [{'id':'gpt-a','displayName':'A','family':'gpt','flags':{'toolCall':True,'reasoning':True,'vision':True}},
+        {'id':'gpt-c','displayName':'C','family':'gpt','flags':{'toolCall':True,'reasoning':True,'vision':True}},
         {'id':'gpt-gone','displayName':'Gone','family':'gpt','flags':{'toolCall':True,'reasoning':True,'vision':True}}]
 json.dump(rows, open('$SCRATCH/codex7.json','w'))
 "
-codex_probe "gpt-a:list:1" "gpt-b:hide:2" > "$SCRATCH/codexprobe7"   # gpt-gone is absent -> deletable
+# gpt-c reports an UNRECOGNIZED visibility (neither list nor hide) — a future Codex state this
+# generator has never seen. gpt-gone is absent from the probe entirely -> deletable.
+codex_probe "gpt-a:list:1" "gpt-b:hide:2" "gpt-c:beta:3" > "$SCRATCH/codexprobe7"
 out="$(run_gen 1 "$SCRATCH/c7.json" "$SCRATCH/codex7.json" "$SCRATCH/picker-empty" "$SCRATCH/catalog-empty" "$SCRATCH/codexprobe7")"
 contains "codex reports its single-source rung" "$out" "single source for both sets"
 check "listed slug stays listed" "$(field "$SCRATCH/codex7.json" gpt-a listed)" "True"
 check "hide slug is demoted, still resolvable" "$(field "$SCRATCH/codex7.json" gpt-b listed)" "False"
+check "UNRECOGNIZED visibility is demoted too, never treated as absent" "$(field "$SCRATCH/codex7.json" gpt-c listed)" "False"
 check "absent slug is deleted" "$(field "$SCRATCH/codex7.json" gpt-gone listed)" "MISSING"
+
+echo "8. an unexpected probe shape must degrade to 'could not verify', never crash the merge gate"
+existing_claude claude-opus-5 > "$SCRATCH/c8.json"
+before8="$(cat "$SCRATCH/c8.json")"
+picker opus1m > "$SCRATCH/picker8"
+# A catalog document whose `models` list holds a non-object entry — the published document is fetched
+# over the network and its shape is not a contract either side controls.
+printf '{"surfaces":{"cc":{"model_selector_config":[{"models":["not-an-object"]}]}}}' > "$SCRATCH/catalog8"
+rc=0
+out="$(run_gen 0 "$SCRATCH/c8.json" "$SCRATCH/codex1.json" "$SCRATCH/picker8" "$SCRATCH/catalog8" "$SCRATCH/codexprobe-empty")" || rc=$?
+check "the generator itself still exits 0" "$rc" "0"
+contains "reports could-not-verify, not a traceback" "$out" "could not verify"
+check "the file is untouched" "$(cat "$SCRATCH/c8.json")" "$before8"
+
+echo "9. a genuine vendor RENAME (the published catalog's clean name) refreshes displayName"
+python3 -c "
+import json
+json.dump([{'id':'claude-opus-5','displayName':'Old Stale Name','family':'claude',
+            'flags':{'toolCall':True,'reasoning':True,'vision':True}}], open('$SCRATCH/c9.json','w'))
+"
+picker opus1m > "$SCRATCH/picker9"
+python3 -c "
+import json
+doc = {'surfaces':{'cc':{'model_selector_config':[{'models':[
+  {'id':'claude-opus-5','name':'Opus 5.1 Renamed','section':'main'}]}]}}}
+json.dump(doc, open('$SCRATCH/catalog9.json','w'))
+"
+run_gen 1 "$SCRATCH/c9.json" "$SCRATCH/codex1.json" "$SCRATCH/picker9" "$SCRATCH/catalog9.json" "$SCRATCH/codexprobe-empty" >/dev/null
+check "displayName picks up the catalog's fresh name, not the stale existing one" \
+  "$(field "$SCRATCH/c9.json" claude-opus-5 displayName)" "Opus 5.1 Renamed"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

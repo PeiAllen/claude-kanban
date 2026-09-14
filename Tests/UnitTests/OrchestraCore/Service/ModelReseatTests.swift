@@ -400,6 +400,29 @@ struct ModelReseatTests {
         #expect(after.model.id == "m2")   // canonicalized back to the catalog id, not the dated form
     }
 
+    @Test("a report echoing the vendor's launchId (e.g. the 1M-tier bracket) also canonicalizes back")
+    func launchIdReportDoesNotClobberCatalogMetadata() async throws {
+        // `isModelVariant`'s dated-suffix rule doesn't recognize a bracket suffix, so a vendor that
+        // echoes back exactly what it was launched on (`m2[1m]`, ClaudeCodeAdapter.modelFlag's own
+        // substitution) needs its own match — the same loss as the dated-id case above, for a
+        // different vendor quirk.
+        let env = TestEnv.make(
+            grace: 2,
+            registry: AgentRegistry(adapters: [
+                StubAdapter(transcriptDir: NSTemporaryDirectory() + "launchid-\(UUID().uuidString)",
+                            launchIds: ["m2": "m2[1m]"]),
+            ]))
+        let t = try await liveCard(env)
+        _ = try await env.svc.restart(t.id, model: "m2")
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+
+        try await env.svc.report(t.id, StatusReport(modelId: "m2[1m]"))
+
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.model.id == "m2")             // canonicalized to the plain catalog id, bracket dropped
+        #expect(after.model.launchId == "m2[1m]")   // the catalog's real metadata survives, not a bare handle
+    }
+
     @Test("a handoff REFUSED mid-flight (card archived) leaves the inbox durable")
     func refusedHandoffLeavesInboxDurable() async throws {
         // `resumeInCard` never consumes inbox rows, so a refused relaunch cannot discard this message.

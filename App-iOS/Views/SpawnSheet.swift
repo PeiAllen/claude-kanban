@@ -216,6 +216,9 @@ struct SpawnSheet: View {
             .onChange(of: model.tasks.count) { seedRepoIfNeeded() }
             // Daemon repos can arrive after mount too; seed once they do.
             .onChange(of: model.spawnRepoCandidates.count) { seedRepoIfNeeded() }
+            // The daemon's agent/model catalog can arrive after mount too (SpawnSheet.claudeFallback's
+            // removal means the picker starts genuinely empty, not pre-filled) — seed once it does.
+            .onChange(of: model.agents.count) { seedAgentIfNeeded() }
         }
     }
 
@@ -410,11 +413,18 @@ struct SpawnSheet: View {
         }
         #endif
         seedRepoIfNeeded()
+        seedAgentIfNeeded()
+        startIn = model.spawnDefaultColumn == .plan ? .plan : .impl
+        refreshTrust()
+    }
+
+    /// Picks a default agent + model once `model.agents` is non-empty. Guarded (`isEmpty`/membership
+    /// checks only), so re-running it after the daemon's catalog arrives late never clobbers a
+    /// selection the user already made — same idempotency contract as `seedRepoIfNeeded`.
+    private func seedAgentIfNeeded() {
         if agentSel.isEmpty { agentSel = model.config.defaultAgentId }
         if !agentOptions.contains(where: { $0.id == agentSel }) { agentSel = agentOptions.first?.id ?? "" }
         if modelSel.isEmpty { modelSel = defaultModelForAgent() }
-        startIn = model.spawnDefaultColumn == .plan ? .plan : .impl
-        refreshTrust()
     }
 
     /// Fill the repo field from the first known repo — once, and only while it's still empty, so a

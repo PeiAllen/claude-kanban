@@ -29,10 +29,15 @@ public struct ClaudeCodeAdapter: Adapter {
     let binOverride: String?
     /// Test-only home injection for the opt-in global MCP installer; production reads the user's HOME.
     let claudeHomeOverride: String?
+    /// Test-only catalog injection — the real vendored table has no DEMOTED (`listed: false`) row today,
+    /// so a test proving demoted-row behavior (e.g. `modelFlag` still honoring a demoted launchId) needs
+    /// a synthetic one. Production always leaves this nil and reads the bundled resource.
+    let catalogOverride: [AgentModel]?
 
-    public init(binOverride: String? = nil, claudeHome: String? = nil) {
+    public init(binOverride: String? = nil, claudeHome: String? = nil, catalogOverride: [AgentModel]? = nil) {
         self.binOverride = binOverride
         self.claudeHomeOverride = claudeHome
+        self.catalogOverride = catalogOverride
     }
 
     private var binary: String { binOverride ?? bin }
@@ -40,10 +45,10 @@ public struct ClaudeCodeAdapter: Adapter {
 
     /// Claude Code's known models + their capability flags/launchId, from the vendored, PR-updated
     /// `Resources/claude-code-models.json` (no network). No hardcoded fallback: the resource is
-    /// `.copy`-bundled, so its absence is a broken build, not a runtime condition to guard
-    /// (`ModelCatalogResourceTests` pins that it always decodes and is non-empty).
+    /// `.copy`-bundled, so its absence is a broken build, not a runtime condition to guard (the
+    /// `offlineLocalResource` tests pin that it always decodes and is non-empty).
     public func catalog() -> [AgentModel] {
-        ModelCatalog.load("claude-code-models")
+        catalogOverride ?? ModelCatalog.load("claude-code-models")
     }
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }
@@ -303,10 +308,12 @@ public struct ClaudeCodeAdapter: Adapter {
     /// Passes the catalog's `launchId` when the stored id has one — today, only `claude-opus-5`, whose
     /// interactive default is already the 1M tier (`claude-opus-5[1m]`); Orchestra was quietly launching
     /// the plain 200k tier instead. Storage, the picker, and re-seat validation never see this — they
-    /// compare the plain `id` (see `AgentModel.launchId`).
+    /// compare the plain `id` (see `AgentModel.launchId`). Reads `catalog()`, NOT the picker's filtered
+    /// `models()` — a DEMOTED model must still launch on its known launchId, or a still-running card
+    /// quietly loses the 1M tier the moment its model leaves the picker.
     private func modelFlag(_ model: String?) -> [String] {
         guard let m = model, !m.isEmpty else { return [] }
-        let launch = models().first { $0.id == m }?.launchId ?? m
+        let launch = catalog().first { $0.id == m }?.launchId ?? m
         return ["--model", launch]
     }
 

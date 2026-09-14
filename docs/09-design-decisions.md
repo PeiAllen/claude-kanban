@@ -2013,7 +2013,7 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   table on the reasoning that it kept the app offline, but a rollout is a local file too, not a fetch;
   the real reason to prefer the table would have been availability, and the table is only the
   fallback now because a measured probe found it 44% too large for `gpt-5.6-terra` against a real
-  rollout. That per-adapter **offline model table** on `Adapter.models()`
+  rollout. That per-adapter **offline model table** on `Adapter.catalog()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
   PR — **E1**, a root off `main` — which B2 consumes here; it is the
   same offline-model-table decision the [roadmap](10-roadmap.md) records for the model-providers axis. And because the rollout schema drifts, the parse

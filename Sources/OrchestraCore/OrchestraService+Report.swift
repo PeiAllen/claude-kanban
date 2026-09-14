@@ -135,8 +135,12 @@ extension OrchestraService {
                     // bare `AgentModel(id:)` with NO contextWindow — and that is the denominator `ctxPct`
                     // divides by, so the card's context gauge went blank and every later launch used the
                     // dated id. Resolve the dated form back to its catalog entry and keep the real metadata.
+                    // The SAME loss happens if the vendor echoes back the bracketed `launchId` we launched
+                    // it on (`claude-opus-5[1m]`) rather than the plain id — `isModelVariant`'s all-digit
+                    // rule does not recognize a `[1m]` suffix, so match a row's `launchId` too.
                     let catalog = (try? registry.get(task.agentId))?.catalog() ?? []
                     var m = catalog.first { $0.id == mid }
+                        ?? catalog.first { $0.launchId == mid }
                         ?? catalog.first { Self.isModelVariant(mid, of: $0.id) }
                         ?? AgentModel(id: mid)
                     if let label = snap.modelDisplay, !label.isEmpty { m.displayName = label }

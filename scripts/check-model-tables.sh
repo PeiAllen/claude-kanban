@@ -52,7 +52,13 @@ if command -v codex >/dev/null 2>&1; then
   codex debug models --bundled > "$TMP/codex-probe.json" 2>/dev/null || true
 fi
 
+# The generator catches its own per-agent exceptions and always exits 0 (see model-table-gen.py's
+# main()). This guard is defense in depth for the one failure that isn't the generator's to catch —
+# python3 itself missing or broken — so a bad interpreter never fails the merge gate either.
 python3 scripts/lib/model-table-gen.py ${WRITE_FLAG[@]+"${WRITE_FLAG[@]}"} \
   Sources/OrchestraCore/Resources/claude-code-models.json \
   Sources/OrchestraCore/Resources/codex-models.json \
-  "$TMP/claude-picker.out" "$TMP/claude-catalog.json" "$TMP/codex-probe.json"
+  "$TMP/claude-picker.out" "$TMP/claude-catalog.json" "$TMP/codex-probe.json" || {
+  echo "check-model-tables: generator failed unexpectedly — could not verify" >&2
+  exit 0
+}

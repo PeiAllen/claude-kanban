@@ -77,8 +77,8 @@ public struct CodexAdapter: Adapter {
 
     /// Codex's known models, from the vendored, PR-updated `Resources/codex-models.json` offline table
     /// (mirrors Codex's own model catalog). No hardcoded fallback: the resource is `.copy`-bundled, so
-    /// its absence is a broken build, not a runtime condition to guard (`ModelCatalogResourceTests`
-    /// pins that it always decodes and is non-empty).
+    /// its absence is a broken build, not a runtime condition to guard (the `offlineLocalResource` tests
+    /// pin that it always decodes and is non-empty).
     public func catalog() -> [AgentModel] {
         ModelCatalog.load("codex-models")
     }

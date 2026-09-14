@@ -26,12 +26,21 @@ import sys
 def canonicalize_id(raw_id, known_ids):
     """`raw_id` unchanged, UNLESS it is a dated variant (isModelVariant's rule: an existing id plus
     "-" plus an all-digit suffix) of some id already on disk — then the existing floating id wins,
-    so a later differently-dated report still canonicalizes back to the SAME row."""
+    so a later differently-dated report still canonicalizes back to the SAME row.
+
+    This reimplements OrchestraService+Recovery.isModelVariant in Python (no shared source of truth
+    across the two languages is practical here). ASCII digits ONLY, deliberately narrower than either
+    language's default "is this character a digit" — Swift's `Character.isNumber` and Python's
+    `str.isdigit()` both accept non-ASCII digit forms (e.g. Arabic-indic, superscripts) and disagree
+    with each other on some of them. Every real vendor id is ASCII, so pinning both sides to the same
+    narrow rule removes the disagreement rather than trying to keep two independently-maintained
+    Unicode-aware rules in lockstep.
+    """
     if raw_id in known_ids:
         return raw_id
     for base in known_ids:
         suffix = raw_id[len(base) + 1:]
-        if raw_id.startswith(base + "-") and suffix.isdigit():
+        if raw_id.startswith(base + "-") and suffix and all(c in "0123456789" for c in suffix):
             return base
     return raw_id
 
@@ -135,7 +144,12 @@ def claude_catalog_sane(catalog_models, picker_models):
 
 
 def make_claude_row(cid, listed, picker_entry, catalog_entry, existing):
-    display = ((existing or {}).get("displayName") or (catalog_entry or {}).get("name")
+    # The published catalog's `name` is already in our exact style ("Opus 5", "Fable 5.1") and is the
+    # freshest, most authoritative source — prefer it so a genuine vendor RENAME is picked up on the
+    # next --write. `existing` is the fallback for continuity when no catalog entry is available (rung
+    # 2, or a demoted row with none). The picker's OWN displayName is deliberately last: it carries
+    # transient tier text ("Opus (1M context)", "Default (recommended)"), never a name worth keeping.
+    display = ((catalog_entry or {}).get("name") or (existing or {}).get("displayName")
                or (picker_entry or {}).get("displayName") or cid)
     flags = (existing or {}).get("flags") or {"toolCall": True, "reasoning": True, "vision": True}
     row = {"id": cid, "displayName": display, "family": "claude"}
@@ -190,8 +204,13 @@ def build_codex_rows(existing_rows, codex_models):
     by_id = {}
     for row in codex_models:
         cid = row.get("slug")
-        if cid and row.get("visibility") in ("list", "hide"):
-            by_id[cid] = row   # absent visibility ⇒ not in this snapshot at all ⇒ eligible for deletion
+        # A row Codex reports AT ALL is "known" — visibility other than "list" (including a value this
+        # generator has never seen) means demoted, never deletable; only a slug ABSENT from this
+        # response is confidently gone. Never equate "unrecognized" with "absent": that would silently
+        # delete a row the moment Codex ships a new visibility state, contradicting the safety ladder's
+        # whole point (delete only when truly confident).
+        if cid:
+            by_id[cid] = row
 
     rows = []
     for cid, row in sorted(by_id.items(), key=lambda kv: kv[1].get("priority", 1_000_000)):
@@ -255,8 +274,18 @@ def main():
     catalog_models = load_claude_catalog_models(claude_catalog_path)
     codex_models = load_codex_models(codex_probe_path)
 
-    new_claude, claude_del, claude_rung = build_claude_rows(existing_claude, picker_models, catalog_models)
-    new_codex, codex_del, codex_rung = build_codex_rows(existing_codex, codex_models)
+    # Each side degrades to "could not verify" on ANY unexpected exception — a probe response shape the
+    # generator did not anticipate (a schema drift in a document neither side controls) must never
+    # propagate into a nonzero exit and fail the merge gate. Independent try/except per agent: a bug
+    # processing Codex's probe must not also blank out Claude's real, valid report.
+    try:
+        new_claude, claude_del, claude_rung = build_claude_rows(existing_claude, picker_models, catalog_models)
+    except Exception as exc:   # noqa: BLE001 - deliberately broad; see comment above
+        new_claude, claude_del, claude_rung = existing_claude, [], f"could not verify (unexpected error: {exc})"
+    try:
+        new_codex, codex_del, codex_rung = build_codex_rows(existing_codex, codex_models)
+    except Exception as exc:   # noqa: BLE001 - deliberately broad; see comment above
+        new_codex, codex_del, codex_rung = existing_codex, [], f"could not verify (unexpected error: {exc})"
 
     claude_lines, claude_changed = summarize("claude-code-models.json", existing_claude, new_claude,
                                               claude_del, claude_rung)
