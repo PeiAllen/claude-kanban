@@ -603,7 +603,7 @@ private struct HookSignalTestAdapter: Adapter {
         self.derivedMessageSocketPath = derivedMessageSocketPath
     }
 
-    func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+    func catalog() -> [AgentModel] { [AgentModel(id: "m1")] }
     func newSessionId() -> String? { "hook-session" }
     func start(_ ctx: AdapterContext) -> [String] { [bin] }
     func resume(_ ctx: AdapterContext) -> [String]? { nil }

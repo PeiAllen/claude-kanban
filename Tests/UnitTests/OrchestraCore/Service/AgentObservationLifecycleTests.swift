@@ -325,7 +325,7 @@ private struct ObservationTestAdapter: Adapter {
         self.acceptsUnboundObservation = acceptsUnboundObservation
     }
 
-    func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+    func catalog() -> [AgentModel] { [AgentModel(id: "m1")] }
     func newSessionId() -> String? { initialSessionId }
     func start(_ ctx: AdapterContext) -> [String] {
         [bin, ctx.observationEndpoint?.unixSocketPath ?? "missing-endpoint"]

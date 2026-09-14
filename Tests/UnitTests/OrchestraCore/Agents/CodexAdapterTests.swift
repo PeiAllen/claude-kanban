@@ -117,7 +117,7 @@ struct CodexAdapterArgvTests {
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
-    @Test("models() is non-empty (fallback when no vendored table)")
+    @Test("models() is non-empty")
     func models() { #expect(!adapter.models().isEmpty) }
 
     @Test("start(ctx) for a default card: model, trailing prompt, and NO read-only clamp")

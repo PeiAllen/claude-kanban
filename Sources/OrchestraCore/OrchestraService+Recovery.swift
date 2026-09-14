@@ -51,13 +51,12 @@ extension OrchestraService {
     /// `contextWindow` (the `ctxPct` denominator). Cross-adapter ids still fail — a Codex id is not a
     /// variant of any Claude entry. Case-sensitive: fails closed.
     ///
-    /// Known limit: if the bundled catalog resource fails to load, `models()` is a hardcoded fallback list
-    /// (ClaudeCodeAdapter.swift), so a genuinely valid id could be rejected. That fails closed, and the
-    /// error names the ids we actually know about.
+    /// Reads the FULL catalog (`catalog()`, not the picker's filtered `models()`), so a re-seat onto a
+    /// DEMOTED model (still runnable, just no longer offered as a new choice) is accepted.
     func resolveModelOverride(_ requested: String?, for task: Task) throws -> AgentModel? {
         guard let requested else { return nil }   // absent ⇒ no override (every pre-existing caller)
         let want = requested.trimmingCharacters(in: .whitespacesAndNewlines)
-        let catalog = try registry.get(task.agentId).models()
+        let catalog = try registry.get(task.agentId).catalog()
         // EXACT ids win across the WHOLE catalog before any variant matching, so a catalog that ever carried
         // both a floating and a dated id can't have an exact request captured by an earlier entry's variant.
         // An EXPLICIT empty/whitespace model is a mistake, not "no override": silently relaunching on the
@@ -89,7 +88,7 @@ extension OrchestraService {
     /// vendor that ignores `--model`, and a false accusation is worse than a missed one.
     func modelHonored(reported: String, requested: String, agentId: String) -> Bool {
         if reported == requested { return true }
-        let ids = ((try? registry.get(agentId))?.models() ?? []).map(\.id)
+        let ids = ((try? registry.get(agentId))?.catalog() ?? []).map(\.id)
         guard let canon = ids.first(where: { reported == $0 || Self.isModelVariant(reported, of: $0) })
         else { return true }   // unknown id — cannot judge, so do not accuse
         return canon == requested

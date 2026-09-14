@@ -135,7 +135,7 @@ extension OrchestraService {
                     // bare `AgentModel(id:)` with NO contextWindow — and that is the denominator `ctxPct`
                     // divides by, so the card's context gauge went blank and every later launch used the
                     // dated id. Resolve the dated form back to its catalog entry and keep the real metadata.
-                    let catalog = (try? registry.get(task.agentId))?.models() ?? []
+                    let catalog = (try? registry.get(task.agentId))?.catalog() ?? []
                     var m = catalog.first { $0.id == mid }
                         ?? catalog.first { Self.isModelVariant(mid, of: $0.id) }
                         ?? AgentModel(id: mid)

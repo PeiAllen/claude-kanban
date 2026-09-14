@@ -2699,6 +2699,21 @@ an accepted risk, because every interactive Claude Code session already takes it
 own default is the same tier. `CLAUDE_CODE_DISABLE_1M_CONTEXT` is the escape hatch if it ever needs
 one.
 
+**The model catalog splits `Adapter.models()` (the picker) from `Adapter.catalog()` (every known
+id).** Before this, `models()` did both jobs at once, and those diverge the moment a vendor demotes a
+model: it should leave the picker without breaking a card already running it. The fix is one added
+`listed` flag per row. `models()` stays the default: `catalog().filter { $0.listed ?? true }`, so the
+Spawn picker and the `models` RPC show only current choices. `catalog()` is the new protocol
+requirement, and is what `model(for:)`, `adapter(forModel:)`, `resolveModelOverride`, `modelHonored`,
+and the report-path label lookup read — a demoted row keeps its display label and its `--model`
+re-seat there, because launch never re-resolves a running card's model through the table anyway (it
+passes the id already stored on the card). This also let both adapters drop their hardcoded
+`fallbackModels` array: the vendored JSON resource is `.copy`-bundled into the binary, so its absence
+is a broken build, not a runtime condition worth guarding — a unit test now pins that each resource
+decodes and is non-empty instead. `App-iOS`'s `SpawnSheet.claudeFallback`, a fourth hand-maintained
+copy of the same four models, is gone the same way: the daemon already sends the real catalog through
+`model.agents`, and the sheet draws its pickers empty for the sub-second gap before it arrives.
+
 Landing after all of the above is the **branch tree — parent card / branch linking** (shipped to `main`).
 A card's branch no longer has to sit on `main`: it can be **based on any other branch** — another card's,
 a bare local branch, or a remote GitHub PR — and the card's whole lifecycle (diff, sync, ship, redirect,

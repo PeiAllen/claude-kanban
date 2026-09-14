@@ -236,3 +236,46 @@ struct ClaudeDelegationTests {
         #expect(a.env.keys.sorted() == ["CLAUDE_CODE_RESUME_THRESHOLD_MINUTES", "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD"])
     }
 }
+
+/// A demoted model must leave the picker (`models()`) while staying resolvable (`catalog()`) — a card
+/// already running it keeps its display label and its `--model` re-seat. Exercised against a minimal
+/// conformer, not the real vendored tables, which carry no demoted rows today.
+@Suite("Adapter protocol — models()/catalog() split on `listed`")
+struct AdapterCatalogSplitTests {
+    private struct DemotingAdapter: Adapter {
+        let id = "demo"
+        let name = "Demo"
+        let icon = "sparkle"
+        let bin = "demo-bin"
+        let enabled = true
+        let capabilities = AgentCapabilities.stub
+        func catalog() -> [AgentModel] {
+            [AgentModel(id: "current", displayName: "Current", family: "other"),
+             AgentModel(id: "retired", displayName: "Retired", family: "other", listed: false)]
+        }
+        func newSessionId() -> String? { nil }
+        func start(_ ctx: AdapterContext) -> [String] { [] }
+        func resume(_ ctx: AdapterContext) -> [String]? { nil }
+        func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }
+        func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? { nil }
+    }
+
+    private let adapter = DemotingAdapter()
+
+    @Test("models() (the picker) excludes a demoted row; catalog() keeps it")
+    func demotedRowLeavesPickerStaysInCatalog() {
+        #expect(adapter.models().map(\.id) == ["current"])
+        #expect(adapter.catalog().map(\.id) == ["current", "retired"])
+    }
+
+    @Test("model(for:) resolves a demoted id through the FULL catalog, with its real metadata")
+    func modelForResolvesDemotedId() {
+        #expect(adapter.model(for: "retired").displayName == "Retired")
+    }
+
+    @Test("adapter(forModel:) still routes a demoted id — a re-seat onto it keeps working")
+    func adapterForModelRoutesDemotedId() {
+        let registry = AgentRegistry(adapters: [adapter])
+        #expect(registry.adapter(forModel: "retired")?.id == "demo")
+    }
+}

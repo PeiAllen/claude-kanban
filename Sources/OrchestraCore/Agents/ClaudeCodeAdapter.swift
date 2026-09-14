@@ -38,20 +38,13 @@ public struct ClaudeCodeAdapter: Adapter {
     private var binary: String { binOverride ?? bin }
     private var claudeHome: String { claudeHomeOverride ?? Config.home }
 
-    /// Claude Code's selectable models + their OFFLINE context windows / capability flags, from the
-    /// vendored `Resources/claude-code-models.json` (PR-updated, no network). The hardcoded list is a
-    /// last-resort fallback so `models()` is never empty if the resource fails to bundle.
-    public func models() -> [AgentModel] {
-        let table = ModelCatalog.load("claude-code-models")
-        return table.isEmpty ? Self.fallbackModels : table
+    /// Claude Code's known models + their capability flags/launchId, from the vendored, PR-updated
+    /// `Resources/claude-code-models.json` (no network). No hardcoded fallback: the resource is
+    /// `.copy`-bundled, so its absence is a broken build, not a runtime condition to guard
+    /// (`ModelCatalogResourceTests` pins that it always decodes and is non-empty).
+    public func catalog() -> [AgentModel] {
+        ModelCatalog.load("claude-code-models")
     }
-
-    private static let fallbackModels: [AgentModel] = [
-        AgentModel(id: "claude-opus-5", displayName: "Opus 5", family: "claude"),
-        AgentModel(id: "claude-fable-5-1", displayName: "Fable 5.1", family: "claude"),
-        AgentModel(id: "claude-sonnet-5", displayName: "Sonnet 5", family: "claude"),
-        AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
-    ]
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }
 

@@ -44,7 +44,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         self.modelIds = modelIds
     }
 
-    func models() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
+    func catalog() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
     /// Claude-shaped (`.stub`, `telemetry: .hooksPush`) gets the same unconditional push-only endpoint
     /// as `ClaudeCodeAdapter` — permanently, not opt-in, so the ~1,050 unit tests built on `StubAdapter`
