@@ -2714,6 +2714,30 @@ decodes and is non-empty instead. `App-iOS`'s `SpawnSheet.claudeFallback`, a fou
 copy of the same four models, is gone the same way: the daemon already sends the real catalog through
 `model.agents`, and the sheet draws its pickers empty for the sub-second gap before it arrives.
 
+**`scripts/check-model-tables.sh` keeps the two vendored tables fresh against a live probe of each
+CLI's own model catalog, gated by a three-rung safety ladder** (`scripts/lib/model-table-gen.py` holds
+the derivation, `scripts/lib/model-table-gen-test.sh` pins it against captured fixtures — no network,
+no vendor CLI). Both probes are offline and free: Claude's `initialize` control_response gives the
+picker set, and Codex's `codex debug models` gives both the picker set (`visibility: list`) and the
+demoted-but-supported set (`visibility: hide`) in one command. Claude's supported set — the published
+`downloads.claude.ai/model-catalog` document — needs network, and it is used for exactly one thing:
+gating deletion. The ladder: (1) nothing probes → report only, change nothing; (2) the picker probes
+but the published catalog does not (or fails a sanity gate requiring its `main` section be non-empty
+and contain every id the picker just returned) → update `listed` flags, never delete; (3) both succeed
+and the catalog passes its sanity gate → deletions enabled. The sanity gate is not paranoia: the
+published document changed shape (9 → 10 models) between two probes three days apart during this
+card's own research, so treating it as a live, occasionally-incomplete document was necessary, not
+optional. One elaboration on the read-the-tier-never-derive-it rule PR2 established: the picker can
+report a DATED id with no `[1m]` suffix at all (Haiku resolves to `claude-haiku-4-5-20251001`).
+Writing that straight through as `id` would re-open the exact dated-id bug fixed above, so the
+generator canonicalizes a raw id back to an EXISTING on-disk id first, using the same all-digit-suffix
+rule `OrchestraService+Recovery.isModelVariant` already applies at resolution time — reused, not
+reinvented. Read-only mode runs on the merge gate (`scripts/test.sh --all`, beside
+`scripts/lint-tests.sh`) and only ever reports; it never fails the build, because neither a live
+`claude`/`codex` binary nor network access is guaranteed on the machine running the gate. Adding or
+retiring a model then costs one command (`--write`), reading the printed diff, and a commit — no
+Swift changes.
+
 Landing after all of the above is the **branch tree — parent card / branch linking** (shipped to `main`).
 A card's branch no longer has to sit on `main`: it can be **based on any other branch** — another card's,
 a bare local branch, or a remote GitHub PR — and the card's whole lifecycle (diff, sync, ship, redirect,

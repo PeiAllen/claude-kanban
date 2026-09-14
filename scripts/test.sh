@@ -37,6 +37,10 @@ else
   # sleeps, no hardware) and finish in well under a second, so the gate pays nothing to include them.
   scripts/lib/ios-pick-device-test.sh
   scripts/build-ios-device-test.sh
+  scripts/lib/model-table-gen-test.sh   # fixture-only: pins the derivation logic, forks nothing
+  # Read-only: reports drift against a live probe of each CLI's own model catalog, never fails the
+  # gate (a probe needs network/the vendor CLI, neither guaranteed on every machine — see the script).
+  scripts/check-model-tables.sh
 fi
 # --- build-arg filtering: the existing selector loop, but over PASS not "$@" --------------
 BUILD_ARGS=()
