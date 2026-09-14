@@ -307,9 +307,14 @@ public struct ClaudeCodeAdapter: Adapter {
         }
     }
 
+    /// Passes the catalog's `launchId` when the stored id has one — today, only `claude-opus-5`, whose
+    /// interactive default is already the 1M tier (`claude-opus-5[1m]`); Orchestra was quietly launching
+    /// the plain 200k tier instead. Storage, the picker, and re-seat validation never see this — they
+    /// compare the plain `id` (see `AgentModel.launchId`).
     private func modelFlag(_ model: String?) -> [String] {
         guard let m = model, !m.isEmpty else { return [] }
-        return ["--model", m]
+        let launch = models().first { $0.id == m }?.launchId ?? m
+        return ["--model", launch]
     }
 
     /// Edit-tool denials for a read-only card — removes Edit/Write/MultiEdit/NotebookEdit from the

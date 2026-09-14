@@ -47,6 +47,21 @@ struct AdapterTests {
         #expect(argv.last == "Add OAuth login\nwith Google")
     }
 
+    @Test("start(ctx) launches claude-opus-5 on its 1M-context launchId, never the plain 200k id")
+    func startArgvUsesOpusLaunchId() {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-5", sessionId: "id", prompt: "hi")
+        let argv = adapter.start(ctx)
+        #expect(adjacent(argv, "--model", "claude-opus-5[1m]"))
+        #expect(!argv.contains("claude-opus-5"))   // only the bracketed launchId appears in argv
+    }
+
+    @Test("start(ctx) with no catalog launchId (e.g. sonnet) passes the plain id unchanged")
+    func startArgvNoLaunchIdPassesPlainId() {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-5", sessionId: "id", prompt: "hi")
+        let argv = adapter.start(ctx)
+        #expect(adjacent(argv, "--model", "claude-sonnet-5"))
+    }
+
     @Test("restart-style start: ctx.name preserved, NO positional prompt")
     func startNameOverride() {
         // restart hands name = preserved title and prompt = nil (blank session).
@@ -73,6 +88,13 @@ struct AdapterTests {
         #expect(adjacent(argv, "--model", "claude-opus-4-8"))
         #expect(!argv.contains("--session-id"))
         #expect(!argv.contains("should be ignored"))
+    }
+
+    @Test("resume(ctx) also launches claude-opus-5 on its 1M-context launchId")
+    func resumeArgvUsesOpusLaunchId() throws {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-5", sessionId: "sess-9")
+        let argv = try #require(adapter.resume(ctx))
+        #expect(adjacent(argv, "--model", "claude-opus-5[1m]"))
     }
 
     @Test("resume returns nil without a session id")

@@ -43,6 +43,16 @@ struct ModelTableAgentModelTests {
             AgentModel.self, from: Data("{\"id\":\"m\",\"displayName\":\"M\",\"family\":\"claude\"}".utf8))
         #expect(obj.id == "m")
         #expect(obj.contextWindow == nil)
+        #expect(obj.launchId == nil)
+    }
+
+    @Test("launchId decodes when present, and defaults to nil (no card migration needed)")
+    func launchIdDecode() throws {
+        let withLaunchId = try OrchestraJSON.decoder.decode(AgentModel.self, from: Data(
+            "{\"id\":\"claude-opus-5\",\"displayName\":\"Opus 5\",\"family\":\"claude\",\"launchId\":\"claude-opus-5[1m]\"}"
+                .utf8))
+        #expect(withLaunchId.id == "claude-opus-5")          // storage id stays plain
+        #expect(withLaunchId.launchId == "claude-opus-5[1m]")
     }
 }
 
@@ -55,6 +65,18 @@ struct ModelCatalogTests {
         let m = adapter.model(for: "claude-opus-5")
         #expect(m.displayName == "Opus 5")
         #expect(m.contextWindow == nil)   // Claude's own statusline percentage is the only consumer of usage
+    }
+
+    @Test("opus carries a 1M launchId; its storage id stays plain (data, not a blanket rule)")
+    func opusHasLaunchIdOtherModelsDoNot() {
+        let opus = adapter.model(for: "claude-opus-5")
+        #expect(opus.id == "claude-opus-5")            // storage/picker/routing id: unchanged
+        #expect(opus.launchId == "claude-opus-5[1m]")   // only the launch argv reads this
+
+        // fable-5-1 is natively 1M (no suffix); sonnet-5 and haiku-4-5 carry no 1M tier here.
+        for id in ["claude-fable-5-1", "claude-sonnet-5", "claude-haiku-4-5"] {
+            #expect(adapter.model(for: id).launchId == nil)
+        }
     }
 
     @Test("unknown model id falls back (heuristic, no window)")

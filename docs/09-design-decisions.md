@@ -2682,6 +2682,23 @@ affected, and are equally fixed) and a plan card lost `--permission-mode auto` (
 catalog into a bare `AgentModel`, dropping the model's catalog metadata — display name, `contextWindow`,
 flags — and pinning every later launch to the dated id.
 
+**Claude cards always launch on the 1M-context tier.** Interactive Claude Code's own default already
+resolves to `claude-opus-5[1m]`, so a plain `claude-opus-5` launch was a silent downgrade to the 200k
+tier. The fix is a per-row `launchId` on `AgentModel`: `ClaudeCodeAdapter.modelFlag` passes
+`launchId ?? id` to `--model`, while storage, the picker label, `adapter(forModel:)` routing,
+`resolveModelOverride`, and `task.model.id` all keep comparing the plain `id`. Splitting the two
+avoids a card migration, and keeps a bracketed id away from `resolveModelOverride`'s all-digit
+dated-variant rule, which would otherwise reject it. The tier is **data, not a rule**: it is read
+from a probe of the account's own picker, never derived by appending a suffix, because the 1M tier
+is per model and per account. On this account, Opus needs the `[1m]` suffix, Fable 5.1 is natively
+1M with no suffix, Sonnet 5 is gated off the picker entirely, and Haiku has no 1M tier — a blanket
+suffix rule would have been wrong for three of the four models. The 1M tier is credit-gated: a card
+that crosses 200k tokens without the entitlement gets a 429 ("Usage credits required for 1M
+context") instead of a graceful downgrade, which reads on the board as an unexplained stall. This is
+an accepted risk, because every interactive Claude Code session already takes it — the vendor CLI's
+own default is the same tier. `CLAUDE_CODE_DISABLE_1M_CONTEXT` is the escape hatch if it ever needs
+one.
+
 Landing after all of the above is the **branch tree — parent card / branch linking** (shipped to `main`).
 A card's branch no longer has to sit on `main`: it can be **based on any other branch** — another card's,
 a bare local branch, or a remote GitHub PR — and the card's whole lifecycle (diff, sync, ship, redirect,
