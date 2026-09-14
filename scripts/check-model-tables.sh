@@ -28,7 +28,14 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-TMP="$(mktemp -d)"
+# A private per-run dir under the repo's gitignored .scratch/, NEVER a bare `mktemp -d`: plain
+# `mktemp -d` resolves against macOS's Darwin user temp dir (not `$TMPDIR`), which an agent sandbox
+# denies writing to — this script must run cleanly from inside one. See ios-pick-device-test.sh for
+# the same precedent. If even `.scratch/` can't be created, degrade like every other probe failure.
+if ! mkdir -p .scratch || ! TMP="$(mktemp -d .scratch/check-model-tables.XXXXXX)"; then
+  echo "check-model-tables: could not create a scratch dir — could not verify" >&2
+  exit 0
+fi
 trap 'rm -rf "$TMP"' EXIT
 
 # Claude picker set (offline, ~1s, zero tokens — reads the CLI's embedded seed).

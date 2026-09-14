@@ -85,11 +85,16 @@ extension OrchestraService {
 
     /// Did the agent actually come up on the model we asked for? Compared through the catalog, never raw
     /// string equality. An id we cannot resolve at all is treated as a MATCH — this check exists to catch a
-    /// vendor that ignores `--model`, and a false accusation is worse than a missed one.
+    /// vendor that ignores `--model`, and a false accusation is worse than a missed one. A reported id that
+    /// echoes a row's `launchId` (e.g. the 1M-tier bracket `claude-opus-5[1m]`) canonicalizes to that row's
+    /// plain id too — the same match `report()`'s reconciliation makes — or a card re-seated AWAY from a
+    /// launchId-bearing model whose vendor ignores `--model` would go undetected: the bracket form is
+    /// neither an exact catalog id nor an all-digit dated variant, so it would fall through to "unknown id".
     func modelHonored(reported: String, requested: String, agentId: String) -> Bool {
         if reported == requested { return true }
-        let ids = ((try? registry.get(agentId))?.catalog() ?? []).map(\.id)
-        guard let canon = ids.first(where: { reported == $0 || Self.isModelVariant(reported, of: $0) })
+        let catalog = (try? registry.get(agentId))?.catalog() ?? []
+        guard let canon = catalog.first(where: { reported == $0.id || reported == $0.launchId
+                                                  || Self.isModelVariant(reported, of: $0.id) })?.id
         else { return true }   // unknown id — cannot judge, so do not accuse
         return canon == requested
     }

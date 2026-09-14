@@ -2007,13 +2007,11 @@ telemetry live end-to-end, and its two decisions are the interesting part:
 - **`ctxPct` prefers the rollout's own reported window, and the parse is rename-tolerant.** Because
   Codex reports no context percentage, the parse computes it as tokens ÷ a context window. The window
   comes from the rollout's own `model_context_window` first — a live agent knows its actual entitlement
-  (tier, gateway overrides) — and falls back to the **vendored** `Resources/codex-models.json`
-  (`gpt-6-astra` = 1 050 000; `gpt-5.6` models = 372 000) only when the rollout names none. The table
-  is a local, PR-updated file either way, so this stays fully offline — the earlier design preferred the
-  table on the reasoning that it kept the app offline, but a rollout is a local file too, not a fetch;
-  the real reason to prefer the table would have been availability, and the table is only the
-  fallback now because a measured probe found it 44% too large for `gpt-5.6-terra` against a real
-  rollout. That per-adapter **offline model table** on `Adapter.catalog()`
+  (tier, gateway overrides) — and falls back to the **vendored** `Resources/codex-models.json` only
+  when the rollout names none. Both sources are local, so this stays fully offline either way; the
+  rollout wins because it is authoritative for the *specific* card, while the vendored table is a
+  periodically-refreshed snapshot (`scripts/check-model-tables.sh`) that can drift between refreshes.
+  That per-adapter **offline model table** on `Adapter.catalog()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
   PR — **E1**, a root off `main` — which B2 consumes here; it is the
   same offline-model-table decision the [roadmap](10-roadmap.md) records for the model-providers axis. And because the rollout schema drifts, the parse
@@ -2725,13 +2723,15 @@ gating deletion. The ladder: (1) nothing probes → report only, change nothing;
 but the published catalog does not (or fails a sanity gate requiring its `main` section be non-empty
 and contain every id the picker just returned) → update `listed` flags, never delete; (3) both succeed
 and the catalog passes its sanity gate → deletions enabled. The sanity gate is not paranoia: the
-published document changed shape (9 → 10 models) between two probes three days apart during this
-card's own research, so treating it as a live, occasionally-incomplete document was necessary, not
-optional. One elaboration on the read-the-tier-never-derive-it rule PR2 established: the picker can
-report a DATED id with no `[1m]` suffix at all (Haiku resolves to `claude-haiku-4-5-20251001`).
-Writing that straight through as `id` would re-open the exact dated-id bug fixed above, so the
-generator canonicalizes a raw id back to an EXISTING on-disk id first, using the same all-digit-suffix
-rule `OrchestraService+Recovery.isModelVariant` already applies at resolution time — reused, not
+published document has changed shape between successive fetches days apart (one observed swing was
+9 → 10 models), so it is a live, occasionally-incomplete document, not a stable reference to trust
+outright. The generator reads the 1M tier, never derives it — same as the launch path — with one
+elaboration: the picker can report a DATED id with no `[1m]` suffix at all (Haiku resolves to
+`claude-haiku-4-5-20251001`). Writing that straight through as `id` would strand it the same way a
+dated report once stranded the launch path: a bare, metadata-less handle with no `contextWindow` or
+`flags`, unresolvable by anything that only knows the floating form. So the generator canonicalizes a
+raw id back to an EXISTING on-disk id first, using the same all-digit-suffix rule
+`OrchestraService+Recovery.isModelVariant` already applies at resolution time — reused, not
 reinvented. Read-only mode runs on the merge gate (`scripts/test.sh --all`, beside
 `scripts/lint-tests.sh`) and only ever reports; it never fails the build, because neither a live
 `claude`/`codex` binary nor network access is guaranteed on the machine running the gate. Adding or
