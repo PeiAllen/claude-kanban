@@ -1,10 +1,134 @@
 [
-  { "id": "gpt-6-astra", "displayName": "GPT-6 Astra", "family": "gpt", "contextWindow": 1050000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "gpt-5.6-sol", "displayName": "GPT-5.6 Sol", "family": "gpt", "contextWindow": 372000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "gpt-5.6-terra", "displayName": "GPT-5.6 Terra", "family": "gpt", "contextWindow": 372000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "gpt-5.6-luna", "displayName": "GPT-5.6 Luna", "family": "gpt", "contextWindow": 372000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } }
+  {
+    "id": "gpt-6-astra",
+    "displayName": "GPT-6 Astra",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "gpt-5.6-sol",
+    "displayName": "GPT-5.6 Sol",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "gpt-5.6-terra",
+    "displayName": "GPT-5.6 Terra",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "gpt-5.6-luna",
+    "displayName": "GPT-5.6 Luna",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "gpt-daybreak-blue-latest",
+    "displayName": "Daybreak Blue",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
+  },
+  {
+    "id": "gpt-daybreak-red-latest",
+    "displayName": "Daybreak Red",
+    "family": "gpt",
+    "contextWindow": 372000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
+  },
+  {
+    "id": "gpt-5.5",
+    "displayName": "GPT-5.5",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "gpt-5.4",
+    "displayName": "GPT-5.4",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
+  },
+  {
+    "id": "gpt-5.4-mini",
+    "displayName": "GPT-5.4-Mini",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
+  },
+  {
+    "id": "gpt-5.2",
+    "displayName": "GPT-5.2",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "codex-auto-review",
+    "displayName": "Codex Auto Review",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
+  }
 ]

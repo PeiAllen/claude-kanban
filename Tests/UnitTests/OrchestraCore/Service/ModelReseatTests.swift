@@ -220,6 +220,38 @@ struct ModelReseatTests {
         #expect(text.contains("m1"))   // what is actually running
     }
 
+    @Test("a vendor that ignores the re-seat still warns even when it echoes back a launchId bracket")
+    func vendorIgnoredTheFlagWarnsViaLaunchId() async throws {
+        // m1 carries a launchId (the 1M-tier bracket shape). A vendor that ignores `--model m2` and
+        // stays on m1 answers with EXACTLY what it was launched on: "m1[1m]" — neither an exact catalog
+        // id nor an all-digit dated variant of one, so without the launchId match this falls through to
+        // "unknown id, cannot judge" and the ignored flag goes silently undetected.
+        let env = TestEnv.make(
+            grace: 2,
+            registry: AgentRegistry(adapters: [
+                StubAdapter(transcriptDir: NSTemporaryDirectory() + "launchid-honor-\(UUID().uuidString)",
+                            launchIds: ["m1": "m1[1m]"]),
+            ]))
+        let collector = EventCollector()
+        await collector.start(await env.svc.subscribe())
+        let t = try await liveCard(env)
+
+        _ = try await env.svc.restart(t.id, model: "m2")
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+
+        try await env.svc.report(t.id, StatusReport(modelId: "m1[1m]"))
+        await yieldBriefly()
+        #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
+
+        try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m1[1m]"))
+        try await pollUntil { await !collector.activities.filter { $0.kind == .warning }.isEmpty }
+
+        let warnings = await collector.activities.filter { $0.kind == .warning }
+        #expect(warnings.count == 1)
+        let text = try #require(warnings.first?.text)
+        #expect(text.contains("m2"))   // what we asked for
+    }
+
     @Test("an agent that confirms the re-seat never warns — including via its DATED id")
     func vendorHonoredTheFlagIsSilent() async throws {
         let env = TestEnv.make(grace: 2)
@@ -398,6 +430,29 @@ struct ModelReseatTests {
 
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.model.id == "m2")   // canonicalized back to the catalog id, not the dated form
+    }
+
+    @Test("a report echoing the vendor's launchId (e.g. the 1M-tier bracket) also canonicalizes back")
+    func launchIdReportDoesNotClobberCatalogMetadata() async throws {
+        // `isModelVariant`'s dated-suffix rule doesn't recognize a bracket suffix, so a vendor that
+        // echoes back exactly what it was launched on (`m2[1m]`, ClaudeCodeAdapter.modelFlag's own
+        // substitution) needs its own match — the same loss as the dated-id case above, for a
+        // different vendor quirk.
+        let env = TestEnv.make(
+            grace: 2,
+            registry: AgentRegistry(adapters: [
+                StubAdapter(transcriptDir: NSTemporaryDirectory() + "launchid-\(UUID().uuidString)",
+                            launchIds: ["m2": "m2[1m]"]),
+            ]))
+        let t = try await liveCard(env)
+        _ = try await env.svc.restart(t.id, model: "m2")
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+
+        try await env.svc.report(t.id, StatusReport(modelId: "m2[1m]"))
+
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.model.id == "m2")             // canonicalized to the plain catalog id, bracket dropped
+        #expect(after.model.launchId == "m2[1m]")   // the catalog's real metadata survives, not a bare handle
     }
 
     @Test("a handoff REFUSED mid-flight (card archived) leaves the inbox durable")

@@ -351,7 +351,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         self.modelIds = modelIds
     }
 
-    func models() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
+    func catalog() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
     /// Both argv builders emit the model flag from `ctx.model`, like the real adapters
     /// (ClaudeCodeAdapter `--model`, Codex `-m`) — so a test can assert which model a launch actually

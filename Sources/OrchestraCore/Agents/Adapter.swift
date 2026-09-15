@@ -140,7 +140,11 @@ public protocol Adapter: Sendable {
     /// The frozen capability descriptor core degrades on. NO protocol default — every conformer MUST
     /// supply it (A1 seam-contract freeze), so a new adapter can't silently inherit Claude's shape.
     var capabilities: AgentCapabilities { get }
-    func models() -> [AgentModel]
+    /// EVERY model this adapter recognizes, listed and demoted alike — the vendored offline table, raw.
+    /// Resolution surfaces (`model(for:)`, `adapter(forModel:)`, `resolveModelOverride`, `modelHonored`,
+    /// the report-path label lookup) read this, so a demoted-but-still-running model keeps its display
+    /// label and its `--model` re-seat. Picker surfaces read `models()` instead (a filtered default).
+    func catalog() -> [AgentModel]
     func newSessionId() -> String?
     func start(_ ctx: AdapterContext) -> [String]
     func resume(_ ctx: AdapterContext) -> [String]?
@@ -234,21 +238,31 @@ public extension Adapter {
     func sessionSource(_ payload: JSONValue) -> SessionSource? {
         payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other
     }
-    /// Resolve a launch id to a full `AgentModel`: the catalog entry if known, else a heuristic
-    /// handle derived from the id. Keeps callers from ever fabricating a bad launch model.
-    func model(for id: String) -> AgentModel {
-        models().first { $0.id == id } ?? AgentModel(id: id)
+    /// The picker set: every CURRENTLY OFFERED model (`listed` nil/true), in table order. The demoted
+    /// rows `catalog()` also carries are deliberately excluded — they still resolve, they just stop
+    /// appearing as a new choice.
+    func models() -> [AgentModel] {
+        catalog().filter { $0.listed ?? true }
     }
 
-    /// Shared policy for token-based context reporters: prefer the adapter's model table when a model id
-    /// is present, and fall back to an explicit telemetry window only when the model window is unknown.
+    /// Resolve a launch id to a full `AgentModel`: the catalog entry if known (listed OR demoted), else
+    /// a heuristic handle derived from the id. Keeps callers from ever fabricating a bad launch model.
+    func model(for id: String) -> AgentModel {
+        catalog().first { $0.id == id } ?? AgentModel(id: id)
+    }
+
+    /// Shared policy for token-based context reporters: prefer the telemetry's OWN reported context
+    /// window, and fall back to the adapter's offline model table only when telemetry reports none.
+    /// A live agent knows its actual entitlement (tier, gateway overrides); the vendored table is a
+    /// last-resort estimate that can drift stale — measured 44% too large for `gpt-5.6-terra` against
+    /// a real Codex rollout (docs/09).
     func tokenContextPercent(usedTokens: Int?, modelId: String?, reportedContextWindow: Int?) -> Double? {
         guard let usedTokens else { return nil }
-        if let modelId, let pct = model(for: modelId).ctxPct(usedTokens: usedTokens) {
-            return pct
+        if let window = reportedContextWindow, window > 0 {
+            return min(100, max(0, Double(usedTokens) / Double(window) * 100))
         }
-        guard let window = reportedContextWindow, window > 0 else { return nil }
-        return min(100, max(0, Double(usedTokens) / Double(window) * 100))
+        guard let modelId else { return nil }
+        return model(for: modelId).ctxPct(usedTokens: usedTokens)
     }
 }
 
@@ -282,7 +296,8 @@ public struct AgentRegistry: Sendable {
     /// The enabled adapter that catalogs `modelId`, if any. Routes a spawn that names a model but not an
     /// agent (the app's flat model picker sends only the model id) to the adapter that owns it. Catalog-
     /// driven — never sniffs the id string. First match wins (model ids don't overlap across adapters).
+    /// Reads the FULL catalog (listed or demoted) so a re-seat onto a demoted-but-running model still routes.
     public func adapter(forModel modelId: String) -> (any Adapter)? {
-        list().first { a in a.models().contains { $0.id == modelId } }
+        list().first { a in a.catalog().contains { $0.id == modelId } }
     }
 }

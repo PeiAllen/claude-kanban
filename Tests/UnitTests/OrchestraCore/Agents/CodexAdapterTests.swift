@@ -117,7 +117,7 @@ struct CodexAdapterArgvTests {
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
-    @Test("models() is non-empty (fallback when no vendored table)")
+    @Test("models() is non-empty")
     func models() { #expect(!adapter.models().isEmpty) }
 
     @Test("start(ctx) for a default card: model, trailing prompt, and NO read-only clamp")
@@ -485,7 +485,7 @@ struct CodexModelRoutingTests {
     @Test("adapter(forModel:) routes a model id to its owning adapter (catalog-driven)")
     func routesModelToOwningAdapter() {
         let reg = AgentRegistry()                                   // Claude + Codex, both enabled
-        #expect(reg.adapter(forModel: "gpt-5.5") == nil)
+        #expect(reg.adapter(forModel: "gpt-99-fictional") == nil)
         #expect(reg.adapter(forModel: "gpt-6-astra")?.id == "codex")
         let claudeModel = try! reg.get("claude-code").models().first!.id
         #expect(reg.adapter(forModel: claudeModel)?.id == "claude-code")
@@ -496,7 +496,7 @@ struct CodexModelRoutingTests {
     func modelsUnionAllAdapters() async {
         let env = TestEnv.make(registry: AgentRegistry())          // real Claude + Codex
         let ids = await env.svc.models().map(\.id)
-        #expect(!ids.contains("gpt-5.5"))                       // retired models stay out of the picker
+        #expect(!ids.contains("gpt-5.4"))                       // demoted models stay out of the picker
         #expect(ids.contains("gpt-6-astra"))                    // Astra is surfaced by Codex
         #expect(ids.contains { $0.contains("claude") })            // Claude still there
         // Default agent (claude-code) lists first, so the picker's default entry stays a Claude model.
@@ -557,7 +557,7 @@ struct CodexModelRoutingTests {
     @Test("a model-less Codex spawn ignores a retired configured default")
     func modelLessCodexSpawnIgnoresRetiredConfiguredDefault() async throws {
         let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
-        let env = TestEnv.make(registry: isolatedRegistry(base), defaultModel: "gpt-5.5")
+        let env = TestEnv.make(registry: isolatedRegistry(base), defaultModel: "gpt-99-fictional")
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAwaited(
             env.svc,

@@ -2004,10 +2004,14 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   in the existing 2-second poll loop. This reuses A2's `adapter.parse` seam from a *different* transport
   and stays strictly split — the tailer never inspects JSON, the parse never touches files. Claude
   (`hooksPush`) is never tailed, so its push path is byte-identical.
-- **`ctxPct` is derived from a vendored offline model table, and the parse is rename-tolerant.** Because
-  Codex reports no context percentage, the parse computes it as tokens ÷ the context window from a
-  **vendored** `Resources/codex-models.json` (`gpt-6-astra` = 1 050 000; `gpt-5.6` models = 372 000), never the rollout's own reported
-  window — keeping the app fully offline. That per-adapter **offline model table** on `Adapter.models()`
+- **`ctxPct` prefers the rollout's own reported window, and the parse is rename-tolerant.** Because
+  Codex reports no context percentage, the parse computes it as tokens ÷ a context window. The window
+  comes from the rollout's own `model_context_window` first — a live agent knows its actual entitlement
+  (tier, gateway overrides) — and falls back to the **vendored** `Resources/codex-models.json` only
+  when the rollout names none. Both sources are local, so this stays fully offline either way; the
+  rollout wins because it is authoritative for the *specific* card, while the vendored table is a
+  periodically-refreshed snapshot (`scripts/check-model-tables.sh`) that can drift between refreshes.
+  That per-adapter **offline model table** on `Adapter.catalog()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
   PR — **E1**, a root off `main` — which B2 consumes here; it is the
   same offline-model-table decision the [roadmap](10-roadmap.md) records for the model-providers axis. And because the rollout schema drifts, the parse
@@ -2675,6 +2679,64 @@ affected, and are equally fixed) and a plan card lost `--permission-mode auto` (
 `startIn` flags at all). The third: a **dated** vendor model id (`claude-haiku-4-5-20251001`) fell out of the
 catalog into a bare `AgentModel`, dropping the model's catalog metadata — display name, `contextWindow`,
 flags — and pinning every later launch to the dated id.
+
+**Claude cards always launch on the 1M-context tier.** Interactive Claude Code's own default already
+resolves to `claude-opus-5[1m]`, so a plain `claude-opus-5` launch was a silent downgrade to the 200k
+tier. The fix is a per-row `launchId` on `AgentModel`: `ClaudeCodeAdapter.modelFlag` passes
+`launchId ?? id` to `--model`, while storage, the picker label, `adapter(forModel:)` routing,
+`resolveModelOverride`, and `task.model.id` all keep comparing the plain `id`. Splitting the two
+avoids a card migration, and keeps a bracketed id away from `resolveModelOverride`'s all-digit
+dated-variant rule, which would otherwise reject it. The tier is **data, not a rule**: it is read
+from a probe of the account's own picker, never derived by appending a suffix, because the 1M tier
+is per model and per account. On this account, Opus needs the `[1m]` suffix, Fable 5.1 is natively
+1M with no suffix, Sonnet 5 is gated off the picker entirely, and Haiku has no 1M tier — a blanket
+suffix rule would have been wrong for three of the four models. The 1M tier is credit-gated: a card
+that crosses 200k tokens without the entitlement gets a 429 ("Usage credits required for 1M
+context") instead of a graceful downgrade, which reads on the board as an unexplained stall. This is
+an accepted risk, because every interactive Claude Code session already takes it — the vendor CLI's
+own default is the same tier. `CLAUDE_CODE_DISABLE_1M_CONTEXT` is the escape hatch if it ever needs
+one.
+
+**The model catalog splits `Adapter.models()` (the picker) from `Adapter.catalog()` (every known
+id).** Before this, `models()` did both jobs at once, and those diverge the moment a vendor demotes a
+model: it should leave the picker without breaking a card already running it. The fix is one added
+`listed` flag per row. `models()` stays the default: `catalog().filter { $0.listed ?? true }`, so the
+Spawn picker and the `models` RPC show only current choices. `catalog()` is the new protocol
+requirement, and is what `model(for:)`, `adapter(forModel:)`, `resolveModelOverride`, `modelHonored`,
+and the report-path label lookup read — a demoted row keeps its display label and its `--model`
+re-seat there, because launch never re-resolves a running card's model through the table anyway (it
+passes the id already stored on the card). This also let both adapters drop their hardcoded
+`fallbackModels` array: the vendored JSON resource is `.copy`-bundled into the binary, so its absence
+is a broken build, not a runtime condition worth guarding — a unit test now pins that each resource
+decodes and is non-empty instead. `App-iOS`'s `SpawnSheet.claudeFallback`, a fourth hand-maintained
+copy of the same four models, is gone the same way: the daemon already sends the real catalog through
+`model.agents`, and the sheet draws its pickers empty for the sub-second gap before it arrives.
+
+**`scripts/check-model-tables.sh` keeps the two vendored tables fresh against a live probe of each
+CLI's own model catalog, gated by a three-rung safety ladder** (`scripts/lib/model-table-gen.py` holds
+the derivation, `scripts/lib/model-table-gen-test.sh` pins it against captured fixtures — no network,
+no vendor CLI). Both probes are offline and free: Claude's `initialize` control_response gives the
+picker set, and Codex's `codex debug models` gives both the picker set (`visibility: list`) and the
+demoted-but-supported set (`visibility: hide`) in one command. Claude's supported set — the published
+`downloads.claude.ai/model-catalog` document — needs network, and it is used for exactly one thing:
+gating deletion. The ladder: (1) nothing probes → report only, change nothing; (2) the picker probes
+but the published catalog does not (or fails a sanity gate requiring its `main` section be non-empty
+and contain every id the picker just returned) → update `listed` flags, never delete; (3) both succeed
+and the catalog passes its sanity gate → deletions enabled. The sanity gate is not paranoia: the
+published document has changed shape between successive fetches days apart (one observed swing was
+9 → 10 models), so it is a live, occasionally-incomplete document, not a stable reference to trust
+outright. The generator reads the 1M tier, never derives it — same as the launch path — with one
+elaboration: the picker can report a DATED id with no `[1m]` suffix at all (Haiku resolves to
+`claude-haiku-4-5-20251001`). Writing that straight through as `id` would strand it the same way a
+dated report once stranded the launch path: a bare, metadata-less handle with no `contextWindow` or
+`flags`, unresolvable by anything that only knows the floating form. So the generator canonicalizes a
+raw id back to an EXISTING on-disk id first, using the same all-digit-suffix rule
+`OrchestraService+Recovery.isModelVariant` already applies at resolution time — reused, not
+reinvented. Read-only mode runs on the merge gate (`scripts/test.sh --all`, beside
+`scripts/lint-tests.sh`) and only ever reports; it never fails the build, because neither a live
+`claude`/`codex` binary nor network access is guaranteed on the machine running the gate. Adding or
+retiring a model then costs one command (`--write`), reading the printed diff, and a commit — no
+Swift changes.
 
 Landing after all of the above is the **branch tree — parent card / branch linking** (shipped to `main`).
 A card's branch no longer has to sit on `main`: it can be **based on any other branch** — another card's,

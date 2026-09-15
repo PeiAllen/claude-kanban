@@ -7,11 +7,16 @@ import TestSupport
 struct CodexModelTableTests {
     let adapter = CodexAdapter()
 
-    @Test("retired GPT-5.5 resolves without a catalog context window")
-    func retiredModelHasNoCatalogWindow() {
-        let m = adapter.model(for: "gpt-5.5")
-        #expect(m.id == "gpt-5.5")
-        #expect(m.contextWindow == nil)
+    @Test("a DEMOTED (listed: false) model still resolves with its real catalog metadata")
+    func demotedModelKeepsCatalogWindow() {
+        // gpt-5.4 left the picker but is still Codex-supported (visibility: hide) — unlike a
+        // genuinely unknown id, model(for:) must return its real contextWindow/flags, not a bare
+        // heuristic handle. Contrast with `unknownFallsBack` below.
+        let m = adapter.model(for: "gpt-5.4")
+        #expect(m.id == "gpt-5.4")
+        #expect(m.contextWindow != nil)
+        #expect(m.flags != nil)
+        #expect(!(adapter.models().contains { $0.id == "gpt-5.4" }))   // demoted: not in the picker
     }
 
     @Test("GPT-6 Astra is selectable with its published context and capabilities")
@@ -20,7 +25,7 @@ struct CodexModelTableTests {
         #expect(adapter.models().first?.id == "gpt-6-astra")
         #expect(model.displayName == "GPT-6 Astra")
         #expect(model.family == "gpt")
-        #expect(model.contextWindow == 1_050_000)
+        #expect((model.contextWindow ?? 0) > 0)
         #expect(model.flags == ModelFlags(toolCall: true, reasoning: true, vision: true))
     }
 
@@ -62,8 +67,10 @@ struct CodexRolloutParseTests {
 
     @Test("token_count → ctxPct (tokens ÷ table window) + modelId")
     func tokenCountCtx() throws {
-        // 262500 / 1050000 = 25%
-        let line = #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":262500}}}}"#
+        // Astra's table window ÷ 4, whatever the vendored table currently says it is (the live-refreshed
+        // value, not a number pinned here — that pinning is exactly the staleness this table now avoids).
+        let window = CodexAdapter().model(for: "gpt-6-astra").contextWindow!
+        let line = #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":\#(window / 4)}}}}"#
         let r = try #require(tail(line))
         #expect(r.snapshot?.ctxPct == 25.0)
         #expect(r.snapshot?.modelId == "gpt-6-astra")
@@ -79,19 +86,21 @@ struct CodexRolloutParseTests {
         #expect(r.snapshot?.modelId == nil)
     }
 
-    @Test("test_ctxpct_from_model_table: ctxPct denominator is the OFFLINE model window, not the rollout's")
+    @Test("test_ctxpct_from_model_table: ctxPct denominator is the ROLLOUT'S reported window, not the table's")
     func ctxPctFromModelTable() throws {
-        // Rollout carries a bogus in-line window; parse must ignore it and use codex-models.json (372000).
-        let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.6-sol","model_context_window":999,"total_token_usage":{"total_tokens":186000}}}}"#
+        // codex-models.json's vendored gpt-5.6-sol window can drift stale (see 6769aec's commit body for
+        // a measured example). The rollout reports its own real entitlement, and that must win regardless
+        // of what the table currently says.
+        let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.6-sol","model_context_window":258400,"total_token_usage":{"total_tokens":129200}}}}"#
         let r = try #require(tail(line))
-        #expect(r.snapshot?.ctxPct == 50.0)   // 186000 / 372000, NOT 186000/999
+        #expect(r.snapshot?.ctxPct == 50.0)   // 129200 / 258400 (the rollout's window), never the table's
     }
 
-    @Test("GPT-6 Astra token usage uses its catalog context window")
-    func astraTokenUsageUsesCatalogWindow() throws {
-        let line = #"{"timestamp":"2026-09-05T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","model_context_window":999,"total_token_usage":{"total_tokens":525000}}}}"#
+    @Test("GPT-6 Astra token usage uses the rollout's reported window over the catalog's")
+    func astraTokenUsageUsesRolloutWindow() throws {
+        let line = #"{"timestamp":"2026-09-05T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","model_context_window":1024000,"total_token_usage":{"total_tokens":512000}}}}"#
         let report = try #require(tail(line))
-        #expect(report.snapshot?.ctxPct == 50.0) // 525000 / 1050000, not 525000 / 999
+        #expect(report.snapshot?.ctxPct == 50.0) // 512000 / 1024000 (the rollout's window), not / 1050000
         #expect(report.snapshot?.modelId == "gpt-6-astra")
     }
 
@@ -110,8 +119,9 @@ struct CodexRolloutParseTests {
 
     @Test("rename tolerance: total_token_usage.total_tokens AND a flat total_tokens both parse")
     func renameToleranceTokens() throws {
-        let nested = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":262500}}}}"#
-        let flat   = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_tokens":262500}}}"#
+        let window = CodexAdapter().model(for: "gpt-6-astra").contextWindow!
+        let nested = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":\#(window / 4)}}}}"#
+        let flat   = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_tokens":\#(window / 4)}}}"#
         #expect(tail(nested)?.snapshot?.ctxPct == 25.0)
         #expect(tail(flat)?.snapshot?.ctxPct == 25.0)
     }
@@ -321,8 +331,9 @@ struct CodexTelemetryE2ETests {
             await svc.store.get(card.id)?.turnStatus == .unavailable
         }
         let before = try #require(await svc.list().first { $0.id == card.id }).turnStatus
+        let window = CodexAdapter().model(for: "gpt-6-astra").contextWindow!
         append(rollout, #"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#)
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":262500}}}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":\#(window / 4)}}}}"#)
         await svc.pollTelemetry()
 
         let after = try #require(await svc.list().first { $0.id == card.id })
@@ -357,10 +368,11 @@ struct CodexTelemetryE2ETests {
     @Test("seq-gate holds end-to-end: a stale (earlier-timestamp) ctx line can't overwrite a fresher one")
     func seqGateHoldsE2E() async throws {
         let (svc, card, rollout) = try await makeEnv()
+        let window = CodexAdapter().model(for: "gpt-6-astra").contextWindow!
         // Fresh ctx first (later ts, 50%), then a STALE ctx (earlier ts, 10%) appended after.
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":525000}}}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":\#(window / 2)}}}}"#)
         await svc.pollTelemetry()
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":105000}}}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-6-astra","total_token_usage":{"total_tokens":\#(window / 10)}}}}"#)
         await svc.pollTelemetry()
 
         let after = try #require(await svc.list().first { $0.id == card.id })

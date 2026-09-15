@@ -54,7 +54,7 @@ struct CardFileConsistencyTests {
         struct Bare: Adapter {
             let id = "bare"; let name = "Bare"; let icon = "x"; let bin = "b"; let enabled = true
             var capabilities: AgentCapabilities { .claudeCode }
-            func models() -> [AgentModel] { [] }
+            func catalog() -> [AgentModel] { [] }
             func newSessionId() -> String? { nil }
             func start(_ ctx: AdapterContext) -> [String] { [] }
             func resume(_ ctx: AdapterContext) -> [String]? { nil }

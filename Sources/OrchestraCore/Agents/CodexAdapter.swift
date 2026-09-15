@@ -75,20 +75,13 @@ public struct CodexAdapter: Adapter {
     /// environment override, unlike the former isolated-home implementation.
     public var env: [String: String] { [:] }
 
-    /// Codex's selectable models, from the vendored `Resources/codex-models.json` offline table
-    /// (mirrors Codex's own model catalog). The hardcoded list is a safety net if that resource is
-    /// missing/unreadable, so `models()` is never empty and model resolution never fails.
-    public func models() -> [AgentModel] {
-        let table = ModelCatalog.load("codex-models")
-        return table.isEmpty ? Self.fallbackModels : table
+    /// Codex's known models, from the vendored, PR-updated `Resources/codex-models.json` offline table
+    /// (mirrors Codex's own model catalog). No hardcoded fallback: the resource is `.copy`-bundled, so
+    /// its absence is a broken build, not a runtime condition to guard (the `offlineLocalResource` tests
+    /// pin that it always decodes and is non-empty).
+    public func catalog() -> [AgentModel] {
+        ModelCatalog.load("codex-models")
     }
-
-    private static let fallbackModels: [AgentModel] = [
-        AgentModel(id: "gpt-6-astra", displayName: "GPT-6 Astra", family: "gpt"),
-        AgentModel(id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", family: "gpt"),
-        AgentModel(id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", family: "gpt"),
-        AgentModel(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", family: "gpt"),
-    ]
 
     /// Codex's thread id is `.discovered` from its app-server after launch, so Orchestra mints nothing
     /// pre-launch — unlike Claude's `.seeded` `--session-id`.
@@ -100,8 +93,9 @@ public struct CodexAdapter: Adapter {
     /// line at a time; this extracts context and display detail into `StatusReport`. SessionStart remains
     /// lifecycle/orientation-only; the app-server thread is the sole provider-session identity. AGENT-DEPENDENT (D3) —
     /// the mapping lives here, never in core. Rename-tolerant (Codex's rollout schema drifts:
-    /// `TaskComplete`→`TurnComplete`, nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE
-    /// model table as the denominator (E1), never the rollout's own window. `seq` is the line timestamp
+    /// `TaskComplete`→`TurnComplete`, nested vs flat token totals). `ctxPct` prefers the rollout's OWN
+    /// reported `model_context_window`, falling back to the OFFLINE model table (E1) only when the
+    /// rollout names no window — the table can drift stale (docs/09). `seq` is the line timestamp
     /// (µs) so out-of-order/duplicate lines lose to the freshest via `report()`'s seq-gate. Any unrecognized
     /// line → nil (dropped).
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
@@ -141,9 +135,9 @@ public struct CodexAdapter: Adapter {
         if any("turncomplete", "taskcomplete") {
             return nil
         }
-        // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
-        // rollout names a model; fall back to the rollout's explicit context window for model-less
-        // token reporters. No status (avoids churn vs turn edges).
+        // Token usage -> ctxPct + modelId. Prefer the rollout's own reported context window; fall back
+        // to the offline model table only when the rollout names no window. No status (avoids churn
+        // vs turn edges).
         if any("tokencount", "tokenusage") {
             let info = payload["info"] ?? payload
             let mid = (info["model"] ?? payload["model"])?.stringValue

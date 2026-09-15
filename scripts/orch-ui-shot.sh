@@ -324,3 +324,10 @@ echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on e
 # chip replaces the quiet cluster at EVERY squish rung and must never truncate.
 shoot "26-attention-board"   env ORCH_SHOW=attention -- -inspectorWidth 392
 shoot "27-attention-peek"    env ORCH_SHOW=attention ORCH_ATTENTION=peek -- -inspectorWidth 760
+
+# 28 — the Spawn sheet's Model grid (model-table-freshness). `ORCH_SPAWN_AGENT` preselects an agent so
+# each shot shows that agent's own catalog — Claude (4 models, one row) vs Codex (6 after the table
+# refresh, balanced 3+3 rather than a greedy-fill 4+2 ragged row). `DebugLaunchHook.mockAgents` reads
+# the REAL adapters, so these render the actual bundled catalog, not a hand-written mock.
+shoot "28-spawn-claude" env ORCH_SHOW=spawn ORCH_SPAWN_AGENT=claude-code
+shoot "28-spawn-codex"  env ORCH_SHOW=spawn ORCH_SPAWN_AGENT=codex

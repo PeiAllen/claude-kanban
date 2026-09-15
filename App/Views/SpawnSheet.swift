@@ -91,6 +91,38 @@ struct SpawnSheet: View {
     /// The selected agent's models — the Model picker's options.
     private var modelOptions: [AgentModel] { selectedAgent?.models ?? [] }
 
+    /// The sheet's fixed geometry, named once and shared between the layout modifiers below and
+    /// `modelGridColumnCount`'s math — so the two can't silently drift apart if the sheet is ever
+    /// resized. Every SITE that uses one of these values (the .frame(width:), the Body VStack's
+    /// .padding(.horizontal:), the Model grid's own .padding(), and its GridItem spacing/minimum)
+    /// reads it from here, never repeats the literal.
+    private enum Layout {
+        static let sheetWidth: CGFloat = 470
+        static let bodyHorizontalPadding: CGFloat = 19
+        static let modelGridPadding: CGFloat = 2
+        static let modelGridSpacing: CGFloat = 2
+        static let modelGridMinItemWidth: CGFloat = 88
+    }
+
+    /// The Model grid's column count, chosen to BALANCE rows instead of greedy-filling them: the
+    /// largest count that fits (`maxFit`, from the sheet's fixed geometry — `Layout` above)
+    /// determines the row count, then the column count divides the catalog evenly across those rows.
+    /// 6 models -> 3+3, 8 -> 4+4, 4 -> 4 (one row), 5 -> 3+2 — never a ragged last row with empty slots.
+    private var modelGridColumnCount: Int {
+        let n = modelOptions.count
+        guard n > 0 else { return 1 }
+        // Sheet width minus the Body VStack's horizontal padding (both sides) minus the grid's own
+        // padding (both sides) — see field("Model")'s .padding(Layout.modelGridPadding) and the Body
+        // VStack's .padding(.horizontal, Layout.bodyHorizontalPadding) below.
+        let available = Layout.sheetWidth - Layout.bodyHorizontalPadding * 2 - Layout.modelGridPadding * 2
+        let minItemWidth = Layout.modelGridMinItemWidth
+        let spacing = Layout.modelGridSpacing
+        var maxFit = 1
+        while CGFloat(maxFit + 1) * minItemWidth + CGFloat(maxFit) * spacing <= available { maxFit += 1 }
+        let rows = Int((Double(n) / Double(maxFit)).rounded(.up))
+        return Int((Double(n) / Double(rows)).rounded(.up))
+    }
+
     /// The default model for the selected agent: the configured default when it belongs to this agent,
     /// else the agent's first model. Used on appear and whenever the agent changes.
     private func defaultModelForAgent() -> String {
@@ -237,7 +269,13 @@ struct SpawnSheet: View {
                     // and a fixed HStack silently truncates every label past ~6 — which made the three
                     // GPT-5.6 variants render as an identical "GPT-5.6…". Flowing onto a second row keeps
                     // every model legible at any catalog size.
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
+                    //
+                    // BALANCED columns, not `.adaptive` greedy-fill: `.adaptive` packs as many columns as
+                    // fit then wraps the remainder, so 6 models (Codex's post-refresh count) rendered 4+2 —
+                    // a ragged last row with two empty slots. modelGridColumnCount instead picks the column
+                    // count that divides the catalog evenly (6 -> 3+3, 8 -> 4+4, 4 -> 4, 5 -> 3+2).
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Layout.modelGridSpacing),
+                                              count: modelGridColumnCount), spacing: Layout.modelGridSpacing) {
                         ForEach(modelOptions, id: \.id) { m in
                             let active = m.id == modelSel
                             Button { modelSel = m.id } label: {
@@ -255,7 +293,7 @@ struct SpawnSheet: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(2)
+                    .padding(Layout.modelGridPadding)
                     .background(theme.chip)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
@@ -291,7 +329,7 @@ struct SpawnSheet: View {
                     trustNotice
                 }
             }
-            .padding(.horizontal, 19).padding(.top, 12).padding(.bottom, 4)
+            .padding(.horizontal, Layout.bodyHorizontalPadding).padding(.top, 12).padding(.bottom, 4)
 
             // CLI equivalent
             VStack(alignment: .leading, spacing: 4) {
@@ -351,7 +389,7 @@ struct SpawnSheet: View {
             }
             .padding(.horizontal, 19).padding(.top, 6).padding(.bottom, 17)
         }
-        .frame(width: 470)
+        .frame(width: Layout.sheetWidth)
         .surface(theme.winBg, corner: 13, hair: theme.hair)
         .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.4), radius: 35, x: 0, y: 28)
         .onAppear {
