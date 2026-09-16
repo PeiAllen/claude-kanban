@@ -23,7 +23,7 @@ fi
 #    - socketPath/hooksPath are asserted as derived STRINGS by resolver/adapter unit tests
 #      (ConnectionSocketResolverTests:15, AdapterTests:40) and their write paths are launch-time
 #      (contract tier) — excluded. The hazard this rule guards is shared filesystem STATE.
-if grep -rnE 'NSHomeDirectory\(\)|Config\.defaultScratchRoot|Config\.dataDir[^(A-Za-z]|Config\.(tasksPath|logPath)\b' \
+if grep -rnE 'NSHomeDirectory\(\)|Config\.defaultScratchRoot|Config\.defaultPropagationPath|Config\.dataDir[^(A-Za-z]|Config\.(tasksPath|logPath)\b' \
      Tests/UnitTests --include='*.swift'; then
   say "ambient path in a unit test — use the TestEnv per-test base"
 fi

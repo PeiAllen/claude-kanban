@@ -726,6 +726,49 @@ The separate `wait` primitive remains a subscription to a lifecycle conclusion. 
 provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog, and a possible
 deprecation of `wait`.
 
+## Worktree propagation policy
+
+A card's worktree is a fresh `git worktree`, which contains only tracked files. Files such as
+`CLAUDE.md`, `AGENTS.md`, and `.claude/commands/` are development instructions and memories, not
+product artifacts — they need no commit history or merge behavior, but they must still reach every
+card. The mechanism is an explicit **policy per path**: `tracked` (git already does it), `shared` (one
+instance, visible to every card), or `ephemeral` (dies with the worktree). This section states the
+policy's Kit types and its sidecar store; the propagation mechanism that acts on them is described here
+as it lands.
+
+### The policy table is a sidecar file, not a `Config` field
+
+`ControlServer.setConfig` (`ControlServer.swift:129`) decodes a full `Config` from the client and
+replaces the daemon's in-memory copy wholesale. A policy table living as a `Config` field would be
+silently wiped by any client that round-trips an older or partial `Config` through that RPC. A
+standalone file — `PropagationStore` at `Config.defaultPropagationPath` — is never touched by
+`setConfig`, the same reason `borrows.json` and `trust-ledger.json` are sidecar files rather than
+`Config` fields.
+
+### Policy is per repo, per item
+
+The table is keyed by **canonical repo path**, so `/tmp/x` and `/private/tmp/x` resolve to the same
+row regardless of how a caller spells it — the same discipline `TrustLedger` applies to its own keys.
+`save` canonicalizes every key it writes, so a writer that spells a repo path differently from a later
+reader can never silently create a row nothing finds. Each repo's row holds two independent overrides,
+both keyed by item name: a `PropagationPolicy` override that beats the single default (`shared`), and a
+user-declared `PropagationItem` that beats an adapter item of the same name. An absent row, or an
+absent key within a row, falls back to the default — an empty policy table is a working default, not a
+broken one.
+
+### Corrupt never decays into defaults
+
+`load` never mutates the file. A `propagation.json` that fails to decode is reported as `loadFailed`
+and left exactly where it is, so a corrupt table keeps reporting `loadFailed` on every later `load` —
+not just the one that first noticed the corruption. Moving the corrupt file aside on `load` (mirroring
+`TrustLedger`'s malformed-file handling literally) was tried and rejected: for the ledger, an empty
+table on corruption is fail-safe (nothing trusted), but this table's empty state is fail-**open**
+(the single default is `shared`), so moving the file away made the very next `load` report a
+healthy-looking empty table and silently resume propagating everything. `save` is the one place
+content can be lost, so it is the one place that protects against it: if the file on disk currently
+holds bytes that fail to decode, `save` preserves them as `propagation.json.bak` before writing its
+own table over them.
+
 ## Superseded pre-native delivery protocol — historical only
 
 The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and

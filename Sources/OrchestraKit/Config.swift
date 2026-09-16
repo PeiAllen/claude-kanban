@@ -160,6 +160,11 @@ public struct Config: Codable, Sendable, Equatable {
     public static var inboxPath: String { "\(dataDir)/inbox.json" }
     /// Persisted borrow registrations (`[borrowerCardId: path]`), sibling to `inboxPath`.
     public static var borrowsPath: String { "\(dataDir)/borrows.json" }
+    /// Default location of the propagation policy table (`[canonical repo path: PropagationRepoPolicy]`),
+    /// sibling to `inboxPath`. Named `default...` rather than a bare `propagationPath` because a later PR
+    /// adds an INSTANCE field of that exact name for test injection (the `scratchRoot`/`defaultScratchRoot`
+    /// precedent) — a same-named static would silently shadow it at every default-argument call site.
+    public static var defaultPropagationPath: String { "\(dataDir)/propagation.json" }
     /// Durable watch registry (`[watcherCardId: [childCardId]]`), sibling to `inboxPath`. Survives a
     /// daemon restart so an MCP `wait` watcher is re-notified of a child that concluded while the daemon
     /// was down (F2/F3 fan-out durability).
