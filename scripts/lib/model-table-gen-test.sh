@@ -43,6 +43,7 @@ picker() {  # writes a picker probe carrying the rows named in $@ (from the tabl
       sonnet)   row='{"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet"}' ;;
       sonnet1m) row='{"value":"sonnet[1m]","resolvedModel":"claude-sonnet-5[1m]","displayName":"Sonnet (1M)"}' ;;
       haiku)    row='{"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku"}' ;;
+      opus55)   row='{"value":"opus55[1m]","resolvedModel":"claude-opus-5-5[1m]","displayName":"Opus 5.5"}' ;;
     esac
     [[ $first == 1 ]] && first=0 || rows+=","
     rows+="$row"
@@ -188,6 +189,20 @@ json.dump(doc, open('$SCRATCH/catalog9.json','w'))
 run_gen 1 "$SCRATCH/c9.json" "$SCRATCH/codex1.json" "$SCRATCH/picker9" "$SCRATCH/catalog9.json" "$SCRATCH/codexprobe-empty" >/dev/null
 check "displayName picks up the catalog's fresh name, not the stale existing one" \
   "$(field "$SCRATCH/c9.json" claude-opus-5 displayName)" "Opus 5.1 Renamed"
+
+echo "10. a VERSION-bump suffix ('-5') is NOT a dated variant — new row, no collapse; an 8-digit"
+echo "    DATE suffix still canonicalizes back, side by side in the same probe"
+existing_claude claude-opus-5 claude-haiku-4-5 > "$SCRATCH/c10.json"
+picker opus55 haiku > "$SCRATCH/picker10"
+run_gen 1 "$SCRATCH/c10.json" "$SCRATCH/codex1.json" "$SCRATCH/picker10" "$SCRATCH/catalog-empty" "$SCRATCH/codexprobe-empty" >/dev/null
+check "the version bump gets its OWN new row" "$(field "$SCRATCH/c10.json" claude-opus-5-5 listed)" "True"
+check "…with its own launchId" "$(field "$SCRATCH/c10.json" claude-opus-5-5 launchId)" "claude-opus-5-5[1m]"
+check "the existing base row survives (demoted, not deleted or overwritten)" \
+  "$(field "$SCRATCH/c10.json" claude-opus-5 listed)" "False"
+check "the dated id still canonicalizes onto the EXISTING floating row" \
+  "$(field "$SCRATCH/c10.json" claude-haiku-4-5 listed)" "True"
+check "…no stray dated haiku row was added" \
+  "$(python3 -c "import json; print(len([r for r in json.load(open('$SCRATCH/c10.json')) if 'haiku' in r['id']]))")" "1"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

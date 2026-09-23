@@ -1,9 +1,9 @@
 [
   {
-    "id": "claude-opus-5",
-    "displayName": "Opus 5",
+    "id": "claude-opus-5-5",
+    "displayName": "Opus 5.5",
     "family": "claude",
-    "launchId": "claude-opus-5[1m]",
+    "launchId": "claude-opus-5-5[1m]",
     "flags": {
       "toolCall": true,
       "reasoning": true,
@@ -43,5 +43,17 @@
       "vision": true
     },
     "listed": true
+  },
+  {
+    "id": "claude-opus-5",
+    "displayName": "Opus 5",
+    "family": "claude",
+    "launchId": "claude-opus-5[1m]",
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
   }
 ]

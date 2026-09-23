@@ -74,13 +74,17 @@ extension OrchestraService {
     /// `claude-haiku-4-5`)? Used both to accept a dated id on the way in and to recognize the agent's own
     /// dated report as a match on the way out — never a raw `==`, which would false-reject and false-warn.
     ///
-    /// The suffix must be all DIGITS. Accepting any suffix would silently downgrade a typo — `--model
-    /// claude-haiku-4-5-oops` would prefix-match and quietly launch on `claude-haiku-4-5` — which is exactly
-    /// the "fails closed" promise this validation makes. A mistyped id must be an error, not a substitution.
+    /// The suffix must be exactly 8 DIGITS — a real YYYYMMDD date, like every dated vendor id actually is.
+    /// Accepting any all-digit suffix would silently downgrade a typo (`--model claude-haiku-4-5-oops` would
+    /// prefix-match and quietly launch on `claude-haiku-4-5`, defeating the "fails closed" promise this
+    /// validation makes) AND would wrongly collapse a genuine VERSION bump onto its predecessor — the
+    /// published catalog can list `claude-opus-5-5` ("Opus 5.5") and `claude-opus-5` ("Opus 5") as two
+    /// distinct, independently-listed models, and an all-digit rule would treat the former as a dated variant
+    /// of the latter. A mistyped id or a new version must be an error / a new row, never a substitution.
     static func isModelVariant(_ id: String, of base: String) -> Bool {
         guard id.hasPrefix(base + "-") else { return false }
         let suffix = id.dropFirst(base.count + 1)
-        return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
+        return suffix.count == 8 && suffix.allSatisfy(\.isNumber)
     }
 
     /// Did the agent actually come up on the model we asked for? Compared through the catalog, never raw
