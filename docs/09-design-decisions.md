@@ -769,6 +769,37 @@ content can be lost, so it is the one place that protects against it: if the fil
 holds bytes that fail to decode, `save` preserves them as `propagation.json.bak` before writing its
 own table over them.
 
+### Two guard queries, never one, and one tree-ish per `ls-tree` call
+
+Finding whether a candidate path lies outside a repo's declared shared set, or inside one of its
+excluded holes, needs two separate git queries, not one combined pathspec. `ls-tree` rejects a
+`:(exclude)` pathspec magic outright (exit 128), so it cannot express "the declared paths, minus
+their exclusions" in one call. `diff`, which does accept `:(exclude)`, has the opposite problem: an
+exclude pathspec cancels every positive path it's paired with, so a single query combining "outside
+the declared set" with "inside an exclusion" would silently drop the excluded holes from the result
+instead of reporting them. The two queries — an outside-query (`:(top)` plus one exclude per declared
+path) and a holes-query (the exclusions as plain paths) — are run separately and their results
+unioned by the caller.
+
+The same one-tree-ish rule applies to every `ls-tree` call built from these queries: `ls-tree` accepts
+exactly one tree-ish argument, and a second one is silently read as a path rather than as a second
+tree to compare against. A query spanning two trees (for example, the merge result and HEAD) is
+always two separate calls, never one call given both tree-ish arguments.
+
+### A batch classification failure must never look like "safe to write"
+
+`IgnoreProbe.classify` reports whether a checkout's `.gitignore` rules actually ignore a set of
+declared paths, and every Orchestra writer treats its answer as an authorization: write on `.repo`
+for an ignored path, write on `.notARepo` (nothing to ignore, so nothing can leak), and write on
+**nothing else**. `.unknown` exists as a third, fail-closed outcome for exactly the case a two-value
+classification can't express: the probe ran and failed, or never completed at all, so its answer
+is unknown rather than negative. Two failure shapes both collapse to `.unknown`, and neither is
+treated as `.notARepo`: a `check-ignore` call that exits with a fatal status, and a probe that never
+completed (a spawn failure or a timeout). A bare repository is a related, narrower case — `git
+rev-parse --is-inside-work-tree` answers `false` with exit code 0 there, so a caller that checks only
+the exit code cannot tell "not inside a work tree" apart from "genuinely inside one"; the probe must
+also check that the reported value is literally `true`.
+
 ## Superseded pre-native delivery protocol — historical only
 
 The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and
