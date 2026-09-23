@@ -47,6 +47,22 @@ public struct Config: Codable, Sendable, Equatable {
     /// Where the service writes small per-card runtime state (readonly-launch settings files).
     /// Same non-Codable / per-instance rationale as `scratchRoot`.
     public var runtimeStateDir: String
+    /// Root for the daemon-owned shared-store git dirs (`<root>/<repoKey>/store.git` +
+    /// `<root>/<repoKey>/checkouts/<checkoutKey>.git`). INSTANCE state, non-Codable, same
+    /// rationale as `scratchRoot`: `SharedStore` itself never reads `Config` (it takes `root` as
+    /// an explicit `init` parameter), so this field is forward plumbing for `PropagationService`
+    /// (a later PR) — but it must still never be wire-settable or persisted stale across a HOME
+    /// redirect, or a test that forgets to override it writes into the live `~/.orchestra/shared`.
+    /// No `TestEnv` helper exists for this yet (or for `scratchRoot`) — follow the
+    /// inline-construction convention at `Tests/ContractTests/Support/Stubs.swift:507` for a
+    /// future test that needs to override it.
+    public var sharedStoreRoot: String
+    /// Where the propagation policy sidecar (`propagation.json`) lives. INSTANCE state,
+    /// non-Codable, same rationale. The static default `Config.defaultPropagationPath` (already
+    /// reserved — see its own doc comment) stays the parameter default for
+    /// `PropagationStore.load`/`.save`'s direct callers; this instance field is what
+    /// `PropagationService` threads through instead of reaching for the static.
+    public var propagationPath: String
     /// The scratch dir for a given card id — `scratchRoot/<lowercased-uuid>`.
     public func scratchDir(_ id: UUID) -> String { "\(scratchRoot)/\(id.uuidString.lowercased())" }
 
@@ -65,7 +81,9 @@ public struct Config: Codable, Sendable, Equatable {
         controlTimeout: Int = 15,
         autoInstallMCPGlobally: Bool = false,
         scratchRoot: String = Config.defaultScratchRoot,
-        runtimeStateDir: String = Config.dataDir
+        runtimeStateDir: String = Config.dataDir,
+        sharedStoreRoot: String = Config.defaultSharedStoreRoot,
+        propagationPath: String = Config.defaultPropagationPath
     ) {
         self.reposRoot = reposRoot
         self.worktreesRoot = worktreesRoot
@@ -82,6 +100,8 @@ public struct Config: Codable, Sendable, Equatable {
         self.controlTimeout = controlTimeout
         self.scratchRoot = scratchRoot
         self.runtimeStateDir = runtimeStateDir
+        self.sharedStoreRoot = sharedStoreRoot
+        self.propagationPath = propagationPath
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -98,6 +118,8 @@ public struct Config: Codable, Sendable, Equatable {
         // Non-wire runtime paths: never decoded — always the CURRENT process's defaults.
         scratchRoot = Config.defaultScratchRoot
         runtimeStateDir = Config.dataDir
+        sharedStoreRoot = Config.defaultSharedStoreRoot
+        propagationPath = Config.defaultPropagationPath
         let c = try decoder.container(keyedBy: CodingKeys.self)
         reposRoot = try c.decode(String.self, forKey: .reposRoot)
         worktreesRoot = try c.decode(String.self, forKey: .worktreesRoot)
@@ -128,6 +150,9 @@ public struct Config: Codable, Sendable, Equatable {
     /// Default root for ephemeral scratch-card dirs (`~/.orchestra/scratch/<id>`), parallel to
     /// worktrees. The INSTANCE `scratchRoot` (defaulting to this) is what the service uses.
     public static var defaultScratchRoot: String { "\(home)/.orchestra/scratch" }
+
+    /// Default root for the daemon-owned shared-store git dirs, parallel to `defaultScratchRoot`.
+    public static var defaultSharedStoreRoot: String { "\(home)/.orchestra/shared" }
 
     // MARK: Derived (not user-facing)
 

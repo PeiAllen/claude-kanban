@@ -277,6 +277,33 @@ nothing is written on the strength of policy Orchestra could not read.
 replaces `Config` wholesale from the client — a policy field there would be wiped by any client that
 round-trips an older `Config`.
 
+## The shared-store layout
+
+`SharedStore` (`Propagation/SharedStore.swift`) holds the git mechanics for a `shared` item: one bare
+store per repo, plus one shadow git dir per checkout, all under a daemon-owned root the agent sandbox
+never sees:
+
+```
+<sharedStoreRoot>/<repoKey>/store.git                    bare, branch main
+<sharedStoreRoot>/<repoKey>/checkouts/<checkoutKey>.git  core.bare=false, info/exclude = /*
+    orchestra-checkout                                   the work-tree path, read only by the sweep
+    orchestra-unignored                                  the leaves un-ignored at the last sync
+```
+
+Both `repoKey` and `checkoutKey` come from `CardFileSpec.cwdHash` — the single home of that hash,
+already used for the launch-config filenames. `info/exclude = /*` makes every file ignored from the
+shadow checkout's own point of view, which is what lets git overwrite a declared, ignored leaf
+without its usual "would overwrite an untracked file" guard. `orchestra-checkout` records the real
+work-tree path so the boot sweep can tell a live checkout's shadow git dir from an orphaned one.
+`orchestra-unignored` records which declared leaves were un-ignored (still tracked by the project) at
+the last sync — the "flip test" reads it to catch a leaf that stood down, then became eligible again,
+with a stale local copy still on disk.
+
+Like `sharedStoreRoot`, this root is an **instance field on `Config`** (`sharedStoreRoot`,
+`propagationPath`), not a static — the `scratchRoot`/`runtimeStateDir` precedent, excluded from
+`CodingKeys` and never persisted, so a test that forgets to override it cannot write into the live
+`~/.orchestra/shared`.
+
 ## Configuration and paths
 
 `Config` (`Config.swift`) is loaded/saved by `ConfigStore` at `config.json` with the same atomic-write,
@@ -309,6 +336,7 @@ Derived paths (all keyed off `$HOME`, so state follows the user, not the bundle)
 | Inbox | `…/inbox.json` |
 | Trust ledger | `…/trust-ledger.json` |
 | Propagation policy | `…/propagation.json` |
+| Shared store root | `~/.orchestra/shared/` (not user-configurable) |
 | Log | `…/orchestrad.log` |
 | Rendered hooks | `…/claude-hooks.json` |
 | Worktrees | `~/.orchestra/worktrees/<repo>/<branch>` |

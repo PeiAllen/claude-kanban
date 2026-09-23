@@ -800,6 +800,118 @@ rev-parse --is-inside-work-tree` answers `false` with exit code 0 there, so a ca
 the exit code cannot tell "not inside a work tree" apart from "genuinely inside one"; the probe must
 also check that the reported value is literally `true`.
 
+### `SharedStore` — git mechanics, no policy
+
+`SharedStore` (`Propagation/SharedStore.swift`) runs the git mechanics for one `shared` item: attach,
+commitLocal, receive, send, resolve. It holds only a store root and a `ProcRunning` seam — no policy,
+no notify/warn sinks. Every "warn" the design calls for comes back as data on an outcome enum
+(`CommitOutcome`'s `warnings`, for example) instead of a direct call, because a later component
+(`PropagationService`) owns policy and reporting; `SharedStore` stays a pure mechanics layer other
+callers, including tests, can drive directly.
+
+### HEAD never moves while a written leaf is dirty
+
+`receive` and `resolve` both merge in the object store, then write out only the leaves a checkout
+declares and ignores. If a write-out call reaches a leaf whose on-disk content has changed since the
+last sync — an edit landing during the write-out window — moving HEAD to the merge result anyway
+would make the *next* sync read that edit as something to undo: `commitLocal` would compare it
+against the new HEAD, see the store's already-applied change reflected there as a local edit, and
+push a silent revert with no conflict ever raised. Proven during design: the store ended holding only
+the last writer's content, discarding the other side's change. Leaving HEAD at the old value instead
+lets the next `commitLocal` commit the written leaves as identical to the merge, and `merge-tree` then
+genuinely combines both sides.
+
+A narrower residual window sits between the two calls that make the move real: `read-tree` runs
+first, `update-ref HEAD` second — files before HEAD, one level deeper than the write-out-before-HEAD
+rule above. A crash between them leaves the index at the merge result with HEAD still at the old
+value, matching what write-out already put on disk. The next `commitLocal` then correctly commits
+the merge's content on top of the old HEAD, and a later `merge-tree` combines it cleanly. The reverse
+order was tried and rejected: it risks the next `commitLocal` reading a stale index (any leaf
+write-out didn't touch) against an already-moved HEAD, committing the stale content and reverting
+this sync's change to those leaves.
+
+### A leaf materialized by ADOPT's `reset --mixed` still needs a real write-out
+
+`attach`'s first-time ADOPT path runs `git reset --mixed store/main`, which repoints HEAD and the
+index to the store's commit but never touches the working tree — `--mixed` is defined that way. A
+`receive` call immediately afterward therefore finds HEAD already "up to date" with the store by
+history, and a check that stops there would never materialize the leaf onto disk at all — a checkout
+would ADOPT the store and then, on its very first sync, never actually see any of its declared files.
+`receive` instead always computes a target tree and runs the write-out step, treating "up to date" as
+an outcome the write-out establishes (nothing written, deleted, or newly needing HEAD to move), not a
+shortcut that skips it.
+
+This forced a second, related fix: `writeOut`'s "dirty" check (a leaf whose disk content differs from
+the last-known-synced tree, meaning a real local edit to preserve) cannot be answered by `git diff
+<tree> -- <path>` alone, because `diff` collapses two different situations into the same output in
+two separate blind spots. First: when the compared tree already holds the leaf, `diff` reports the
+same "different" verdict whether the working file holds a genuine edit or is simply absent — absent
+must never count as dirty, since it is exactly the leaf ADOPT's `reset --mixed` needs written out,
+not preserved. Second: when a leaf is present on disk but absent from *both* the compared tree and
+the checkout's last-synced tree, `diff` reports nothing at all — a genuinely local, never-synced
+file would otherwise be silently overwritten by the merge with no signal it ever existed. `writeOut`
+closes both: it requires the leaf to actually exist on disk before treating a reported difference as
+a local edit worth protecting, and it separately checks for a leaf that's present on disk but missing
+from the last-synced tree, folding that into the same dirty set.
+
+### A store-side deletion keeps the index honest, even before HEAD moves
+
+When the merged tree drops a leaf a checkout still has on disk, `receive`'s write-out deletes the
+file and also runs `git update-index --force-remove` on it — not `git rm --cached`, and not leaving
+the index alone. Without the index update, a `.partial` return (some other leaf is dirty, so HEAD and
+the index stay at the old tree) leaves the index believing the deleted leaf still exists; the next
+`commitLocal` would then see it as an existing declared positive, stage its "reappearance" via
+`add -f`, and — obeying the rule that a background sync never infers a deletion — restore and
+re-materialize the very file this sync just removed. `update-index --force-remove` is deliberately
+plumbing, not porcelain: `git rm --cached` carries safety checks that can refuse a path with local
+modifications, a state this write-out may legitimately be in, and it prints a line to stdout that
+serves no purpose here.
+
+### Unstaging a path is not one git command — it depends on whether HEAD already has it
+
+`commitLocal` unstages a stray, oversized, or gitlink path in one of two ways, and using the wrong
+one for a given path is a correctness bug, not a style choice. For a path HEAD already has, `git
+restore --staged` resets its index entry back to HEAD's version — a true no-op unstage. `git
+update-index --force-remove` instead drops the index entry outright, which against a HEAD that still
+has the path stages a **deletion** — `commitLocal` would then commit that deletion, exactly the
+"background sync infers a deletion" behavior the design rules out, reached through the unstage path
+instead of the no-inferred-deletion guard. For a path HEAD does *not* have (an unborn HEAD, or a
+gitlink just staged and never committed), the reverse holds: `restore --staged` has nothing to
+restore to and fails, and `git rm --cached` refuses with "has local modifications". `unstage` queries
+`git ls-tree HEAD` for each path's membership and picks per path: `restore --staged` when HEAD has
+it, `update-index --force-remove` when it doesn't, and force-remove for everything when HEAD is
+unborn. Both directions were confirmed against real git before landing.
+
+### `resolve` excludes its own conflicted paths from the dirty check
+
+Every path `resolve` is asked to resolve is, by construction, dirty against HEAD: HEAD holds the
+checkout's last-synced version, and the conflicted path's current content is the agent's own
+uncommitted reconciliation edit — that mismatch is *why* the merge conflicted in the first place.
+Left unguarded, the same dirty check `receive` uses would therefore mark every resolved path as
+still dirty and return a fresh `.partial` on every single call, so a conflict could never actually be
+resolved. The paths under active resolution are passed through as a `knownClean` exclusion instead:
+the temp-index commit `resolve` builds already captured each one's exact current disk content via
+`add -f`, so writing it back out is a verified no-op, never a clobber.
+
+`resolve` reads a conflicted file's content as data, never as instructions to git. Refusal to proceed
+while a `<<<<<<< ` or `>>>>>>> ` marker line remains is checked by scanning raw bytes — never a
+UTF-8-decoding string read, so a binary conflicted file cannot crash the sync — and a path is
+`lstat`'d first: a symlink's own bytes are irrelevant to the marker check, and it is left for `add -f`
+to store as a link (mode `120000`, the link text as its content), never dereferenced and never able
+to pull another file's real content into the store.
+
+### Two scope departures, both traced to the approved spec or explicit sign-off
+
+`Config`'s two propagation-only instance fields (`sharedStoreRoot`, `propagationPath`) and the
+`LC_ALL`/`LANG` locale pin in `StoreGit`'s hermetic environment both touch files outside this PR's
+originally-stated scope. The `Config` fields are supported directly by the Layer 3 implementation
+doc's own "Layout on disk" section, which names the `scratchRoot`/`runtimeStateDir` precedent
+explicitly. The locale pin was a plan-review finding — `send`/`receive` classify git's result by
+matching English stderr substrings, which a gettext-enabled git under a non-C locale (reachable on
+this project's Linux daemon cross-build, never on macOS) would silently misroute — landed after
+explicit owner sign-off rather than as a fast-follow, since the caller whose correctness depends on
+it is the right one to fix it.
+
 ## Superseded pre-native delivery protocol — historical only
 
 The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and

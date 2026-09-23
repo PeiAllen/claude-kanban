@@ -39,6 +39,8 @@ public enum StoreGit {
             "GIT_PAGER": "cat",
             "GIT_EDITOR": "true",
             "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
         ]
         return Invocation(argv: argv, env: env, cwd: workTree)
     }

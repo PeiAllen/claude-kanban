@@ -8,8 +8,8 @@ struct StoreGitTests {
     private let workTree = "/repo/checkout"
     private let emptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
-    @Test("every invocation sets all nine environment variables")
-    func setsAllNineEnvVars() {
+    @Test("every invocation sets all eleven environment variables, including a pinned C locale")
+    func setsAllElevenEnvVars() {
         let inv = StoreGit.invocation(gitDir: gitDir, workTree: workTree, emptyTreeHash: emptyTreeHash, extraArgs: ["status"])
         #expect(inv.env["GIT_DIR"] == gitDir)
         #expect(inv.env["GIT_WORK_TREE"] == workTree)
@@ -20,7 +20,13 @@ struct StoreGitTests {
         #expect(inv.env["GIT_PAGER"] == "cat")
         #expect(inv.env["GIT_EDITOR"] == "true")
         #expect(inv.env["GIT_OPTIONAL_LOCKS"] == "0")
-        #expect(inv.env.count == 9)
+        // LC_ALL/LANG pinned to C: send/receive classify git's result by matching English stderr
+        // substrings ("[rejected]", "non-fast-forward", "unrelated histories", …). A gettext-
+        // enabled git (the Linux daemon cross-build target, not macOS) under a translated locale
+        // would silently misroute every one of those branches without this pin.
+        #expect(inv.env["LC_ALL"] == "C")
+        #expect(inv.env["LANG"] == "C")
+        #expect(inv.env.count == 11)
     }
 
     @Test("cwd is always the checkout, so relative hash-object calls resolve correctly")

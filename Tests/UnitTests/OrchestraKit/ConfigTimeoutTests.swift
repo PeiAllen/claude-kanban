@@ -62,4 +62,25 @@ struct ConfigTimeoutTests {
         #expect(c2.worktreeAddTimeout == 600)   // the unset ones still default
     }
 
+    @Test("sharedStoreRoot and propagationPath are excluded from the wire format — decode always recomputes fresh, never keeping the encoded value's override")
+    func test_sharedStoreRootAndPropagationPathAreInstanceOnly() throws {
+        let custom = Config(sharedStoreRoot: "/custom/shared", propagationPath: "/custom/propagation.json")
+        let data = try OrchestraJSON.pretty.encode(custom)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["sharedStoreRoot"] == nil)
+        #expect(json?["propagationPath"] == nil)
+
+        // Structural checks only — never compare against an ambient live-$HOME-derived default
+        // symbol directly, which lint-tests.sh specifically flags in unit-tier code.
+        let decoded = try OrchestraJSON.decoder.decode(Config.self, from: data)
+        #expect(decoded.sharedStoreRoot != "/custom/shared")
+        #expect(decoded.sharedStoreRoot.hasSuffix("/.orchestra/shared"))
+        #expect(decoded.propagationPath != "/custom/propagation.json")
+        #expect(decoded.propagationPath.hasSuffix("/propagation.json"))
+        // The freshly-decoded default must exactly match a SECOND fresh Config() — both computed
+        // independently from the current process's $HOME, proving decode never freezes a stale value.
+        #expect(decoded.sharedStoreRoot == Config().sharedStoreRoot)
+        #expect(decoded.propagationPath == Config().propagationPath)
+    }
+
 }
