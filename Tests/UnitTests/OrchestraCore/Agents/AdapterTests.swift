@@ -116,6 +116,42 @@ struct AdapterTests {
         #expect(info?.sessionId == nil)
     }
 
+    @Test("AdapterContext.propagation defaults to nil")
+    func propagationDefaultsNil() {
+        let ctx = AdapterContext(cwd: "/wt")
+        #expect(ctx.propagation == nil)
+    }
+
+    @Test("projectFiles declares exactly one 'claude' item with the four exclusions")
+    func projectFilesDeclaration() throws {
+        let items = adapter.projectFiles
+        #expect(items.count == 1)
+        let item = try #require(items.first)
+        #expect(item.name == "claude")
+        #expect(item.paths == ["CLAUDE.md", ".claude"])
+        #expect(Set(item.exclusions) == Set([
+            ".claude/skills", ".claude/.cc-writes", ".claude/sandbox-blocked.jsonl", ".claude/worktrees",
+        ]))
+    }
+
+    @Test("launchWrites is the exact set of skill paths the guidance loop installs today")
+    func launchWritesMirrorsSkillsLoop() {
+        // Literal, independent of the property's own derivation — so a change to the install
+        // loop's path template (or to which sections are bundled) is caught here rather than
+        // silently matched by a test that re-derives its expectation the same way.
+        #expect(adapter.launchWrites == [
+            ".claude/skills/orchestra-delegation/SKILL.md",
+            ".claude/skills/orchestra-tree/SKILL.md",
+            ".claude/skills/orchestra-image-publishing/SKILL.md",
+        ])
+    }
+
+    @Test("every adapter's declared project-file item names are unique across the registry")
+    func projectFileNamesUniqueAcrossAdapters() {
+        let names = AgentRegistry().list().flatMap { $0.projectFiles.map(\.name) }
+        #expect(names.count == Set(names).count)
+    }
+
     // True iff `flag` is immediately followed by `value` in argv.
     private func adjacent(_ argv: [String], _ flag: String, _ value: String) -> Bool {
         guard let i = argv.firstIndex(of: flag), i + 1 < argv.count else { return false }
