@@ -912,6 +912,55 @@ this project's Linux daemon cross-build, never on macOS) would silently misroute
 explicit owner sign-off rather than as a fast-follow, since the caller whose correctness depends on
 it is the right one to fix it.
 
+### `PropagationService` — policy, two chains, and the lock rule
+
+`SharedStore` holds the git mechanics. `PropagationService` (an actor) holds the decisions: eligibility, the
+policy table, leaf classification, stand-downs, notices, teardown, and the boot sweep. Its `init` does no
+filesystem or git work, and `OrchestraService` installs the `notify` and `warn` sinks after its own init.
+
+**Two chains, and no cycle.** A per-checkout chain serializes everything that touches one checkout git dir.
+A per-repo store chain serializes everything that can write `store.git`: the seed push in `attach`, `send`,
+and the push inside `resolve`. Two checkouts of one repo push to the same bare repo and would race on
+`refs/heads/main.lock`, so the checkout chain alone is not enough. A checkout operation may take the store
+key. A store operation takes nothing, and `SharedStore`'s own seed lock never takes a service key. The chain
+generation is monotonic and never resets, so a stale link cannot clear a newer entry.
+
+**Only public entry points take a chain key.** `prepare` (version gate, repo, policy, classification) and
+`syncOne` take none. `sync`, `flush`, `resolve`, `status`, `locate`, `adopt` and `reap` compose them. The chain
+awaits its predecessor unconditionally, so a nested call on the same key would deadlock.
+
+**The lock rule needs a fetch that can fail.** A store method that fails on `Unable to create '<x>.lock':
+File exists` is checked with `LockProbe`. A live holder, or a probe that did not complete, is `.busy`. With no
+holder, the daemon removes the lock once (only a `.lock` file inside the store root), warns, and re-runs the
+whole store method once. Every store method is re-runnable, because files go first and HEAD goes last.
+`SharedStore` used to discard the fetch exit code, so a crash-left `refs/remotes/store/main.lock` read as "store
+main absent" and every sync returned `.upToDate` while `flush` released the worktree. Now only
+`couldn't find remote ref` means an absent store main. Any other fetch failure throws. A contract row pins the
+matcher against real git stderr, because the wording is not a git API.
+
+**Items are the union across all adapters.** A checkout's HEAD receives the other agent's files by merge, and
+`send` refuses any path outside the declared set. A per-adapter set would refuse every push.
+
+**`paths:` is never empty.** `receive`, `send` and `resolve` take the declared paths of every shared item that
+survived stand-down. With an empty list, `writeOut` writes nothing but `receive` still moves HEAD, which would
+revert another checkout's change. So when no shared item survives, the service makes no store call.
+
+**Only leaves are classified.** A declared directory is never a candidate, so it can never enter the un-ignored
+set and exclude its whole subtree. Its un-ignored children stand down one by one.
+
+**Teardown and the boot sweep.** `flush` is true when the cwd is gone (no git call), the card is ineligible,
+nothing is shared, git is too old, or the send landed. It is false when a conflict, a partial write, a
+stand-down, a busy lock, a refused path, or an error could lose data. `reap` finds the git dir by the hash of
+the checkout, so it works with the worktree gone. `sweep` deletes a git dir whose recorded path is gone, or one
+that no card and no primary references. With an empty referenced set it runs only the first rule, because an
+unknown card set must never look like "nothing is referenced". The caller must include an archived card that
+kept its worktree, because `resolve` still needs its git dir. Both sides of the comparison are canonicalized.
+
+**`adopt` stages and never commits.** It sends the primary's copies first, appends a root-anchored pattern for
+a path no pattern matches, re-probes with `check-ignore --no-index`, and untracks with `git rm --cached` on an
+explicit file list that `ls-files` reported as tracked and that is not under an item's exclusions. A negation
+that still re-includes a leaf stops it before the index is touched.
+
 ## Superseded pre-native delivery protocol — historical only
 
 The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and

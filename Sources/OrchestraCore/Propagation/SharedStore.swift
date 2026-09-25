@@ -95,6 +95,27 @@ public actor SharedStore {
         return lstat(workTree + "/" + path, &st) == 0
     }
 
+    // MARK: - layout + fetch
+
+    /// The one definition of the on-disk layout: `<root>/<repoKey>/store.git` and
+    /// `<root>/<repoKey>/checkouts/<checkoutKey>.git`. `PropagationService` reads it too, so the
+    /// formula lives in exactly one place.
+    public static func gitDirs(root: String, repo: String, checkout: String) -> (store: String, checkout: String) {
+        let repoKey = CardFileSpec.cwdHash(repo)
+        return ("\(root)/\(repoKey)/store.git",
+                "\(root)/\(repoKey)/checkouts/\(CardFileSpec.cwdHash(checkout)).git")
+    }
+
+    /// Fetches the store's `main`. An absent `main` is not an error (`couldn't find remote ref`), but
+    /// ANY other failure throws: a crash-left `refs/remotes/store/main.lock` used to read as "store
+    /// main absent" (→ `.upToDate` forever), hiding a wedged checkout from the service's lock rule.
+    private func fetchStore(_ handle: StoreHandle) async throws {
+        let r = try await run(["fetch", handle.storeGitDir, "main:refs/remotes/store/main"], handle: handle)
+        guard r.ok || r.stderr.contains("couldn't find remote ref") else {
+            throw SharedStoreError.gitFailed(argv: ["fetch"], exitCode: r.exitCode, stderr: r.stderr)
+        }
+    }
+
     // MARK: - attach
 
     /// Creates the bare store and this checkout's git dir when absent, then — on a genuinely
@@ -105,9 +126,7 @@ public actor SharedStore {
     public func attach(checkout: String, repo: String, declared: DeclaredSet.Result,
                         noteNovel: (@Sendable (String) -> Void)? = nil) async throws -> StoreHandle {
         let repoKey = CardFileSpec.cwdHash(repo)
-        let checkoutKey = CardFileSpec.cwdHash(checkout)
-        let storeGitDir = "\(root)/\(repoKey)/store.git"
-        let checkoutGitDir = "\(root)/\(repoKey)/checkouts/\(checkoutKey).git"
+        let (storeGitDir, checkoutGitDir) = Self.gitDirs(root: root, repo: repo, checkout: checkout)
         let fm = FileManager.default
 
         if !fm.fileExists(atPath: storeGitDir + "/HEAD") {
@@ -158,7 +177,7 @@ public actor SharedStore {
         let headCheck = try await run(["rev-parse", "--verify", "-q", "HEAD"], handle: handle)
         if !headCheck.ok {
             try await runSeedSerialized(repoKey + "#seed") { [self] in
-                _ = try await run(["fetch", handle.storeGitDir, "main:refs/remotes/store/main"], handle: handle)
+                try await fetchStore(handle)
                 let hasStoreMain = try await run(["rev-parse", "--verify", "-q", "refs/remotes/store/main"], handle: handle).ok
                 if !hasStoreMain {
                     if !declared.stagingPositives.isEmpty {
@@ -354,7 +373,7 @@ public actor SharedStore {
     }
 
     private func receive(_ handle: StoreHandle, paths: [String], declared: DeclaredSet.Result, retried: Bool) async throws -> ReceiveOutcome {
-        _ = try await run(["fetch", handle.storeGitDir, "main:refs/remotes/store/main"], handle: handle)
+        try await fetchStore(handle)
         guard try await run(["rev-parse", "--verify", "-q", "refs/remotes/store/main"], handle: handle).ok
         else { return .upToDate }
 
@@ -447,7 +466,7 @@ public actor SharedStore {
     /// store, and staging it would ship project content into the store and every other checkout —
     /// exactly the violation 02-contract's non-interference table warns against.
     public func resolve(_ handle: StoreHandle, paths: [String], declared: DeclaredSet.Result) async throws -> ResolveOutcome {
-        _ = try await run(["fetch", handle.storeGitDir, "main:refs/remotes/store/main"], handle: handle)
+        try await fetchStore(handle)
         guard try await run(["rev-parse", "--verify", "-q", "refs/remotes/store/main"], handle: handle).ok
         else { return .nothingToResolve }
         guard try await run(["rev-parse", "--verify", "-q", "HEAD"], handle: handle).ok

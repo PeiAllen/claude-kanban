@@ -65,7 +65,7 @@ struct SharedStoreAttachTests {
         fake.on(["git", "init"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
         fake.on(["git", "hash-object"]) { _ in ProcResult(stdout: "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n", stderr: "", exitCode: 0) }
         fake.onGit(["rev-parse", "--verify", "-q", "HEAD"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
-        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
+        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "fatal: couldn't find remote ref main", exitCode: 1) }
         fake.onGit(["rev-parse", "--verify", "-q", "refs/remotes/store/main"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
         fake.onGit(["diff", "--cached", "--quiet"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
 
@@ -88,7 +88,7 @@ struct SharedStoreAttachTests {
         fake.on(["git", "init"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
         fake.on(["git", "hash-object", "-t", "tree"]) { _ in ProcResult(stdout: "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n", stderr: "", exitCode: 0) }
         fake.onGit(["rev-parse", "--verify", "-q", "HEAD"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
-        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
+        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "fatal: couldn't find remote ref main", exitCode: 1) }
         fake.onGit(["rev-parse", "--verify", "-q", "refs/remotes/store/main"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
         fake.onGit(["diff", "--cached", "--quiet"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) } // nothing staged
 
@@ -183,7 +183,7 @@ struct SharedStoreAttachTests {
         async let second: StoreHandle = store.attach(checkout: root + "/c2", repo: root + "/r", declared: declared)
 
         // Release the first's fetch (exit 1 = absent main → it seeds; nothing staged → no push).
-        gate.release(ProcResult(stdout: "", stderr: "", exitCode: 1))
+        gate.release(ProcResult(stdout: "", stderr: "fatal: couldn't find remote ref main", exitCode: 1))
         _ = try await first
         _ = try await second
 
@@ -214,6 +214,30 @@ struct SharedStoreAttachTests {
         }
         #expect(!fake.calls.contains { $0.gitArgs?.starts(with: ["commit"]) == true })
         #expect(!fake.calls.contains { $0.gitArgs?.starts(with: ["push"]) == true })
+    }
+}
+
+@Suite("SharedStore — a failed fetch is never read as an absent store main")
+struct SharedStoreFetchFailureTests {
+    @Test("receive throws gitFailed when fetch fails on a lock, instead of returning .upToDate")
+    func receiveFetchLockThrows() async throws {
+        let root = freshRoot()
+        let fake = FakeProc()
+        let handle = StoreHandle(storeGitDir: root + "/store.git", checkoutGitDir: root + "/checkout.git",
+                                 workTree: root + "/checkout", emptyTreeHash: "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "fatal: Unable to create '\(root)/checkout.git/refs/remotes/store/main.lock': File exists.", exitCode: 128) }
+        let store = SharedStore(root: root, proc: fake)
+        let declared = DeclaredSet.build(paths: [], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in false })
+        await #expect(throws: SharedStoreError.self) {
+            _ = try await store.receive(handle, paths: [], declared: declared)
+        }
+    }
+
+    @Test("gitDirs is the one layout: store.git and checkouts/<hash>.git under the repo key")
+    func gitDirsLayout() {
+        let d = SharedStore.gitDirs(root: "/r", repo: "/repo", checkout: "/co")
+        #expect(d.store == "/r/\(CardFileSpec.cwdHash("/repo"))/store.git")
+        #expect(d.checkout == "/r/\(CardFileSpec.cwdHash("/repo"))/checkouts/\(CardFileSpec.cwdHash("/co")).git")
     }
 }
 
@@ -935,7 +959,7 @@ struct SharedStoreCommitLocalTests {
         fake.on(["git", "init"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
         fake.on(["git", "hash-object", "-t", "tree"]) { _ in ProcResult(stdout: "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n", stderr: "", exitCode: 0) }
         fake.onGit(["rev-parse", "--verify", "-q", "HEAD"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
-        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
+        fake.onGit(["fetch"]) { _ in ProcResult(stdout: "", stderr: "fatal: couldn't find remote ref main", exitCode: 1) }
         fake.onGit(["rev-parse", "--verify", "-q", "refs/remotes/store/main"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 1) }
         fake.onGit(["diff", "--cached", "--quiet"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
         let store0 = SharedStore(root: root, proc: fake)

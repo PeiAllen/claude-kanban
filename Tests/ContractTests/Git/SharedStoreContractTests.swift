@@ -754,4 +754,46 @@ struct SharedStoreContractTests {
         #expect(FileManager.default.fileExists(atPath: handle.checkoutGitDir + "/orchestra-checkout"))
         #expect(try String(contentsOfFile: handle.checkoutGitDir + "/orchestra-checkout", encoding: .utf8) == a)
     }
+
+    // PR4: the lock rule keys on git's own stderr wording, so it is pinned against real git.
+    @Test("a held index.lock and a held ref lock produce stderr the service's matcher reads, and a stale lock lets git through once removed")
+    func lockStderrMatcherReadsRealGit() async throws {
+        let root = IntegrationSupport.tempDir("shared-store-lock")
+        let a = try makeCheckoutRepo(root, name: "a")
+        let dotGit = PathResolver.canonical(a) + "/.git"
+        try "changed".write(toFile: a + "/README.md", atomically: true, encoding: .utf8)
+        try "".write(toFile: dotGit + "/index.lock", atomically: true, encoding: .utf8)
+        let add = try Proc.run(["git", "-C", a, "add", "--", "README.md"], env: ["LC_ALL": "C"])
+        #expect(add.exitCode != 0)
+        #expect(PropagationService.lockPath(fromStderr: add.stderr) == dotGit + "/index.lock")
+        try FileManager.default.removeItem(atPath: dotGit + "/index.lock")
+        #expect(try Proc.run(["git", "-C", a, "add", "--", "README.md"]).exitCode == 0)
+
+        try "0000000000000000000000000000000000000000\n".write(toFile: dotGit + "/refs/heads/x.lock", atomically: true, encoding: .utf8)
+        let branch = try Proc.run(["git", "-C", a, "branch", "x"], env: ["LC_ALL": "C"])
+        #expect(branch.exitCode != 0)
+        #expect(PropagationService.lockPath(fromStderr: branch.stderr) == dotGit + "/refs/heads/x.lock")
+    }
+
+    @Test("a crash-left refs/remotes/store/main.lock makes receive throw instead of reading as an absent store main")
+    func fetchLockThrowsNotUpToDate() async throws {
+        let root = IntegrationSupport.tempDir("shared-store-fetchlock")
+        let repo = root + "/repo"
+        let a = try makeCheckoutRepo(root, name: "a", sharedPaths: ["one.md"])
+        let store = SharedStore(root: root + "/store", proc: RealProc())
+        try "v1".write(toFile: a + "/one.md", atomically: true, encoding: .utf8)
+        let declared = declaredSet(paths: ["one.md"], in: a)
+        let handle = try await store.attach(checkout: a, repo: repo, declared: declared)
+        _ = try await store.commitLocal(handle, declared: declared, unignoredLeaves: [])
+        _ = try await store.send(handle, paths: ["one.md"], declared: declared)
+
+        try FileManager.default.createDirectory(atPath: handle.checkoutGitDir + "/refs/remotes/store", withIntermediateDirectories: true)
+        try "".write(toFile: handle.checkoutGitDir + "/refs/remotes/store/main.lock", atomically: true, encoding: .utf8)
+        do {
+            _ = try await store.receive(handle, paths: ["one.md"], declared: declared)
+            Issue.record("expected receive to throw on a held ref lock")
+        } catch let SharedStoreError.gitFailed(_, _, stderr) {
+            #expect(PropagationService.lockPath(fromStderr: stderr) == handle.checkoutGitDir + "/refs/remotes/store/main.lock")
+        }
+    }
 }
