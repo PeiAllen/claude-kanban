@@ -434,7 +434,7 @@ struct ModelReseatTests {
 
     @Test("a report echoing the vendor's launchId (e.g. the 1M-tier bracket) also canonicalizes back")
     func launchIdReportDoesNotClobberCatalogMetadata() async throws {
-        // `isModelVariant`'s dated-suffix rule doesn't recognize a bracket suffix, so a vendor that
+        // `isModelVariant`'s 8-digit-date rule doesn't recognize a bracket suffix, so a vendor that
         // echoes back exactly what it was launched on (`m2[1m]`, ClaudeCodeAdapter.modelFlag's own
         // substitution) needs its own match — the same loss as the dated-id case above, for a
         // different vendor quirk.
@@ -474,6 +474,20 @@ struct ModelReseatTests {
         #expect(restored.source == message.source)
         #expect(restored.id == message.id)
         #expect(restored.dedupKey == message.dedupKey)
+    }
+
+    @Test("isModelVariant: an 8-digit DATE suffix is a variant, a version-bump digit suffix is NOT")
+    func isModelVariantRequiresAnEightDigitDate() throws {
+        // The real regression: the published catalog can list "claude-opus-5-5" ("Opus 5.5") and
+        // "claude-opus-5" ("Opus 5") as two distinct, independently-listed models. An all-digit rule
+        // would wrongly treat the former as a dated variant of the latter and collapse them.
+        #expect(!OrchestraService.isModelVariant("claude-opus-5-5", of: "claude-opus-5"))
+        // A real dated vendor id (YYYYMMDD, 8 digits) still canonicalizes back to its floating base.
+        #expect(OrchestraService.isModelVariant("claude-haiku-4-5-20251001", of: "claude-haiku-4-5"))
+        // A suffix that merely happens to be all digits but isn't 8 of them is still not a date.
+        #expect(!OrchestraService.isModelVariant("claude-opus-4-1", of: "claude-opus-4"))
+        // A mistyped id must still fail closed.
+        #expect(!OrchestraService.isModelVariant("claude-haiku-4-5-oops", of: "claude-haiku-4-5"))
     }
 
     // MARK: - the REAL adapters, not the stub

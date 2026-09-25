@@ -14,8 +14,10 @@ One elaboration on the design's terse table: the picker can report a DATED id wi
 (today, Haiku resolves to "claude-haiku-4-5-20251001"). Passing that straight through as `id` would
 re-open the exact bug docs/09 records fixing — a dated id has no floating alias to canonicalize FROM,
 so a later dated report can't match it back. So a raw id that extends an EXISTING on-disk id with an
-all-digit suffix (the same rule OrchestraService+Recovery.isModelVariant already applies at
-resolution time) canonicalizes back to that existing id here too, before it ever reaches disk.
+8-digit YYYYMMDD suffix (the same rule OrchestraService+Recovery.isModelVariant already applies at
+resolution time) canonicalizes back to that existing id here too, before it ever reaches disk. A
+suffix of any OTHER digit count is a version bump (e.g. "claude-opus-5-5" off "claude-opus-5"), not a
+date, and gets its own row — see `canonicalize_id`.
 """
 import json
 import sys
@@ -25,8 +27,8 @@ import sys
 
 def canonicalize_id(raw_id, known_ids):
     """`raw_id` unchanged, UNLESS it is a dated variant (isModelVariant's rule: an existing id plus
-    "-" plus an all-digit suffix) of some id already on disk — then the existing floating id wins,
-    so a later differently-dated report still canonicalizes back to the SAME row.
+    "-" plus an 8-digit YYYYMMDD suffix) of some id already on disk — then the existing floating id
+    wins, so a later differently-dated report still canonicalizes back to the SAME row.
 
     This reimplements OrchestraService+Recovery.isModelVariant in Python (no shared source of truth
     across the two languages is practical here). ASCII digits ONLY, deliberately narrower than either
@@ -35,12 +37,18 @@ def canonicalize_id(raw_id, known_ids):
     with each other on some of them. Every real vendor id is ASCII, so pinning both sides to the same
     narrow rule removes the disagreement rather than trying to keep two independently-maintained
     Unicode-aware rules in lockstep.
+
+    The suffix must be exactly 8 digits (a real YYYYMMDD date, like every dated vendor id actually
+    is — "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805"). A shorter all-digit suffix is a
+    VERSION bump ("claude-opus-5-5" off "claude-opus-5") and must NOT collapse onto the base row —
+    it is a genuinely distinct, independently-listed model.
     """
     if raw_id in known_ids:
         return raw_id
     for base in known_ids:
         suffix = raw_id[len(base) + 1:]
-        if raw_id.startswith(base + "-") and suffix and all(c in "0123456789" for c in suffix):
+        if (raw_id.startswith(base + "-") and len(suffix) == 8
+                and all(c in "0123456789" for c in suffix)):
             return base
     return raw_id
 

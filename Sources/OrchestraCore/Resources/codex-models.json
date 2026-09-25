@@ -12,6 +12,30 @@
     "listed": true
   },
   {
+    "id": "gpt-6-sol",
+    "displayName": "GPT-6-Sol",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "gpt-6-luna",
+    "displayName": "GPT-6-Luna",
+    "family": "gpt",
+    "contextWindow": 272000,
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
     "id": "gpt-5.6-sol",
     "displayName": "GPT-5.6 Sol",
     "family": "gpt",
@@ -94,30 +118,6 @@
       "vision": true
     },
     "listed": false
-  },
-  {
-    "id": "gpt-5.4-mini",
-    "displayName": "GPT-5.4-Mini",
-    "family": "gpt",
-    "contextWindow": 272000,
-    "flags": {
-      "toolCall": true,
-      "reasoning": true,
-      "vision": true
-    },
-    "listed": false
-  },
-  {
-    "id": "gpt-5.2",
-    "displayName": "GPT-5.2",
-    "family": "gpt",
-    "contextWindow": 272000,
-    "flags": {
-      "toolCall": true,
-      "reasoning": true,
-      "vision": true
-    },
-    "listed": true
   },
   {
     "id": "codex-auto-review",

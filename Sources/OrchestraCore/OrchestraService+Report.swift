@@ -136,7 +136,7 @@ extension OrchestraService {
                     // divides by, so the card's context gauge went blank and every later launch used the
                     // dated id. Resolve the dated form back to its catalog entry and keep the real metadata.
                     // The SAME loss happens if the vendor echoes back the bracketed `launchId` we launched
-                    // it on (`claude-opus-5[1m]`) rather than the plain id — `isModelVariant`'s all-digit
+                    // it on (`claude-opus-5[1m]`) rather than the plain id — `isModelVariant`'s 8-digit-date
                     // rule does not recognize a `[1m]` suffix, so match a row's `launchId` too.
                     let catalog = (try? registry.get(task.agentId))?.catalog() ?? []
                     var m = catalog.first { $0.id == mid }

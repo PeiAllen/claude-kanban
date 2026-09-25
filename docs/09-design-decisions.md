@@ -2685,7 +2685,7 @@ resolves to `claude-opus-5[1m]`, so a plain `claude-opus-5` launch was a silent 
 tier. The fix is a per-row `launchId` on `AgentModel`: `ClaudeCodeAdapter.modelFlag` passes
 `launchId ?? id` to `--model`, while storage, the picker label, `adapter(forModel:)` routing,
 `resolveModelOverride`, and `task.model.id` all keep comparing the plain `id`. Splitting the two
-avoids a card migration, and keeps a bracketed id away from `resolveModelOverride`'s all-digit
+avoids a card migration, and keeps a bracketed id away from `resolveModelOverride`'s 8-digit
 dated-variant rule, which would otherwise reject it. The tier is **data, not a rule**: it is read
 from a probe of the account's own picker, never derived by appending a suffix, because the 1M tier
 is per model and per account. On this account, Opus needs the `[1m]` suffix, Fable 5.1 is natively
@@ -2730,9 +2730,14 @@ elaboration: the picker can report a DATED id with no `[1m]` suffix at all (Haik
 `claude-haiku-4-5-20251001`). Writing that straight through as `id` would strand it the same way a
 dated report once stranded the launch path: a bare, metadata-less handle with no `contextWindow` or
 `flags`, unresolvable by anything that only knows the floating form. So the generator canonicalizes a
-raw id back to an EXISTING on-disk id first, using the same all-digit-suffix rule
+raw id back to an EXISTING on-disk id first, using the same rule
 `OrchestraService+Recovery.isModelVariant` already applies at resolution time — reused, not
-reinvented. Read-only mode runs on the merge gate (`scripts/test.sh --all`, beside
+reinvented: the suffix must be exactly 8 digits, a real `YYYYMMDD` date, not merely all-digit. A
+looser all-digit rule collapses a genuine vendor VERSION bump onto its predecessor — the published
+catalog can list `claude-opus-5-5` ("Opus 5.5") and `claude-opus-5` ("Opus 5") as two distinct,
+independently-listed models, and an all-digit rule would wrongly treat `claude-opus-5-5` as a dated
+variant of `claude-opus-5` and merge them into one row with the wrong `launchId`. Read-only mode runs
+on the merge gate (`scripts/test.sh --all`, beside
 `scripts/lint-tests.sh`) and only ever reports; it never fails the build, because neither a live
 `claude`/`codex` binary nor network access is guaranteed on the machine running the gate. Adding or
 retiring a model then costs one command (`--write`), reading the printed diff, and a commit — no
