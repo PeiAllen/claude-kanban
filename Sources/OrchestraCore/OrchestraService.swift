@@ -22,6 +22,10 @@ public actor OrchestraService {
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
+    /// Shared agent files across worktrees (worktree-propagation-policy). Built in `init` from
+    /// `Config.sharedStoreRoot` / `Config.propagationPath`; the adapter items are the union across
+    /// every enabled adapter.
+    let propagation: PropagationService
     /// Absolute path of the `orchestra` binary the agents' hooks call. Injected once (defaulted to the
     /// daemon's sibling binary) and threaded into every launch `AdapterContext`.
     let orchestraBin: String
@@ -242,6 +246,10 @@ public actor OrchestraService {
         self.worktrees = worktrees ?? WorktreeRegistry(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
         self.launcher = launcher ?? Launcher(resolver: r)
+        self.propagation = PropagationService(
+            store: SharedStore(root: config.sharedStoreRoot, proc: proc), proc: proc, resolver: r,
+            root: config.sharedStoreRoot, policyPath: config.propagationPath,
+            adapterItems: { registry.list().flatMap(\.projectFiles) })
         // Seed the lastRev mirror synchronously (nonisolated peek — no await), BEFORE server.start()
         // can accept any RPC or PushNotifier.run() can subscribe, so an early ephemeral emit (e.g. a
         // borrow/trust/set-parent RPC racing daemon boot ahead of `recoverSessions`) never stamps a

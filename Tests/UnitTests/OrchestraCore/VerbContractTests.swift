@@ -41,6 +41,9 @@ struct VerbContractTests {
         "resume": (.convergence, [.live, .dead, .relaunching]),
         "restart": (.convergence, [.live, .dead, .relaunching]),
         "handoff": (.convergence, liveDead),
+        // `shared` stays open on `.archivedComplete` (a retained worktree may still need `resolve`), closed
+        // on `.archivedPending` (teardown is mid-flight). `shared-policy` has no target card.
+        "shared": (.mutation, allKinds.subtracting([.archivedPending])), "shared-policy": (.mutation, allKinds),
     ]
 
     @Test("test_everyVerbDeclaresKind")

@@ -961,6 +961,45 @@ a path no pattern matches, re-probes with `check-ignore --no-index`, and untrack
 explicit file list that `ls-files` reported as tracked and that is not under an item's exclusions. A negation
 that still re-includes a leaf stops it before the index is touched.
 
+### The `shared` and `shared-policy` verbs
+
+`shared` (`.all`, mutation) has four ops that each call one `PropagationService` entry point: `sync` (`.full`),
+`status`, `resolve`, `adopt`. `shared-policy` (`.appOnly`, mutation) reads and writes `propagation.json`. The
+handlers live in `OrchestraService+Shared.swift` and only translate: outcomes become `{op, outcome, paths, message}`
+and a `PropagationServiceError` becomes an `OrchestraError`.
+
+- **The verb takes a `ref`, and the CLI resolves a missing one.** The daemon cannot see the caller's environment or
+  cwd. The CLI uses `$ORCHESTRA_TASK_ID`, then a `list` call plus `OrchestraService.cardContaining`. Keeping `ref`
+  required means the ordinary phase gate applies with no special case.
+- **The gate is every phase except `archivedPending`.** An archived card can keep its worktree after a conflict, and
+  `resolve` must still reach it. `archivedPending` is teardown in flight, so the verb waits.
+- **Reading the store needs no verb.** A card runs `GIT_OPTIONAL_LOCKS=0 git --git-dir=<dir> log|show|diff` in its
+  own process. `status` returns that command string. A write from a card fails at its own sandbox, so the daemon stays
+  the only writer.
+- **`adopt` defaults to the three migration files.** `CLAUDE.md`, `AGENTS.md` and `.claude/commands/ship.md` are the
+  set the migration untracks. Naming other paths adopts those instead. Each path becomes a user item that is `shared`.
+- **`shared-policy` refuses to write over a corrupt `propagation.json`.** A load failure is fail-open (the default is
+  `shared`), so a write from an empty table would erase the user's rows. The user repairs or removes the file.
+- **`adopt` validates its input and refuses a read-only card.** Paths must be repo-relative with no `.`, `..` or
+  empty component, at most 32. An unchecked `.` would make the daemon walk and probe the whole checkout inside the
+  service actor. Adopt edits the project's `.gitignore` and index, which a read-only card cannot do itself, so the
+  daemon does not do it for them. Each adopted path inherits the exclusions of any overlapping adapter item, so
+  adopting `.claude` never untracks `.claude/skills`.
+- **An adopted path is its own item, next to the adapter item.** Reverting an adopt therefore needs both rows set
+  (`claude` and `CLAUDE.md`). The app's policy editor shows both.
+- **Exit codes follow `flush`'s success predicate.** `skipped`, `nothingShared` and a git older than 2.40
+  (`gitTooOld`) exit 0, because nothing can be lost. A conflict, busy lock, stand-down, refusal or partial exits 1,
+  with or without `--json`. `resolve` reports `refusedOutOfSet` and `partial` as not resolved (they return before any
+  commit). A card that takes no part gets the same `skipped` result from `status` and `resolve` as from `sync`.
+- **Known limit: `propagation.json` has two writers.** `shared-policy` (on `OrchestraService`) and `adopt` (on
+  `PropagationService`) each load, change, and save with no shared lock. A policy edit during an in-flight adopt can
+  drop the adopted row. Adopt is owner-attended, so this stays open until `PropagationStore.save` gets a
+  compare-and-swap.
+- **Ownership note.** The plan gave the `OrchestraService.propagation` stored property to PR4, and PR4's seed told it
+  not to edit `OrchestraService.swift`, so it was skipped. PR7 adds the property and its construction, because its
+  handlers are the first callers. It builds from `Config.sharedStoreRoot`, `Config.propagationPath`, and the union of
+  every enabled adapter's `projectFiles`.
+
 ## Superseded pre-native delivery protocol — historical only
 
 The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and

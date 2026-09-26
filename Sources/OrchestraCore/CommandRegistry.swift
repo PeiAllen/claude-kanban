@@ -51,7 +51,7 @@ public struct CommandRegistry: Sendable {
     /// `wait` is multi-target + all-phase, `list` has no ref. Everything else targets `"ref"`.
     static func targetCardParam(for verb: String) -> String? {
         switch verb {
-        case "spawn", "batch-spawn", "trust", "trustState", "wait", "list": return nil
+        case "spawn", "batch-spawn", "trust", "trustState", "wait", "list", "shared-policy": return nil
         default: return "ref"
         }
     }
@@ -70,7 +70,7 @@ public struct CommandRegistry: Sendable {
         let handlers: [String: Handler] = [
             "list": { svc, p, src in
                 let col = p.optString("col").flatMap(Column.init(rawValue:))
-                let tasks = await svc.list(col)
+                let tasks = await svc.list(col, includeArchived: p["includeArchived"]?.boolValue ?? false)
                 // `list` is a read-only poll (app refresh + MCP clients hit it constantly) —
                 // logging it would flood the activity feed and bury real events.
                 return try JSONValue(encodable: tasks)
@@ -410,6 +410,17 @@ public struct CommandRegistry: Sendable {
                 }
                 let result = await svc.batchSpawn(inputs, source: src)
                 return try JSONValue(encodable: result)
+            },
+
+            "shared": { svc, p, src in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                let paths = p["paths"]?.arrayValue?.compactMap(\.stringValue) ?? []
+                return try await svc.shared(op: try p.string("op"), card: t, paths: paths, source: src)
+            },
+
+            "shared-policy": { svc, p, src in
+                try await svc.sharedPolicy(repo: try p.string("repo"), item: p.optString("item"),
+                                           policy: p.optString("policy"))
             },
 
             "trust": { svc, p, src in
