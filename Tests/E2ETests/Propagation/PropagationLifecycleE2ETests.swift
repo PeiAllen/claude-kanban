@@ -39,6 +39,8 @@ final class PropagationLifecycleE2ETests {
         try Proc.checked(["git", "-C", repo, "commit", "-q", "-m", "init"])
         try "primary claude rules\n".write(toFile: repo + "/CLAUDE.md", atomically: true, encoding: .utf8)
         try "primary codex rules\n".write(toFile: repo + "/AGENTS.md", atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(atPath: repo + "/.claude", withIntermediateDirectories: true)
+        try "{\"permissions\": {\"allow\": [\"Bash(ls:*)\"]}}\n".write(toFile: repo + "/.claude/settings.json", atomically: true, encoding: .utf8)
         return repo
     }
 
@@ -84,6 +86,8 @@ final class PropagationLifecycleE2ETests {
         let cwd = try #require(await svc.list(includeArchived: true).first { $0.id == card.id }?.cwd)
         #expect(try String(contentsOfFile: cwd + "/CLAUDE.md", encoding: .utf8) == "primary claude rules\n")
         #expect(try String(contentsOfFile: cwd + "/AGENTS.md", encoding: .utf8) == "primary codex rules\n")
+        // V1: the project's ignored `.claude/settings.json` reaches a fresh card, whichever agent it runs.
+        #expect(try String(contentsOfFile: cwd + "/.claude/settings.json", encoding: .utf8) == "{\"permissions\": {\"allow\": [\"Bash(ls:*)\"]}}\n")
         // The Claude adapter installs its skills only because `.claude/` is ignored (the launch grant); Codex
         // declares no launch writes.
         let skill = cwd + "/.claude/skills/orchestra-tree/SKILL.md"
