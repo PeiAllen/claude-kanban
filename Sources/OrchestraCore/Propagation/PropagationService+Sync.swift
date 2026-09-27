@@ -345,7 +345,7 @@ extension PropagationService {
                 // A referenced cwd anywhere under the recorded checkout keeps it: a borrowed card's cwd may be a
                 // subdirectory of the work tree its git dir is keyed by.
                 let referenced = keep.contains { Self.isUnder($0, path) }
-                guard gone || (!keep.isEmpty && !referenced) else { continue }
+                guard gone || (!referencedCwds.isEmpty && !referenced) else { continue }
                 let hash = String(name.dropLast(4))
                 let root = self.root
                 let dropped = await serialized(Self.checkoutKey(path)) { Self.removeGitDirs(root: root, matching: { $0 == hash }) }

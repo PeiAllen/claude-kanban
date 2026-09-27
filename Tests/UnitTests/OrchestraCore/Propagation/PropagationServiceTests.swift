@@ -822,6 +822,18 @@ struct PropagationServiceSweepTests {
         #expect(FileManager.default.fileExists(atPath: kept))
     }
 
+    @Test("an unknown card set keeps every live checkout even when primaries are known: only the path-gone arm runs")
+    func emptyReferencedWithPrimariesIsSafe() async throws {
+        let env = try await Env()
+        let live = try env.worktree("live")
+        let gone = try plant(env, recorded: env.base + "/gone", name: "a")
+        let kept = try plant(env, recorded: live, name: "b")
+        // An incompletely loaded board passes no cards but still derives primaries from the cards that loaded.
+        let removed = await env.service.sweep(referencedCwds: [], primaries: [env.primary])
+        #expect(removed == [gone])
+        #expect(FileManager.default.fileExists(atPath: kept))
+    }
+
     @Test("path spelling is canonicalized on both sides")
     func aliasSpelling() async throws {
         let env = try await Env()
