@@ -97,6 +97,25 @@ struct WorktreeRedriveTests {
         #expect(env.worktrees.removed.contains(wOk.path))
         #expect(!env.worktrees.removed.contains(wNo.path))         // refused flush ⇒ never released
     }
+
+    @Test("a reopen that lands while the flush runs keeps the tree: the release is re-fenced after the flush")
+    func test_redriveRefencesAfterFlush() async throws {
+        let env = TestEnv.make()
+        let id = UUID()
+        let w = try await env.svc.worktrees.ensure(repo: "app", branch: "reopen", cardId: id)
+        try await seed(env.svc, id: id, cwd: w.path, origin: .worktree,
+                       phase: .archived(teardownComplete: true), branch: "reopen")
+        let svc = env.svc
+        await svc._setFlushSharedForTest { card in
+            // The reopen lands while git runs: the card leaves archivedComplete before the flush returns.
+            _ = try? await svc.store.update(card.id) { $0.phase = .live(.running) }
+            return true
+        }
+
+        await env.svc.redriveArchivedWorktreeReleases()
+
+        #expect(!env.worktrees.removed.contains(w.path))
+    }
 }
 
 final class FlushLog: @unchecked Sendable {

@@ -52,6 +52,9 @@ public enum SyncOutcome: Sendable, Equatable {
     case conflicted(paths: [String], storeSha: String)
     case partial(dirty: [String])
     case refusedOutOfSet(paths: [String])
+    /// A `.flush` sync finished, but these files were left out of the commit (over 5 MiB) and so were never
+    /// sent. The worktree holds the only copy of the edit: teardown must keep it.
+    case unsent(paths: [String])
     case failed(String)
 }
 

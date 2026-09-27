@@ -104,19 +104,25 @@ public actor PropagationService {
 
     // MARK: - Git version gate
 
-    /// `git` >= 2.40, or propagation stays disabled. A version that cannot be read fails closed; only a
-    /// definite answer is cached, so a transient spawn failure is retried. PR6 calls this at boot.
-    public func checkGitVersion() async -> Bool {
-        if let cached = gitVersionOK { return cached }
+    enum GitVersionState: Sendable { case ok, tooOld, unreadable }
+
+    /// `git` >= 2.40, or propagation stays disabled. Only a definite answer is cached, so a transient spawn
+    /// failure is retried. PR6 calls this at boot.
+    public func checkGitVersion() async -> Bool { await gitVersionState() == .ok }
+
+    /// Three answers, not two: "too old" is a confirmed host fact (nothing can be lost, `flush` is true),
+    /// but "unreadable" is unknown — it must keep the tree, exactly like an unanswerable ignore probe.
+    func gitVersionState() async -> GitVersionState {
+        if let cached = gitVersionOK { return cached ? .ok : .tooOld }
         guard let r = try? await proc.run(StoreGit.versionCheckArgv, cwd: nil, env: [:], timeout: .seconds(10)), r.ok else {
             warnGlobalOnce("gitVersionUnreadable", "Shared files are off: could not read the git version.")
-            return false
+            return .unreadable
         }
         let ok = StoreGit.meetsMinimumVersion(r.stdout)
         gitVersionOK = ok
         globalWarned.remove("gitVersionUnreadable")
         if !ok { warnGlobalOnce("gitTooOld", "Shared files are off: git 2.40 or newer is required.") }
-        return ok
+        return ok ? .ok : .tooOld
     }
 
     // MARK: - Context (steps 1–2)
@@ -126,7 +132,11 @@ public actor PropagationService {
 
     /// Version gate, repo resolution and eligibility. Chain-free.
     func context(for card: OrchestraKit.Task, checkout rawCheckout: String) async -> ContextResult {
-        guard await checkGitVersion() else { return .done(.standDown(.gitTooOld)) }
+        switch await gitVersionState() {
+        case .ok: break
+        case .tooOld: return .done(.standDown(.gitTooOld))
+        case .unreadable: return .done(.standDown(.probeUnknown(detail: "git version unreadable")))
+        }
         var checkout = PathResolver.canonical(rawCheckout)
         let containment: RepoContainment
         var primary = ""

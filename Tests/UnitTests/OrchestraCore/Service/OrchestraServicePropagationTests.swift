@@ -61,6 +61,23 @@ struct OrchestraServicePropagationTests {
         }
     }
 
+    @Test("Obsidian guard checks the file it overwrites: `.obsidian/*` ignored but workspace.json re-included is refused")
+    func guardChecksWorkspaceJson() async throws {
+        let proc = FakeProc()
+        proc.on(["git", "rev-parse", "--is-inside-work-tree"]) { _ in ProcResult(stdout: "true\n", stderr: "", exitCode: 0) }
+        proc.on(["git", "check-ignore"]) { argv in
+            let path = argv.last ?? ""
+            // `.obsidian/*` + `!.obsidian/workspace.json`, and `.trash/` ignored.
+            let ignored = path != ".obsidian/workspace.json"
+            return ProcResult(stdout: "", stderr: "", exitCode: ignored ? 0 : 1)
+        }
+        let env = TestEnv.make(proc: proc)
+        await #expect(throws: OrchestraError.self) { try await env.svc.guardObsidianWrites(cwd: env.base) }
+        do { try await env.svc.guardObsidianWrites(cwd: env.base) } catch {
+            #expect("\(error)".contains(".obsidian/workspace.json"))
+        }
+    }
+
     @Test("Obsidian guard throws when the ignore probe cannot answer")
     func guardThrowsOnUnknown() async throws {
         let env = TestEnv.make(proc: fake(broken: true))

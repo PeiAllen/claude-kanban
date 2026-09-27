@@ -34,6 +34,8 @@ enum SharedResult {
         case .partial(let dirty): return r("partial", PropagationService.partialText(dirty), dirty)
         case .refusedOutOfSet(let paths):
             return r("refusedOutOfSet", "Refused: these paths are outside the shared set: \(paths.joined(separator: ", ")).", paths)
+        case .unsent(let paths):
+            return r("unsent", "Not sent: \(paths.joined(separator: ", ")) is over 5 MiB, so the store never got the edit. Shrink the file or unshare it.", paths)
         case .failed(let m): return r("failed", "Shared sync failed: \(m)")
         }
     }
@@ -128,7 +130,14 @@ extension OrchestraService {
                 return Self.statusJSON(try await propagation.status(card))
             case "resolve":
                 logCommand("shared resolve", ref: card, source: source)
-                return SharedResult.resolve(try await propagation.resolve(card))
+                let outcome = try await propagation.resolve(card)
+                // A false flush left an archived card's worktree in place and pointed the user here. Once the
+                // conflict is settled nothing else would release it until the next daemon boot, so retry now.
+                if case .resolved = outcome, card.origin == .worktree, card.phase.kind == .archivedComplete,
+                   case .removed = await releaseWorktreeFlushingShared(card, cards: await store.all()) {
+                    emitActivity(.recovered, card, .daemon, "reclaimed archived card's worktree \(card.cwd) after `shared resolve`")
+                }
+                return SharedResult.resolve(outcome)
             case "adopt":
                 // `adopt` writes the project repo (`.gitignore`, the index) and the policy table, so a
                 // read-only card cannot ask the daemon to do it for them.

@@ -351,11 +351,23 @@ struct PropagationServiceSyncTests {
         #expect(old.sink.warnings.count == 1)
         #expect(await old.service.checkGitVersion() == false)
     }
+
+    @Test("an unreadable git version is unknown, not old: flush keeps the tree")
+    func gitVersionUnreadableKeepsTree() async throws {
+        let bad = try await OldGitEnv.make(version: ProcResult(stdout: "", stderr: "boom", exitCode: 1))
+        let wt = try bad.worktree("wt")
+        let card = bad.card(wt)
+        #expect(await bad.service.sync(wt, card, .full) == .standDown(.probeUnknown(detail: "git version unreadable")))
+        #expect(await bad.service.flush(card) == false)
+        #expect(bad.store.log.isEmpty)
+    }
 }
 
 /// An environment whose `git version` answers 2.39 (`Env` registers 2.50 first, and the first rule wins).
 private enum OldGitEnv {
-    static func make() async throws -> OldEnv { try await OldEnv() }
+    static func make(version: ProcResult = ProcResult(stdout: "git version 2.39.2\n", stderr: "", exitCode: 0)) async throws -> OldEnv {
+        try await OldEnv(version: version)
+    }
 }
 private final class OldEnv: @unchecked Sendable {
     let base: String
@@ -364,11 +376,11 @@ private final class OldEnv: @unchecked Sendable {
     let sink = Sink()
     let service: PropagationService
     let primary: String
-    init() async throws {
+    init(version: ProcResult) async throws {
         base = PathResolver.canonical(NSTemporaryDirectory() + "orch-prop-old-\(UUID().uuidString)")
         primary = base + "/repo"
         try FileManager.default.createDirectory(atPath: primary, withIntermediateDirectories: true)
-        proc.on(["git", "version"]) { _ in ProcResult(stdout: "git version 2.39.2\n", stderr: "", exitCode: 0) }
+        proc.on(["git", "version"]) { _ in version }
         service = PropagationService(store: store, proc: proc, resolver: PathResolver(allowedRoots: [base]),
                                      root: base + "/shared", policyPath: base + "/p.json", adapterItems: { [claudeItem] })
         let sink = self.sink
@@ -593,6 +605,19 @@ struct PropagationServiceEntryPointTests {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try "x".write(toFile: dir + "/MERGE_HEAD", atomically: true, encoding: .utf8)
         #expect(await env.service.flush(card) == false)
+    }
+
+    @Test("an over-5-MiB edit left out of the commit keeps the tree at flush, even when the store has nothing to send")
+    func flushKeepsOversizedEdit() async throws {
+        let env = try await Env()
+        let wt = try env.worktree("wt")
+        let card = env.card(wt)
+        env.store.commit = { _ in .nothingToCommit(warnings: [.oversized(path: "CLAUDE.md")]) }
+        env.store.send = { _ in .nothingToDo }
+        #expect(await env.service.sync(wt, card, .flush) == .unsent(paths: ["CLAUDE.md"]))
+        #expect(await env.service.flush(card) == false)
+        // An ordinary idle sync is unchanged: the warning is logged, the outcome stays completed.
+        if case .completed = await env.service.sync(wt, card, .full) {} else { Issue.record("expected .completed") }
     }
 
     @Test("reap removes only its own checkout git dir, and only after the checkout's chain drains")
@@ -820,6 +845,29 @@ struct PropagationServiceSweepTests {
         #expect(FileManager.default.fileExists(atPath: kept))
         await env.service.reap(env.card(top, origin: .borrowed))
         #expect(FileManager.default.fileExists(atPath: kept))
+    }
+
+    @Test("a git dir created after the sweep began is kept: its card attached after the caller's snapshot")
+    func newerThanSweepStartKept() async throws {
+        let env = try await Env()
+        let orphan = try env.worktree("orphan")
+        let dir = try plant(env, recorded: orphan, name: "c")
+        let other = try env.worktree("other")
+        // The sweep started a minute ago; `dir` was created just now. Only a referenced-elsewhere set exists.
+        let removed = await env.service.sweep(referencedCwds: [other], primaries: [], startedAt: Date(timeIntervalSinceNow: -60))
+        #expect(removed.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: dir))
+    }
+
+    @Test("a recorded primary repo root (a .git directory) is never swept, even when no card names the repo")
+    func primaryRootKept() async throws {
+        let env = try await Env()
+        let root = try env.worktree("primary2", files: [".git/HEAD"])
+        let other = try env.worktree("other")
+        let dir = try plant(env, recorded: root, name: "p")
+        let removed = await env.service.sweep(referencedCwds: [other], primaries: [])
+        #expect(removed.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: dir))
     }
 
     @Test("a git dir with no readable record is left alone")

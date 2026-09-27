@@ -27,7 +27,8 @@ public enum IgnoreProbe {
         case unknown(detail: String)
     }
 
-    private static let probeEnv: [String: String] = ["GIT_OPTIONAL_LOCKS": "0"]
+    /// `LC_ALL=C` pins the English wording `isInsideWorkTree` matches on a non-repo.
+    private static let probeEnv: [String: String] = ["GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"]
 
     /// The exact argv `classify` runs for one candidate. Exposed so the contract tier can pin
     /// against what production actually emits, rather than a hand-copied literal that could drift
@@ -105,10 +106,11 @@ public enum IgnoreProbe {
 
     private enum WorkTreeCheck { case yes, no, throwOrTimeout }
 
-    /// A bare repository answers `false` with exit 0 — verified against real git — so exit code
-    /// alone cannot distinguish "inside a work tree" from "bare". Only a completed run whose stdout
-    /// isn't exactly "true" is `.no`; a thrown/timed-out call is `.throwOrTimeout`, which classify()
-    /// maps to `.unknown`, never to the write-permitting `.notARepo`.
+    /// Three completed answers count as "not inside a work tree" (`.no`): exit 0 with stdout other than
+    /// `true` (a bare repository answers `false` with exit 0 — verified against real git), and exit 128 whose
+    /// stderr says `not a git repository`. Any OTHER completed failure — a corrupt or unreadable git config,
+    /// a killed timeout — has empty stdout too, but it is not proof of a non-repo. It is `.throwOrTimeout`,
+    /// which classify() maps to `.unknown`, never to the write-permitting `.notARepo`.
     private static func isInsideWorkTree(_ checkout: String, proc: any ProcRunning) async -> WorkTreeCheck {
         guard
             let result = try? await proc.run(
@@ -116,7 +118,10 @@ public enum IgnoreProbe {
         else {
             return .throwOrTimeout
         }
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true" ? .yes : .no
+        if result.exitCode == 0 {
+            return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true" ? .yes : .no
+        }
+        return result.stderr.contains("not a git repository") ? .no : .throwOrTimeout
     }
 
     /// True when any directory strictly between `checkout` and `path`'s parent is a symlink.

@@ -38,6 +38,16 @@ struct IgnoreProbeTests {
         #expect(!proc.calls.contains { $0.argv.starts(with: ["git", "check-ignore"]) })
     }
 
+    @Test("rev-parse failing for any other reason (bad config, killed) is .unknown, never .notARepo")
+    func revParseOtherFailureIsUnknown() async {
+        let checkout = tmpCheckout()
+        let proc = FakeProc()
+        proc.on(["git", "rev-parse", "--is-inside-work-tree"]) { _ in ProcResult(stdout: "", stderr: "fatal: bad config line 1 in file .git/config", exitCode: 128) }
+
+        let result = await IgnoreProbe.classify(["CLAUDE.md"], inCheckout: checkout, proc: proc)
+        guard case .unknown = result else { Issue.record("expected .unknown, got \(result)"); return }
+    }
+
     @Test("a bare repository (stdout 'false', exit 0) yields .notARepo — exit code alone can't tell them apart")
     func bareRepoYieldsNotARepo() async {
         let checkout = tmpCheckout()

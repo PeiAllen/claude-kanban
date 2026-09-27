@@ -44,7 +44,13 @@ extension OrchestraService {
         guard !candidates.isEmpty else { return PropagationGrant(writablePaths: []) }
         switch await IgnoreProbe.classify(candidates, inCheckout: cwd, proc: proc) {
         case .repo(let ignored):
-            return PropagationGrant(writablePaths: Set(candidates).intersection(ignored))
+            let granted = Set(candidates).intersection(ignored)
+            let skipped = Set(candidates).subtracting(granted).sorted()
+            if !skipped.isEmpty {
+                emitActivity(.warning, card, .daemon,
+                             "Launch files skipped in \(cwd): this project does not ignore \(skipped.joined(separator: ", ")). Add them to .gitignore to get them.")
+            }
+            return PropagationGrant(writablePaths: granted)
         case .notARepo:
             return PropagationGrant(writablePaths: Set(candidates))
         case .unknown(let detail):
@@ -124,6 +130,11 @@ extension OrchestraService {
 
     func releaseWorktreeFlushingShared(_ card: Task, cards: [Task]) async -> ReleaseOutcome? {
         guard await flushShared(card) else { return nil }
+        // Re-fence AFTER the flush's suspension, exactly as the stepper does: the release is irreversible and a
+        // reopen may have landed while git ran. A card that moved on is `.noop` — nothing was released.
+        guard let current = await store.get(card.id), current.phase.kind == .archivedComplete,
+              current.sessionEpoch == card.sessionEpoch else { return .noop }
+        let cards = await store.all()
         let outcome = (try? await worktrees.release(cardId: card.id, cards: cards, force: false))
             ?? .removalFailed(detail: "release threw")
         if case .removed = outcome { await propagation.reap(card) }
@@ -135,8 +146,12 @@ extension OrchestraService {
     /// The git-version gate, then the checkout-git-dir sweep. Awaited at top level in `orchestrad` BEFORE
     /// the boot task and the tick loop are created, because both reach `finishLaunch` → `sync`.
     public func propagationBoot() async {
+        let startedAt = Date()
         _ = await propagation.checkGitVersion()
         let cards = await store.all()
+        // A board that loaded incompletely (an undecodable record was dropped) may be missing a live card, so
+        // "referenced" is unknown: the sweep then removes only git dirs whose path is gone.
+        let boardComplete = await store.loadWasComplete()
         let fm = FileManager.default
         let live = cards.filter { fm.fileExists(atPath: $0.cwd) }
         // A worktree card names its repo. A borrowed card's `repo` is unvalidated and may be empty, and its cwd
@@ -149,7 +164,7 @@ extension OrchestraService {
         // Every card whose directory exists is referenced, INCLUDING an archivedComplete card that retained
         // its worktree (its `resolve` needs the git dir). An empty board is "not known", which the sweep
         // treats as path-gone only.
-        await propagation.sweep(referencedCwds: Set(live.map(\.cwd)), primaries: primaries)
+        await propagation.sweep(referencedCwds: boardComplete ? Set(live.map(\.cwd)) : [], primaries: primaries, startedAt: startedAt)
     }
 
     // MARK: - Obsidian guard (G6, third writer)
@@ -159,15 +174,18 @@ extension OrchestraService {
     func guardObsidianWrites(cwd: String) async throws {
         // Probe a CHILD of each directory, not the bare name: neither directory exists yet, and git cannot
         // match a `dir/` pattern (this repo's own .gitignore) against a path it cannot see is a directory.
-        let dirs = [".obsidian", ".trash"]
-        let probes = dirs.map { $0 + "/.orchestra-probe" }
+        // `.obsidian/workspace.json` is probed too: it is the file `seedWorkspaceTabs` really overwrites, and a
+        // project may ignore `.obsidian/*` yet re-include (track) that one file, which the synthetic child misses.
+        let dirs = [".obsidian", ".obsidian", ".trash"]
+        let probes = [".obsidian/.orchestra-probe", ".obsidian/workspace.json", ".trash/.orchestra-probe"]
         switch await IgnoreProbe.classify(probes, inCheckout: cwd, proc: proc) {
         case .notARepo:
             return
         case .repo(let ignored):
             if let i = probes.firstIndex(where: { !ignored.contains($0) }) {
                 throw OrchestraError.invalidParams(
-                    "\(dirs[i]) is not git-ignored in \(cwd); add it to .gitignore before opening the vault")
+                    "\(probes[i] == ".obsidian/workspace.json" ? probes[i] : dirs[i]) is not git-ignored in \(cwd); "
+                    + "add it to .gitignore before opening the vault")
             }
         case .unknown(let detail):
             throw OrchestraError.invalidParams("cannot verify .obsidian/.trash are git-ignored in \(cwd): \(detail)")

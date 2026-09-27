@@ -93,6 +93,7 @@ extension PropagationService {
         case .failed(let m): return failed(p, m)
         }
 
+        var oversized: [String] = []
         switch await guarded({ try await store.commitLocal(handle, declared: p.declared, unignoredLeaves: p.unignoredLeaves) }) {
         case .busy: return .busy
         case .failed(let m): return failed(p, m)
@@ -101,7 +102,10 @@ extension PropagationService {
             switch outcome {
             case .committed(_, let w), .nothingToCommit(let w): warnings = w
             }
-            for w in warnings { warn(Self.text(for: w)) }
+            for w in warnings {
+                warn(Self.text(for: w))
+                if case .oversized(let path) = w { oversized.append(path) }
+            }
         }
 
         let received: ReceiveOutcome
@@ -132,6 +136,8 @@ extension PropagationService {
             switch sent {
             case .pushed, .nothingToDo:
                 lastConflict[p.checkout] = nil
+                // An over-5-MiB edit was left out of the commit, so `nothingToDo` does not mean it is safe.
+                if intent == .flush, !oversized.isEmpty { return .unsent(paths: oversized.sorted()) }
                 return .completed(receive: received, send: sent)
             case .conflicted(let paths, let sha):
                 await recordConflict(p, paths: paths, sha: sha, intent: intent)
@@ -194,7 +200,7 @@ extension PropagationService {
         case .completed(_, let send):
             guard let send else { return true }
             return send == .pushed || send == .nothingToDo
-        case .standDown, .busy, .conflicted, .partial, .refusedOutOfSet, .failed:
+        case .standDown, .busy, .conflicted, .partial, .refusedOutOfSet, .unsent, .failed:
             return false
         }
     }
@@ -313,8 +319,16 @@ extension PropagationService {
     /// worktree still exists, INCLUDING an `.archivedComplete` card that retained its worktree: its
     /// `resolve` path needs the git dir. Both sides are canonicalized (`/tmp` vs `/private/tmp`).
     /// A git dir with no readable `orchestra-checkout` record is left alone. PR6 runs this at boot.
+    ///
+    /// Three more guards keep a sweep from deleting a live checkout's history:
+    /// - `startedAt`: a git dir created at or after it belongs to a card that attached after the caller took its
+    ///   card snapshot (the boot wait can time out and let the sweep run on while the daemon serves). Skipped.
+    /// - A recorded path whose `.git` is a DIRECTORY is a primary repo root, not a card worktree. Its git dir holds
+    ///   the merge base for the next launch, so it is never swept, even when no card names the repo right now.
+    /// - The caller passes an empty `referencedCwds` when the board loaded incompletely (a dropped record hides a
+    ///   live card), which leaves only the path-gone arm.
     @discardableResult
-    public func sweep(referencedCwds: Set<String>, primaries: Set<String>) async -> [String] {
+    public func sweep(referencedCwds: Set<String>, primaries: Set<String>, startedAt: Date = .distantFuture) async -> [String] {
         let fm = FileManager.default
         let keep = Set(referencedCwds.map(PathResolver.canonical)).union(primaries.map(PathResolver.canonical))
         var removed: [String] = []
@@ -324,7 +338,10 @@ extension PropagationService {
                 let gitDir = "\(dir)/\(name)"
                 guard let raw = try? String(contentsOfFile: gitDir + "/orchestra-checkout", encoding: .utf8) else { continue }
                 let path = PathResolver.canonical(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+                if let created = (try? fm.attributesOfItem(atPath: gitDir))?[.creationDate] as? Date, created >= startedAt { continue }
                 let gone = !fm.fileExists(atPath: path)
+                var isDir: ObjCBool = false
+                if !gone, fm.fileExists(atPath: path + "/.git", isDirectory: &isDir), isDir.boolValue { continue }
                 // A referenced cwd anywhere under the recorded checkout keeps it: a borrowed card's cwd may be a
                 // subdirectory of the work tree its git dir is keyed by.
                 let referenced = keep.contains { Self.isUnder($0, path) }

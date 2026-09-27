@@ -34,6 +34,23 @@ struct SharedStoreContractTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - repo probe: a real non-repo says so on stderr; a broken repo does not.
+
+    @Test("rev-parse --is-inside-work-tree: a non-repo says 'not a git repository', a repo with a broken config does not")
+    func repoProbeStderrWording() throws {
+        let plain = IntegrationSupport.tempDir("shared-store-plain")
+        let nonRepo = try Proc.run(["env", "LC_ALL=C", "git", "-C", plain, "rev-parse", "--is-inside-work-tree"])
+        #expect(nonRepo.exitCode == 128)
+        #expect(nonRepo.stderr.contains("not a git repository"))
+
+        let (repo, _) = try makeRepo()
+        try "[core\n\tbroken = = =\n".write(toFile: repo + "/.git/config", atomically: true, encoding: .utf8)
+        let broken = try Proc.run(["env", "LC_ALL=C", "git", "-C", repo, "rev-parse", "--is-inside-work-tree"])
+        #expect(broken.exitCode != 0)
+        #expect(broken.stdout.isEmpty)
+        #expect(!broken.stderr.contains("not a git repository"))
+    }
+
     // MARK: - Row 1: ls-tree rejects :(exclude); in diff, an exclude cancels a positive hole path.
 
     @Test("ls-tree rejects :(exclude) outright — exit 128")
@@ -715,6 +732,69 @@ struct SharedStoreContractTests {
         #expect(written == ["settings.json"], "the still-tracked CLAUDE.md must never be written")
         #expect(try String(contentsOfFile: b + "/settings.json", encoding: .utf8) == "settings-content")
         #expect(try String(contentsOfFile: b + "/CLAUDE.md", encoding: .utf8) == "tracked", "the project's own tracked copy is untouched")
+    }
+
+    // A declared DIRECTORY holding a still-tracked, un-ignored leaf: first attach must not check the project's
+    // tracked copy out from store history, even when its bytes match an older store blob (a stale copy).
+    @Test("first attach never overwrites a project-tracked leaf inside a declared directory")
+    func firstAttachSparesTrackedLeafInDeclaredDirectory() async throws {
+        let root = IntegrationSupport.tempDir("shared-store-e2e")
+        let repo = root + "/repo"
+        let leaf = ".claude/commands/ship.md"
+        let a = try makeCheckoutRepo(root, name: "a", sharedPaths: [".claude"])
+        let b = try makeCheckoutRepo(root, name: "b", sharedPaths: [])
+        let store = SharedStore(root: root + "/store", proc: RealProc())
+
+        try FileManager.default.createDirectory(atPath: a + "/.claude/commands", withIntermediateDirectories: true)
+        try "v1".write(toFile: a + "/" + leaf, atomically: true, encoding: .utf8)
+        let declaredA = declaredSet(paths: [".claude"], in: a)
+        let handleA = try await store.attach(checkout: a, repo: repo, declared: declaredA)
+        _ = try await store.commitLocal(handleA, declared: declaredA, unignoredLeaves: [])
+        _ = try await store.send(handleA, paths: [".claude"], declared: declaredA)
+        try "v2".write(toFile: a + "/" + leaf, atomically: true, encoding: .utf8)
+        _ = try await store.commitLocal(handleA, declared: declaredA, unignoredLeaves: [])
+        _ = try await store.send(handleA, paths: [".claude"], declared: declaredA)
+
+        // b is pre-migration: it TRACKS the old v1 copy, and nothing ignores it.
+        try FileManager.default.createDirectory(atPath: b + "/.claude/commands", withIntermediateDirectories: true)
+        try "v1".write(toFile: b + "/" + leaf, atomically: true, encoding: .utf8)
+        try Proc.checked(["git", "-C", b, "add", "."])
+        try Proc.checked(["git", "-C", b, "commit", "-q", "-m", "track"])
+        let (headBefore, statusBefore, _) = try projectStatus(b)
+
+        let declaredB = declaredSet(paths: [".claude"], unignored: [leaf], in: b)
+        _ = try await store.attach(checkout: b, repo: repo, declared: declaredB)
+
+        let (headAfter, statusAfter, _) = try projectStatus(b)
+        #expect(headBefore == headAfter)
+        #expect(statusBefore == statusAfter)
+        #expect(try String(contentsOfFile: b + "/" + leaf, encoding: .utf8) == "v1", "the project's tracked copy is untouched")
+    }
+
+    // Turning one item off shrinks the declared set while the store (and every checkout's HEAD) still holds its
+    // files. The out-of-set guard must not wedge `send` for the items that stay shared.
+    @Test("send still works after the declared set shrinks: history already in the store is not out-of-set content")
+    func sendSurvivesDeclaredSetShrinking() async throws {
+        let root = IntegrationSupport.tempDir("shared-store-e2e")
+        let repo = root + "/repo"
+        let a = try makeCheckoutRepo(root, name: "a", sharedPaths: ["CLAUDE.md", "AGENTS.md"])
+        let store = SharedStore(root: root + "/store", proc: RealProc())
+        let both = ["CLAUDE.md", "AGENTS.md"]
+
+        try "c1".write(toFile: a + "/CLAUDE.md", atomically: true, encoding: .utf8)
+        try "a1".write(toFile: a + "/AGENTS.md", atomically: true, encoding: .utf8)
+        let handle = try await store.attach(checkout: a, repo: repo, declared: declaredSet(paths: both, in: a))
+        _ = try await store.commitLocal(handle, declared: declaredSet(paths: both, in: a), unignoredLeaves: [])
+        _ = try await store.send(handle, paths: both, declared: declaredSet(paths: both, in: a))
+
+        // AGENTS.md's item is now ephemeral; CLAUDE.md stays shared and is edited.
+        let only = ["CLAUDE.md"]
+        try "c2".write(toFile: a + "/CLAUDE.md", atomically: true, encoding: .utf8)
+        _ = try await store.commitLocal(handle, declared: declaredSet(paths: only, in: a), unignoredLeaves: [])
+        // The service's order: receive (which fetches store/main) precedes send.
+        _ = try await store.receive(handle, paths: only, declared: declaredSet(paths: only, in: a))
+        let outcome = try await store.send(handle, paths: only, declared: declaredSet(paths: only, in: a))
+        guard case .pushed = outcome else { Issue.record("expected .pushed, got \(outcome)"); return }
     }
 
     // Step 12: non-interference — after a full cycle, the project repo is byte-identical.

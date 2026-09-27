@@ -537,6 +537,48 @@ struct SharedStoreReceiveTests {
     }
 }
 
+@Suite("SharedStore — git dir hardening")
+struct SharedStoreHardeningTests {
+    @Test("a planted config key, hooks dir and info/attributes are removed; the core keys git needs stay")
+    func plantedFilesAreRemoved() throws {
+        let dir = freshRoot() + "/x.git"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: dir + "/hooks", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: dir + "/info", withIntermediateDirectories: true)
+        try "#!/bin/sh\ntouch pwned\n".write(toFile: dir + "/hooks/pre-commit", atomically: true, encoding: .utf8)
+        try "* filter=evil\n".write(toFile: dir + "/info/attributes", atomically: true, encoding: .utf8)
+        try """
+        [core]
+        \trepositoryformatversion = 0
+        \tbare = false
+        \tfsmonitor = /tmp/evil
+        \tsshCommand = /tmp/evil
+        [filter "evil"]
+        \tclean = /tmp/evil
+        [include]
+        \tpath = /tmp/evil.cfg
+
+        """.write(toFile: dir + "/config", atomically: true, encoding: .utf8)
+
+        SharedStore.hardenGitDir(dir)
+
+        #expect(!fm.fileExists(atPath: dir + "/hooks"))
+        #expect(!fm.fileExists(atPath: dir + "/info/attributes"))
+        let config = try String(contentsOfFile: dir + "/config", encoding: .utf8)
+        #expect(config == "[core]\n\trepositoryformatversion = 0\n\tbare = false\n")
+    }
+
+    @Test("a clean git-init config is left byte-identical, so a normal attach writes nothing")
+    func cleanConfigUntouched() throws {
+        let dir = freshRoot() + "/y.git"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let clean = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n"
+        try clean.write(toFile: dir + "/config", atomically: true, encoding: .utf8)
+        SharedStore.hardenGitDir(dir)
+        #expect(try String(contentsOfFile: dir + "/config", encoding: .utf8) == clean)
+    }
+}
+
 @Suite("SharedStore — send")
 struct SharedStoreSendTests {
     private func syntheticHandle(root: String) -> StoreHandle {
@@ -555,6 +597,43 @@ struct SharedStoreSendTests {
         let store = SharedStore(root: root, proc: fake)
         let declared = DeclaredSet.build(paths: [], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in false })
         let outcome = try await store.send(handle, paths: [], declared: declared)
+
+        #expect(!fake.calls.contains { $0.gitArgs?.first == "push" })
+        if case .refusedOutOfSet(let p) = outcome { #expect(p == ["rogue.md"]) }
+        else { Issue.record("expected .refusedOutOfSet, got \(outcome)") }
+    }
+
+    @Test("out-of-set content the store already holds does not block send: the guard diffs HEAD against store/main")
+    func guardToleratesStoreHistory() async throws {
+        let root = freshRoot()
+        let fake = FakeProc()
+        let handle = syntheticHandle(root: root)
+        fake.onGit(["rev-parse", "--verify", "-q", "HEAD"]) { _ in ProcResult(stdout: "Hsha\n", stderr: "", exitCode: 0) }
+        fake.onGit(["rev-parse", "--verify", "-q", "refs/remotes/store/main"]) { _ in ProcResult(stdout: "Ssha\n", stderr: "", exitCode: 0) }
+        // Against the store, HEAD adds nothing out of set (AGENTS.md of a turned-off item is in both).
+        fake.onGitDiff(["--name-only", "-z", "Ssha", "HEAD", "--"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+        fake.onGit(["push"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+
+        let store = SharedStore(root: root, proc: fake)
+        let declared = DeclaredSet.build(paths: ["CLAUDE.md"], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in true })
+        let outcome = try await store.send(handle, paths: ["CLAUDE.md"], declared: declared)
+
+        if case .pushed = outcome {} else { Issue.record("expected .pushed, got \(outcome)") }
+        #expect(!fake.calls.contains { $0.gitArgs?.contains(handle.emptyTreeHash) == true && $0.gitArgs?.first == "diff" })
+    }
+
+    @Test("new out-of-set content is still refused when it differs from store/main")
+    func guardStillRefusesNewOutOfSetContent() async throws {
+        let root = freshRoot()
+        let fake = FakeProc()
+        let handle = syntheticHandle(root: root)
+        fake.onGit(["rev-parse", "--verify", "-q", "HEAD"]) { _ in ProcResult(stdout: "Hsha\n", stderr: "", exitCode: 0) }
+        fake.onGit(["rev-parse", "--verify", "-q", "refs/remotes/store/main"]) { _ in ProcResult(stdout: "Ssha\n", stderr: "", exitCode: 0) }
+        fake.onGitDiff(["--name-only", "-z", "Ssha", "HEAD", "--"]) { _ in ProcResult(stdout: "rogue.md\0", stderr: "", exitCode: 0) }
+
+        let store = SharedStore(root: root, proc: fake)
+        let declared = DeclaredSet.build(paths: ["CLAUDE.md"], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in true })
+        let outcome = try await store.send(handle, paths: ["CLAUDE.md"], declared: declared)
 
         #expect(!fake.calls.contains { $0.gitArgs?.first == "push" })
         if case .refusedOutOfSet(let p) = outcome { #expect(p == ["rogue.md"]) }
@@ -945,11 +1024,34 @@ struct SharedStoreCommitLocalTests {
         fake.onGit(["diff", "--cached", "--quiet"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
 
         let store = SharedStore(root: root, proc: fake)
-        let declared = DeclaredSet.build(paths: [], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in false })
+        let declared = DeclaredSet.build(paths: ["flip.md"], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in true })
         _ = try await store.commitLocal(handle, declared: declared, unignoredLeaves: [])
 
         #expect(fake.calls.contains { $0.gitArgs?.starts(with: ["checkout", "--", "flip.md"]) == true })
         #expect(!fake.calls.contains { $0.gitArgs?.starts(with: ["diff", "--name-only", "HEAD", "--", "other.md"]) == true })
+    }
+
+    @Test("a leaf whose item left the shared set is never checked out: it is a project file now")
+    func flipTestSkipsLeafOutsideCurrentSharedSet() async throws {
+        let root = freshRoot()
+        let fake = FakeProc()
+        let handle = try await attachedHandle(root: root, fake: fake)
+        try "flip.md".write(toFile: handle.checkoutGitDir + "/orchestra-unignored", atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(atPath: handle.workTree, withIntermediateDirectories: true)
+        try "the project's own copy".write(toFile: handle.workTree + "/flip.md", atomically: true, encoding: .utf8)
+        fake.onGitDiff(["--name-only", "HEAD", "--", "flip.md"]) { _ in ProcResult(stdout: "flip.md\n", stderr: "", exitCode: 0) }
+        fake.onGit(["hash-object", "flip.md"]) { _ in ProcResult(stdout: "blobF\n", stderr: "", exitCode: 0) }
+        fake.onGit(["log", "--all", "-n1", "--format=%H", "--find-object=blobF"]) { _ in ProcResult(stdout: "somesha\n", stderr: "", exitCode: 0) }
+        fake.onGitDiff(["--cached", "--name-only", "-z", "--diff-filter=D"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+        fake.onGitDiff(["--cached", "--name-only", "-z"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+        fake.onGit(["diff", "--cached", "--quiet"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+
+        let store = SharedStore(root: root, proc: fake)
+        // No shared path covers flip.md any more (its item was set to ephemeral).
+        let declared = DeclaredSet.build(paths: [], exclusions: [], unignoredLeaves: [], existsInWorkingTreeOrIndex: { _ in false })
+        _ = try await store.commitLocal(handle, declared: declared, unignoredLeaves: [])
+
+        #expect(!fake.calls.contains { $0.gitArgs?.starts(with: ["checkout", "--"]) == true })
     }
 
     @Test("the flip test is skipped entirely when HEAD is unborn")

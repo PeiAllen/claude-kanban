@@ -97,6 +97,34 @@ public actor SharedStore {
 
     // MARK: - layout + fetch
 
+    /// The only `config` keys a store git dir needs. Anything else (`core.fsmonitor`, `core.sshCommand`,
+    /// `core.hooksPath`, `filter.*`, `diff.*`, `include.*`, `remote.*` …) can make git run a command.
+    private static let allowedConfigKeys: Set<String> = [
+        "repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks",
+    ]
+
+    /// Rewrites `config` down to the allowlisted `[core]` keys, and removes `hooks/` and `info/attributes`.
+    /// Idempotent and fork-free: it writes only when the file would change.
+    static func hardenGitDir(_ dir: String) {
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: dir + "/hooks")
+        try? fm.removeItem(atPath: dir + "/info/attributes")
+        let configPath = dir + "/config"
+        guard let text = try? String(contentsOfFile: configPath, encoding: .utf8) else { return }
+        var kept: [String] = []
+        var inCore = false
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") { inCore = line.lowercased() == "[core]"; continue }
+            guard inCore, let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if allowedConfigKeys.contains(key) { kept.append("\t\(key) = \(value)") }
+        }
+        let clean = "[core]\n" + kept.joined(separator: "\n") + (kept.isEmpty ? "" : "\n")
+        if clean != text { try? clean.write(toFile: configPath, atomically: true, encoding: .utf8) }
+    }
+
     /// The one definition of the on-disk layout: `<root>/<repoKey>/store.git` and
     /// `<root>/<repoKey>/checkouts/<checkoutKey>.git`. `PropagationService` reads it too, so the
     /// formula lives in exactly one place.
@@ -153,6 +181,12 @@ public actor SharedStore {
         try fm.createDirectory(atPath: checkoutGitDir + "/info", withIntermediateDirectories: true)
         try "/*\n".write(toFile: checkoutGitDir + "/info/exclude", atomically: true, encoding: .utf8)
         try checkout.write(toFile: checkoutGitDir + "/orchestra-checkout", atomically: true, encoding: .utf8)
+        // Defence in depth for rule 3 ("only the daemon writes a store git dir"). The sandbox is the primary
+        // boundary, but a card whose sandbox is off (or a broad cwd that covers the store root) could plant
+        // config, hooks or attributes that the daemon then runs unsandboxed. Every attach removes them.
+        Self.hardenGitDir(storeGitDir)
+        Self.hardenGitDir(checkoutGitDir)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root)
 
         let emptyTreeHash: String
         if let cached = cachedEmptyTreeHash {
@@ -210,7 +244,11 @@ public actor SharedStore {
         // `ls-tree`/`diff`), which would scan every modified file in the checkout instead of just
         // the declared ones.
         guard !declared.stagingPositives.isEmpty else { return }
-        let modifiedRaw = try await run(["ls-files", "-z", "--modified", "--"] + declared.stagingPositives, handle: handle)
+        // The FULL staging pathspec, not the bare positives: a declared directory (`.claude`) has a still-tracked,
+        // un-ignored leaf inside it (`.claude/commands/ship.md`) that `stagingPathspec` excludes. Listing only
+        // the positives found that project file "modified", and `checkout --` below overwrote it — a write into
+        // the project's work tree outside `adopt`.
+        let modifiedRaw = try await run(["ls-files", "-z", "--modified", "--"] + declared.stagingPathspec, handle: handle)
         for path in Self.nullSeparated(modifiedRaw.stdout).sorted() {
             // `ls-files --modified` also reports a path present in the index (just populated by
             // `reset --mixed`) but ABSENT from disk — the normal case for a checkout's very first
@@ -239,6 +277,11 @@ public actor SharedStore {
         return found.ok && !Self.trimmed(found.stdout).isEmpty
     }
 
+    /// `path` equals `root` or lies beneath it. Component-wise, so `.claude2` is never under `.claude`.
+    private static func isPathUnder(_ path: String, _ root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
+    }
+
     // MARK: - commitLocal
 
     /// Stages, unstages and commits local state before every merge — "every sync commits before
@@ -253,7 +296,12 @@ public actor SharedStore {
         let headExists = try await run(["rev-parse", "--verify", "-q", "HEAD"], handle: handle).ok
 
         let previouslyUnignored = readUnignoredRecord(handle)
-        let flipped = previouslyUnignored.subtracting(unignoredLeaves)
+        // Only a leaf still under a CURRENT shared path can have "flipped to ignored". One that fell out of the
+        // declared set (its item was removed from policy) is a project file now: checking it out from store
+        // history would overwrite the project's own tracked copy.
+        let flipped = previouslyUnignored.subtracting(unignoredLeaves).filter { leaf in
+            declared.stagingPositives.contains { Self.isPathUnder(leaf, $0) }
+        }
         if headExists {
             for leaf in flipped.sorted() {
                 let modified = try await diff(["--name-only", "HEAD", "--", leaf], handle: handle)
@@ -507,14 +555,8 @@ public actor SharedStore {
         // permanently holding an out-of-set path on a refusal: `send`'s own guard reads HEAD, so
         // every later `send` from this checkout would refuse forever, with no way back short of a
         // human editing the index.
-        let outOfSet = Self.nullSeparated(try await diff(["--name-only", "-z", handle.emptyTreeHash, T2, "--"] + declared.outsideQuery, handle: handle).stdout)
-        var holesInT2: [String] = []
-        if !declared.holesQuery.isEmpty {
-            holesInT2 = Self.nullSeparated(try await checked(["ls-tree", "-r", "--name-only", "-z", T2, "--"] + declared.holesQuery, handle: handle).stdout)
-        }
-        guard outOfSet.isEmpty, holesInT2.isEmpty else {
-            return .sendOutcome(.refusedOutOfSet(paths: (outOfSet + holesInT2).sorted()))
-        }
+        let outOfSet = try await outOfSetPaths(handle, tree: T2, declared: declared)
+        guard outOfSet.isEmpty else { return .sendOutcome(.refusedOutOfSet(paths: outOfSet)) }
 
         let M = Self.trimmed(try await checked(["commit-tree", T2, "-p", H, "-p", S, "-m", "resolve: " + P.joined(separator: ",")], handle: handle).stdout)
 
@@ -553,6 +595,23 @@ public actor SharedStore {
 
     // MARK: - send
 
+    /// The paths in `tree` that lie outside the declared set or inside an exclusion AND differ from the store's
+    /// `main` — never content the store already holds. The store keeps files of an item that was later turned off
+    /// (or of an exclusion a newer adapter added), and HEAD carries them by merge. Refusing every such path
+    /// would wedge `send` for the whole repo the moment a policy shrank the set; refusing only NEW or CHANGED
+    /// out-of-set content keeps the guard's purpose (project content never ships) and tolerates that history.
+    /// With no `store/main` yet the baseline is the empty tree, so every out-of-set path counts.
+    private func outOfSetPaths(_ handle: StoreHandle, tree: String, declared: DeclaredSet.Result) async throws -> [String] {
+        let storeMain = try await run(["rev-parse", "--verify", "-q", "refs/remotes/store/main"], handle: handle)
+        let storeSha = Self.trimmed(storeMain.stdout)
+        let baseline = storeMain.ok && !storeSha.isEmpty ? storeSha : handle.emptyTreeHash
+        var out = Set(Self.nullSeparated(try await diff(["--name-only", "-z", baseline, tree, "--"] + declared.outsideQuery, handle: handle).stdout))
+        if !declared.holesQuery.isEmpty {
+            out.formUnion(Self.nullSeparated(try await diff(["--name-only", "-z", baseline, tree, "--"] + declared.holesQuery, handle: handle).stdout))
+        }
+        return out.sorted()
+    }
+
     /// Refuses (never pushes) when HEAD holds a path outside the declared set or inside an
     /// exclusion. Otherwise pushes by explicit URL, retrying a non-fast-forward rejection a
     /// bounded number of times by calling `receive` to catch up first. The unborn-HEAD guard is
@@ -561,12 +620,8 @@ public actor SharedStore {
     public func send(_ handle: StoreHandle, paths: [String], declared: DeclaredSet.Result) async throws -> SendOutcome {
         guard try await run(["rev-parse", "--verify", "-q", "HEAD"], handle: handle).ok else { return .nothingToDo }
 
-        let out = Self.nullSeparated(try await diff(["--name-only", "-z", handle.emptyTreeHash, "HEAD", "--"] + declared.outsideQuery, handle: handle).stdout)
-        var holes: [String] = []
-        if !declared.holesQuery.isEmpty {
-            holes = Self.nullSeparated(try await checked(["ls-tree", "-r", "--name-only", "-z", "HEAD", "--"] + declared.holesQuery, handle: handle).stdout)
-        }
-        guard out.isEmpty, holes.isEmpty else { return .refusedOutOfSet(paths: (out + holes).sorted()) }
+        let out = try await outOfSetPaths(handle, tree: "HEAD", declared: declared)
+        guard out.isEmpty else { return .refusedOutOfSet(paths: out) }
 
         var attempt = 0
         while attempt < 3 {

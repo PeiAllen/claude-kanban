@@ -912,6 +912,23 @@ this project's Linux daemon cross-build, never on macOS) would silently misroute
 explicit owner sign-off rather than as a fast-follow, since the caller whose correctness depends on
 it is the right one to fix it.
 
+**Store git-dir hardening.** Rule 3 (only the daemon writes a store git dir) rests on the agent sandbox, and the
+daemon runs git there unsandboxed. Every `attach` therefore also rewrites `config` down to the allowlisted `[core]`
+keys, removes `hooks/` and `info/attributes` from the store and the checkout git dir, and sets the store root to
+`0700`. This is fork-free and writes only when the file would change. A card whose sandbox is off, or a borrowed
+card whose cwd covers `~/.orchestra`, can still plant a file between two attaches, so the boundary stays the
+sandbox. The hardening only shortens what a planted file survives.
+
+**The out-of-set guard compares against `store/main`.** `send` and `resolve` refuse a path outside the declared set
+or inside an exclusion only when it differs from the store's `main`. HEAD carries the files of an item that was later
+turned off, and a newer adapter release may add an exclusion, so refusing every such path would wedge `send` for the
+whole repo. New or changed out-of-set content is still refused. With no `store/main` yet, every out-of-set path counts.
+
+**First attach and flip handling never write a project-tracked leaf.** The adopt loop lists modified files with the
+full staging pathspec (positives plus exclusions), so an un-ignored tracked leaf inside a declared directory is never
+checked out. The flip test (a leaf that became ignored) only considers leaves under a current shared path, so a leaf
+whose item left the policy is a project file and is never overwritten.
+
 ### `PropagationService` — policy, two chains, and the lock rule
 
 `SharedStore` holds the git mechanics. `PropagationService` (an actor) holds the decisions: eligibility, the
@@ -939,7 +956,7 @@ main absent" and every sync returned `.upToDate` while `flush` released the work
 matcher against real git stderr, because the wording is not a git API.
 
 **Items are the union across all adapters.** A checkout's HEAD receives the other agent's files by merge, and
-`send` refuses any path outside the declared set. A per-adapter set would refuse every push.
+`send` refuses new out-of-set content. A per-adapter set would refuse every push.
 
 **`paths:` is never empty.** `receive`, `send` and `resolve` take the declared paths of every shared item that
 survived stand-down. With an empty list, `writeOut` writes nothing but `receive` still moves HEAD, which would
@@ -949,11 +966,16 @@ revert another checkout's change. So when no shared item survives, the service m
 set and exclude its whole subtree. Its un-ignored children stand down one by one.
 
 **Teardown and the boot sweep.** `flush` is true when the cwd is gone (no git call), the card is ineligible,
-nothing is shared, git is too old, or the send landed. It is false when a conflict, a partial write, a
-stand-down, a busy lock, a refused path, or an error could lose data. `reap` finds the git dir by the hash of
+nothing is shared, git is confirmed too old, or the send landed. It is false when a conflict, a partial write, a
+stand-down, a busy lock, a refused path, an over-5-MiB edit that the commit left out (`.unsent`), an unreadable git
+version, or an error could lose data. An unreadable git version is unknown, not old, and keeps the tree like an
+unanswerable ignore probe. A `git rev-parse` that fails for any reason other than "not a git repository" is also
+unknown: only proven non-repo output grants writes. `reap` finds the git dir by the hash of
 the checkout, so it works with the worktree gone. `sweep` deletes a git dir whose recorded path is gone, or one
 that no card and no primary references. With an empty referenced set it runs only the first rule, because an
-unknown card set must never look like "nothing is referenced". The caller must include an archived card that
+unknown card set must never look like "nothing is referenced". The caller passes an empty set when the board loaded
+incompletely. The sweep also skips a git dir created after it started (a card that attached after the caller's
+snapshot) and a recorded path whose `.git` is a directory (a primary repo root, whose git dir holds the merge base). The caller must include an archived card that
 kept its worktree, because `resolve` still needs its git dir. Both sides of the comparison are canonicalized.
 
 **`adopt` stages and never commits.** It sends the primary's copies first, appends a root-anchored pattern for
@@ -979,7 +1001,8 @@ ignore rules cover, so an Orchestra write never dirties a repo (G6). A non-repo 
 unanswerable probe grants nothing. The Claude adapter installs a skill only when its path is granted, so a
 `nil` grant writes nothing. A project that does not ignore `.claude/skills` no longer receives Orchestra skills.
 The Obsidian guard is the same rule for `.obsidian` and `.trash`. It probes a child path of each directory,
-because git cannot match a `dir/` pattern against a directory that does not exist yet.
+because git cannot match a `dir/` pattern against a directory that does not exist yet, and it probes
+`.obsidian/workspace.json`, the file the tab seeding really overwrites. A skipped launch write gets one activity line.
 
 **Idle edge.** When the agent goes from running to waiting, a detached `sync(.full)` starts. It is an edge:
 an in-waiting change does not repeat it. `unavailable → waiting` is skipped, because a fresh launch starts
@@ -989,7 +1012,9 @@ live at the same epoch, and `sync` returns at once for a checkout that is gone.
 **Teardown and re-drive.** The worktree release is behind `flushShared`. A false flush skips the release, warns,
 and leaves the card `archivedComplete` with its tree, so `orchestra shared resolve` still works from that
 directory. The step re-fences with `stillArchiving` after the flush, releases, and calls `reapShared` only when
-the outcome is `.removed`. The boot re-drive runs the same sequence. A borrowed card is not flushed at teardown,
+the outcome is `.removed`. The boot re-drive runs the same sequence, including the re-fence: a reopen that lands while the flush runs leaves the
+card out of `archivedComplete`, and nothing is released. `shared resolve` on an `archivedComplete` worktree card
+retries the release once the conflict is settled. A borrowed card is not flushed at teardown,
 because nothing is destroyed. The two spawn-rollback releases are not flushed, because nothing was ever synced.
 
 **Boot order.** `orchestrad` installs the sinks, checks the git version and sweeps checkout git dirs before the
@@ -1019,8 +1044,10 @@ and a `PropagationServiceError` becomes an `OrchestraError`.
   `shared`), so a write from an empty table would erase the user's rows. The user repairs or removes the file.
 - **`adopt` validates its input and refuses a read-only card.** Paths must be repo-relative with no `.`, `..` or
   empty component, at most 32. An unchecked `.` would make the daemon walk and probe the whole checkout inside the
-  service actor. Adopt edits the project's `.gitignore` and index, which a read-only card cannot do itself, so the
-  daemon does not do it for them. Each adopted path inherits the exclusions of any overlapping adapter item, so
+  service actor. Adopt edits the project's `.gitignore` and index, so the daemon refuses when the TARGET card is
+  read-only. It does not check the caller: `shared` takes any `ref`, and the daemon cannot see the caller's card, so
+  any card can run `adopt` for another card, as any card can archive another. Adopt from the primary's own cwd returns
+  `notParticipating`, so the migration runs `adopt --ref <any worktree card>`; step 1 still syncs the primary. Each adopted path inherits the exclusions of any overlapping adapter item, so
   adopting `.claude` never untracks `.claude/skills`.
 - **An adopted path is its own item, next to the adapter item.** Reverting an adopt therefore needs both rows set
   (`claude` and `CLAUDE.md`). The app's policy editor shows both.
@@ -1032,6 +1059,21 @@ and a `PropagationServiceError` becomes an `OrchestraError`.
   `PropagationService`) each load, change, and save with no shared lock. A policy edit during an in-flight adopt can
   drop the adopted row. Adopt is owner-attended, so this stays open until `PropagationStore.save` gets a
   compare-and-swap.
+- **Known limits, not fixed.**
+  - A card whose sandbox is off, or a borrowed card with `$HOME` as its cwd, can write `~/.orchestra/shared`. The
+    daemon hardens the git dirs on every attach, but a file planted between two attaches can run once. A `denyWrite`
+    on the store root in both adapters would close it.
+  - A read-only card's `flush` is true without a send. If a co-located read-write card kept its worktree after a
+    failed flush, and both are `archivedComplete` at the next boot, the read-only card's release can remove the tree.
+  - `resolve` stages the conflicted file once. An edit to that file by another writer during the call is overwritten
+    by the resolved content. A modify-versus-delete conflict that the user resolves by keeping the file stays
+    `partial`, because the resolved leaf is absent from HEAD. The tree is kept in both cases.
+  - `~/.claude/open-obsidian-vault.sh` appends `.obsidian/` and `.trash/` to `.gitignore` unless those exact lines exist,
+    even when an equivalent anchored pattern ignores them. The guard cannot suppress a side effect of that script.
+  - `IgnoreProbe.classify` forks one `git check-ignore` per candidate. On a busy machine a cold launch receive can
+    outrun its 10 s budget. The idle sync repeats it. One `--stdin -z` call needs a stdin seam on `ProcRunning`.
+  - `reap` canonicalizes a path that no longer exists, so a symlinked worktree path would hash differently from the
+    live one. Worktrees under `~/.orchestra/worktrees` are not symlinked.
 - **Ownership note.** The plan gave the `OrchestraService.propagation` stored property to PR4, and PR4's seed told it
   not to edit `OrchestraService.swift`, so it was skipped. PR7 adds the property and its construction, because its
   handlers are the first callers. It builds from `Config.sharedStoreRoot`, `Config.propagationPath`, and the union of
