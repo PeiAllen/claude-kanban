@@ -216,6 +216,99 @@ struct LaunchStepperTests {
         #expect(await LaunchStepper().verify(after, ctx))   // session alive AT the current epoch
     }
 
+    // MARK: shared-file propagation at launch (PR6)
+
+    /// A fake whose repo probe answers "inside a work tree" and ignores exactly `ignoredPath`.
+    private func ignoringFake(_ ignoredPath: String) -> FakeProc {
+        let f = cfgFake()
+        f.on(["git", "rev-parse", "--is-inside-work-tree"]) { _ in ProcResult(stdout: "true\n", stderr: "", exitCode: 0) }
+        f.on(["git", "check-ignore"]) { argv in
+            ProcResult(stdout: "", stderr: "", exitCode: argv.last == ignoredPath ? 0 : 1)
+        }
+        return f
+    }
+
+    @Test("blank launch: receive-only sync runs first, and the grant is the ignored launchWrites")
+    func test_blankLaunchSyncsThenGrantsIgnoredWrites() async throws {
+        let env = TestEnv.make(proc: ignoringFake(".stub/a"))
+        env.adapter.launchWrites = [".stub/a", ".stub/b"]
+        let seen = IntentLog()
+        await env.svc._setSyncSharedObserverForTest { _, intent in seen.add(intent) }
+        let card = try await seedLaunching(env, branch: "b")
+        try await LaunchStepper().step(card, await env.svc.convergeContext())
+        #expect(seen.all == [.receiveOnly])
+        let grant = try #require(env.adapter.preparedContexts.last?.propagation)   // never nil on a launch
+        #expect(grant.writablePaths == [".stub/a"])
+    }
+
+    @Test("resume launch carries a non-nil grant too")
+    func test_resumeLaunchCarriesGrant() async throws {
+        let env = TestEnv.make(proc: cfgFake())
+        env.adapter.launchWrites = [".stub/a"]
+        let card = try await seedLaunching(env, branch: "b")
+        env.adapter.writeTranscript(for: try #require(card.agentSessionId))
+        let fresh = try #require(await env.svc.store.get(card.id))
+        try await LaunchStepper().step(fresh, await env.svc.convergeContext())
+        guard case .resume = deriveLaunchFlavor(fresh, env.adapter) else { Issue.record("expected .resume"); return }
+        // default fake ⇒ not a repo ⇒ every launch write is granted
+        #expect(env.adapter.preparedContexts.last?.propagation?.writablePaths == [".stub/a"])
+    }
+
+    @Test("finishLaunch returns .superseded when the PHASE moves during the sync — no bring-up")
+    func test_finishLaunchSupersededWhenPhaseMovesDuringSync() async throws {
+        let env = TestEnv.make(proc: cfgFake())
+        let card = try await seedLaunching(env, branch: "b")
+        let svc = env.svc
+        await svc._setSyncSharedObserverForTest { id, _ in
+            _ = try? await svc.store.update(id) { $0.phase = .relaunching }
+        }
+        let out = await svc.convergeContext().finishLaunch(card.id, .blank(prompt: nil), .launching, card.sessionEpoch)
+        #expect(out == .superseded)
+        #expect(env.sessions.ensureArgv[env.sessions.sessionName(card.id)] == nil)
+    }
+
+    @Test("finishLaunch returns .superseded when the EPOCH moves during the sync — no bring-up")
+    func test_finishLaunchSupersededWhenEpochMovesDuringSync() async throws {
+        let env = TestEnv.make(proc: cfgFake())
+        let card = try await seedLaunching(env, branch: "b")
+        let svc = env.svc
+        await svc._setSyncSharedObserverForTest { id, _ in
+            _ = try? await svc.store.update(id) { $0.sessionEpoch += 1 }
+        }
+        let out = await svc.convergeContext().finishLaunch(card.id, .blank(prompt: nil), .launching, card.sessionEpoch)
+        #expect(out == .superseded)
+        #expect(env.sessions.ensureArgv[env.sessions.sessionName(card.id)] == nil)
+    }
+
+    @Test("a launch sync that outruns its budget is abandoned: the agent still launches, with a warning")
+    func test_launchSyncBudgetAbandonsASlowSync() async throws {
+        let clock = TestClock()
+        let env = TestEnv.make(clock: clock, proc: cfgFake())
+        let card = try await seedLaunching(env, branch: "b")
+        let svc = env.svc
+        let gate = Gate()
+        await svc._setSyncSharedObserverForTest { _, _ in _ = await gate.park() }   // the sync never returns
+        let ctx = await svc.convergeContext()
+        let epoch = card.sessionEpoch
+        async let out = ctx.finishLaunch(card.id, .blank(prompt: nil), .launching, epoch)
+        await gate.reached()
+        await clock.parked(1, deadlineAtLeast: OrchestraService.launchSyncBudget - .seconds(1))
+        clock.advance(by: OrchestraService.launchSyncBudget)
+        #expect(await out != .superseded)
+        #expect(env.sessions.ensureArgv[env.sessions.sessionName(card.id)] != nil)   // the bring-up went ahead
+        gate.release()
+    }
+
+    @Test("the launch never moves phaseChangedAt: one .launching entry keeps one deadline across re-steps")
+    func test_launchKeepsThePhaseAnchor() async throws {
+        let env = TestEnv.make(proc: cfgFake())
+        let card = try await seedLaunching(env, branch: "b")
+        let old = Date(timeIntervalSince1970: 1_000)
+        _ = try await env.svc.store.update(card.id) { $0.phaseChangedAt = old }
+        _ = await env.svc.convergeContext().finishLaunch(card.id, .blank(prompt: nil), .launching, card.sessionEpoch)
+        #expect(try #require(await env.svc.store.get(card.id)).phaseChangedAt == old)
+    }
+
     /// Seed a launching card WITHOUT blocking spawn on an awaited-cap readiness: bring it live via
     /// `spawnAwaited` (delivers the signal), then force it back to `.launching`.
     private func seedLaunchingAwaited(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
@@ -407,4 +500,12 @@ struct TeardownStepperTests {
         #expect(try await env.svc.inboxPeek(child.id).count == 1)   // dedupKey ⇒ nudged only once
         #expect(try #require(await env.svc.store.get(parent.id)).phase.kind == .archivedComplete)
     }
+}
+
+/// Thread-safe recorder for the sync observer's intents.
+final class IntentLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var intents: [SyncIntent] = []
+    func add(_ i: SyncIntent) { lock.withLock { intents.append(i) } }
+    var all: [SyncIntent] { lock.withLock { intents } }
 }

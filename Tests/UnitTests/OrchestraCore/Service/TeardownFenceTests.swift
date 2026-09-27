@@ -60,4 +60,66 @@ struct TeardownFenceTests {
         #expect(!env.worktrees.removed.contains(card.cwd))          // the tree is not released
         #expect(await env.svc.store.get(card.id)?.archived == false)
     }
+
+    // MARK: - shared-file flush before release (PR6)
+
+    /// Records what the teardown told the propagation hooks and the activity feed.
+    private final class Recorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _reaped = 0
+        private var _warnings: [String] = []
+        func reap() { lock.withLock { _reaped += 1 } }
+        func warn(_ t: String) { lock.withLock { _warnings.append(t) } }
+        var reaped: Int { lock.withLock { _reaped } }
+        var warnings: [String] { lock.withLock { _warnings } }
+    }
+
+    /// The service's real context with the propagation hooks and the activity sink replaced.
+    private func context(_ svc: OrchestraService, flush: Bool, _ rec: Recorder) async -> ConvergeContext {
+        let c = await svc.convergeContext()
+        return ConvergeContext(
+            store: c.store, worktrees: c.worktrees, sessions: c.sessions, adapters: c.adapters,
+            scratchRoot: c.scratchRoot, transition: c.transition, materialize: c.materialize,
+            finishLaunch: c.finishLaunch, teardownActorDuties: c.teardownActorDuties,
+            flushShared: { _ in flush }, reapShared: { _ in rec.reap() },
+            emitActivity: { _, kind, text in if kind == .warning { rec.warn(text) } })
+    }
+
+    private func archivedPendingWorktreeCard(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)) async throws -> Task {
+        let repo = TestEnv.repo(env.base)
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        try await env.svc.archive(card.id)
+        return try #require(await env.svc.store.get(card.id))
+    }
+
+    @Test("flushShared false issues no release, no reap, and emits a warning — no removal over unsent work")
+    func test_flushRefusedKeepsTheWorktree() async throws {
+        let env = TestEnv.make()
+        let dispatched = try await archivedPendingWorktreeCard(env)
+        let rec = Recorder()
+        try await TeardownStepper().step(dispatched, await context(env.svc, flush: false, rec))
+        #expect(!env.worktrees.removed.contains(dispatched.cwd))
+        #expect(rec.reaped == 0)
+        #expect(rec.warnings.contains { $0.contains("shared files") })
+        #expect(await env.svc.store.get(dispatched.id)?.phase.kind == .archivedComplete)   // teardown still completes
+    }
+
+    @Test("flushShared true releases, and reapShared runs only on .removed")
+    func test_flushOkReleasesAndReapsOnlyWhenRemoved() async throws {
+        let env = TestEnv.make()
+        let dispatched = try await archivedPendingWorktreeCard(env)
+        let rec = Recorder()
+        try await TeardownStepper().step(dispatched, await context(env.svc, flush: true, rec))
+        #expect(env.worktrees.removed.contains(dispatched.cwd))
+        #expect(rec.reaped == 1)
+
+        // A kept tree (unsaved work) is NOT reaped: its git dir must survive for `shared resolve`.
+        let env2 = TestEnv.make()
+        let kept = try await archivedPendingWorktreeCard(env2)
+        env2.worktrees.setUnsavedWork(kept.cwd, true)
+        let rec2 = Recorder()
+        try await TeardownStepper().step(kept, await context(env2.svc, flush: true, rec2))
+        #expect(!env2.worktrees.removed.contains(kept.cwd))
+        #expect(rec2.reaped == 0)
+    }
 }

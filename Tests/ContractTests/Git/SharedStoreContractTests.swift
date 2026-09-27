@@ -156,6 +156,19 @@ struct SharedStoreContractTests {
         #expect(noIndex.exitCode == 0, "--no-index reports the pattern match regardless of tracking state")
     }
 
+    @Test("a `dir/` pattern does not match the bare name of a directory that does not exist, but matches its child")
+    func dirPatternNeedsAChildWhenTheDirIsAbsent() throws {
+        let (repo, _) = try makeRepo()
+        try ".obsidian/\n.trash/\n".write(toFile: repo + "/.gitignore", atomically: true, encoding: .utf8)
+        // Why the Obsidian guard probes `<dir>/.orchestra-probe`: the bare name reports "not ignored".
+        for dir in [".obsidian", ".trash"] {
+            let bare = try Proc.run(["git", "-C", repo] + IgnoreProbe.classifyArgv(dir).dropFirst())
+            #expect(bare.exitCode == 1)
+            let child = try Proc.run(["git", "-C", repo] + IgnoreProbe.classifyArgv(dir + "/.orchestra-probe").dropFirst())
+            #expect(child.exitCode == 0)
+        }
+    }
+
     // MARK: - Row 6: while git holds index.lock, lsof -t lists its PID; after kill -9, the lock stays
     // with no holder and the next call exits 128.
 

@@ -554,6 +554,15 @@ struct PropagationServiceEntryPointTests {
         #expect(env.store.log.isEmpty)
     }
 
+    @Test("sync of a missing checkout makes no git or store call — a late idle sync cannot re-create a reaped git dir")
+    func syncMissingCheckout() async throws {
+        let env = try await Env()
+        let gone = env.base + "/gone"
+        #expect(await env.service.sync(gone, env.card(gone), .full) == .skipped(.notARepo))
+        #expect(env.proc.calls.isEmpty)
+        #expect(env.store.log.isEmpty)
+    }
+
     @Test("flush truth table: true on pushed, nothing-to-do, ineligible; false on everything that can lose data")
     func flushMatrix() async throws {
         let env = try await Env()

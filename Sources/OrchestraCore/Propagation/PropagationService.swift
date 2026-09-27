@@ -155,7 +155,7 @@ public actor PropagationService {
     }
 
     /// A borrowed cwd inside a known repo: its work tree root and that repo's primary checkout.
-    private func locateBorrowed(_ cwd: String) async -> (toplevel: String, primary: String)? {
+    func locateBorrowed(_ cwd: String) async -> (toplevel: String, primary: String)? {
         guard let r = try? await proc.run(
             ["git", "rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir"],
             cwd: cwd, env: ["GIT_OPTIONAL_LOCKS": "0"], timeout: .seconds(10)), r.ok

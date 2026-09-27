@@ -340,6 +340,12 @@ extension OrchestraService {
         }
         guard result == .applied else { return }
 
+        // Idle EDGE (running → waiting), not a level: an activity change while already waiting must not
+        // re-sync. `unavailable → waiting` is skipped: a fresh launch lands `.unavailable` and its first
+        // report flips to waiting seconds after the launch's own receive sync, so it would double every
+        // launch. Provider-neutral — both adapters feed this reducer.
+        if !before.isWaiting, before.turnStatus != .unavailable, state.isWaiting { scheduleIdleSync(card) }
+
         if before.turnStatus != state.turnStatus,
            let updated = await store.get(card.id) {
             let word: String

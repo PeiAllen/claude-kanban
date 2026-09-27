@@ -53,7 +53,8 @@ struct ShipChoreoContractTests {
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
                             allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
                             scratchRoot: PathResolver.canonical(base) + "/scratch",
-                            runtimeStateDir: PathResolver.canonical(base) + "/state")
+                            runtimeStateDir: PathResolver.canonical(base) + "/state",
+                            sharedStoreRoot: PathResolver.canonical(base) + "/shared", propagationPath: PathResolver.canonical(base) + "/propagation.json")
         let svc = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                    trust: TrustLedger(path: base + "/trust-ledger.json"),
                                    inbox: Inbox(path: base + "/inbox.json"),

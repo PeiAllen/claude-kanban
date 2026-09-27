@@ -44,6 +44,18 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         self.modelIds = modelIds
     }
 
+    private let ctxLock = NSLock()
+    private var _launchWrites: [String] = []
+    private var _preparedContexts: [AdapterContext] = []
+    /// What this stub declares as launch writes (drives the launch grant). Empty by default.
+    var launchWrites: [String] {
+        get { ctxLock.withLock { _launchWrites } }
+        set { ctxLock.withLock { _launchWrites = newValue } }
+    }
+    /// Every context `prepareToLaunch` saw, in order — the launch tests read the grant off these.
+    var preparedContexts: [AdapterContext] { ctxLock.withLock { _preparedContexts } }
+    func prepareToLaunch(_ ctx: AdapterContext) throws { ctxLock.withLock { _preparedContexts.append(ctx) } }
+
     func models() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
     /// Claude-shaped (`.stub`, `telemetry: .hooksPush`) gets the same unconditional push-only endpoint

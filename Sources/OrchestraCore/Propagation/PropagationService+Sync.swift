@@ -52,6 +52,9 @@ extension PropagationService {
     // MARK: - sync
 
     public func sync(_ checkout: String, _ card: OrchestraKit.Task, _ intent: SyncIntent) async -> SyncOutcome {
+        // A checkout that is gone has nothing to share, and a sync would re-create its git dir (a late idle
+        // sync racing a teardown that already released and reaped it). `flush` has the same guard.
+        guard FileManager.default.fileExists(atPath: checkout) else { return .skipped(.notARepo) }
         let ctx: Context
         switch await context(for: card, checkout: checkout) {
         case .done(let outcome): return outcome

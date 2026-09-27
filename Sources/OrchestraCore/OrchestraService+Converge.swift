@@ -151,11 +151,20 @@ extension OrchestraService {
     /// phase writes, extended to the side effects.
     func finishLaunch(_ id: UUID, flavor: LaunchFlavor,
                       expecting: Phase.Kind, epoch expectedEpoch: Int) async -> ReadinessOutcome {
-        guard let task = await store.get(id), let adapter = try? registry.get(task.agentId) else {
+        guard let snapshot = await store.get(id), let adapter = try? registry.get(snapshot.agentId) else {
             return .timedOut
         }
-        guard task.phase.kind == expecting, task.sessionEpoch == expectedEpoch else {
+        guard snapshot.phase.kind == expecting, snapshot.sessionEpoch == expectedEpoch else {
             return .superseded   // a newer landing/generation owns the card — never bring up under it
+        }
+        // Receive the shared files BEFORE the agent starts (send nothing at launch; bounded, see
+        // `launchSyncBudget`), then compute which launch writes the project's ignore rules allow. Both await,
+        // so re-read the card and re-check the same fence: it may have moved on, and everything below kills
+        // + ensures.
+        await receiveSharedAtLaunch(snapshot)
+        let grant = await propagationGrant(for: snapshot, adapter: adapter)
+        guard let task = await store.get(id), task.phase.kind == expecting, task.sessionEpoch == expectedEpoch else {
+            return .superseded
         }
         let epoch = task.sessionEpoch
         let grace = config.revivalGraceSeconds
@@ -184,7 +193,8 @@ extension OrchestraService {
                                      access: task.access, trustCwd: trustDecision == .trusted,
                                      orchestraMCPBin: orchestraMCPBin,
                                      autoInstallMCPGlobally: config.autoInstallMCPGlobally,
-                                     observationEndpoint: observationEndpoint)
+                                     observationEndpoint: observationEndpoint,
+                                     propagation: grant)
             let a = adapter, c = ctx
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = adapter.start(ctx)
@@ -205,7 +215,8 @@ extension OrchestraService {
                                      trustCwd: trustDecision == .trusted, seed: seed,
                                      orchestraMCPBin: orchestraMCPBin,
                                      autoInstallMCPGlobally: config.autoInstallMCPGlobally,
-                                     observationEndpoint: observationEndpoint)
+                                     observationEndpoint: observationEndpoint,
+                                     propagation: grant)
             guard let sid = task.agentSessionId else { return .timedOut }
             let a = adapter, c = ctx, priorIds = task.priorSessionIds
             // 5.1.3 pattern: hop the adapter's fs-touching sessionInfo() + the transcript existence check

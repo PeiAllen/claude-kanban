@@ -469,7 +469,8 @@ enum TestEnv {
                             // from config, so the arm still fires deterministically at any setting.
                             sessionLaunchTimeout: 3600,
                             scratchRoot: PathResolver.canonical(base) + "/scratch",
-                            runtimeStateDir: PathResolver.canonical(base) + "/state")
+                            runtimeStateDir: PathResolver.canonical(base) + "/state",
+                            sharedStoreRoot: PathResolver.canonical(base) + "/shared", propagationPath: PathResolver.canonical(base) + "/propagation.json")
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -504,7 +505,8 @@ enum TestEnv {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
                             allowlist: [base], sessionLaunchTimeout: 3600,
-                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state",
+                            sharedStoreRoot: base + "/shared", propagationPath: base + "/propagation.json")
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -707,7 +709,8 @@ enum TestEnv {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
                             allowlist: [base], sessionLaunchTimeout: 3600,
-                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state",
+                            sharedStoreRoot: base + "/shared", propagationPath: base + "/propagation.json")
         let resolver = PathResolver(config: config)
         let sessions = StubSessions()
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)

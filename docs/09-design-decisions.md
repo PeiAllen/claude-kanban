@@ -961,6 +961,43 @@ a path no pattern matches, re-probes with `check-ignore --no-index`, and untrack
 explicit file list that `ls-files` reported as tracked and that is not under an item's exclusions. A negation
 that still re-includes a leaf stops it before the index is touched.
 
+### Lifecycle wiring — where the service is called
+
+`PropagationService` is called from six places. Each one is a fence or an edge, not a timer.
+
+**Launch (`finishLaunch`).** Before the agent starts, `sync(.receiveOnly)` writes the shared files in and sends
+nothing. The receive has its own 10 s budget: the card's `.launching` deadline runs from `phaseChangedAt` and a
+sync spends it, so an unbounded sync could kill a healthy launch with the wrong cause. The anchor is never
+re-stamped to give the time back, because every re-step would move it and a card whose readiness keeps timing out
+would relaunch forever. A sync that outruns the budget is abandoned with a warning and keeps running on its chain.
+The idle sync repeats it, and a late write-out reports a leaf the agent already edited as `.partial`, never
+overwriting it. After the sync the step re-reads the card and returns `.superseded` if the phase or epoch moved.
+Both launch `AdapterContext`s carry a `PropagationGrant`.
+
+**The grant is the ignored launch writes.** `writablePaths` is the adapter's `launchWrites` that the project's
+ignore rules cover, so an Orchestra write never dirties a repo (G6). A non-repo checkout takes every write. An
+unanswerable probe grants nothing. The Claude adapter installs a skill only when its path is granted, so a
+`nil` grant writes nothing. A project that does not ignore `.claude/skills` no longer receives Orchestra skills.
+The Obsidian guard is the same rule for `.obsidian` and `.trash`. It probes a child path of each directory,
+because git cannot match a `dir/` pattern against a directory that does not exist yet.
+
+**Idle edge.** When the agent goes from running to waiting, a detached `sync(.full)` starts. It is an edge:
+an in-waiting change does not repeat it. `unavailable → waiting` is skipped, because a fresh launch starts
+`unavailable` and its first report would double the launch sync. The task re-checks that the card is still
+live at the same epoch, and `sync` returns at once for a checkout that is gone.
+
+**Teardown and re-drive.** The worktree release is behind `flushShared`. A false flush skips the release, warns,
+and leaves the card `archivedComplete` with its tree, so `orchestra shared resolve` still works from that
+directory. The step re-fences with `stillArchiving` after the flush, releases, and calls `reapShared` only when
+the outcome is `.removed`. The boot re-drive runs the same sequence. A borrowed card is not flushed at teardown,
+because nothing is destroyed. The two spawn-rollback releases are not flushed, because nothing was ever synced.
+
+**Boot order.** `orchestrad` installs the sinks, checks the git version and sweeps checkout git dirs before the
+control server, the boot task and the tick loop start. A sweep that overlapped a first sync could delete the git
+dir that sync just attached, and a conflict noticed before the sinks exist is never re-sent. `main.swift` has no
+top-level `await`, so a semaphore orders it, and the work runs `.detached` because top-level code is main-actor
+isolated. The wait fails open after 15 s (logged), so a slow git cannot hold the control socket closed. The sweep's primaries include a borrowed card's primary, located the way `sync` locates it.
+
 ### The `shared` and `shared-policy` verbs
 
 `shared` (`.all`, mutation) has four ops that each call one `PropagationService` entry point: `sync` (`.full`),

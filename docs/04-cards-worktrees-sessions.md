@@ -86,6 +86,13 @@ registrations. The **branch is kept** after removal so the work can be recovered
 exactly what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that
 surviving branch and resumes the agent.
 
+**Shared files and teardown.** Before `release` runs, teardown sends the card's shared-file edits to the store
+(`PropagationService.flush`). If the send cannot finish (a conflict, a busy lock), teardown keeps the worktree and
+warns. Run `orchestra shared resolve` from that directory, or the next boot retries. After a removal, teardown
+deletes the card's checkout git dir. See
+[worktree propagation policy](09-design-decisions.md#worktree-propagation-policy). A borrowed card is not flushed
+at teardown, so edits after its last idle sync stay local.
+
 Borrowed and scratch cards have **no worktree**: a borrowed card's `cwd` is the directory you chose; a
 scratch card's `cwd` is a freshly `mkdir`'d `~/.orchestra/scratch/<id>`.
 

@@ -321,7 +321,10 @@ public struct ClaudeCodeAdapter: Adapter {
         // The provider-neutral bundle owns which Orchestra sections exist and their ordering. Claude's
         // adapter owns only this packaging: two project skills, one directory each, leaving Codex free to
         // project the identical content into its own launch-scoped config instead of a filesystem write.
-        for section in AgentGuidance.sections(for: id) {
+        // Only paths the launch grant allows: an Orchestra write to a path the project does not ignore would
+        // dirty the repo. A nil grant (any non-launch context) writes nothing — the fail-safe direction.
+        let writable = ctx.propagation?.writablePaths ?? []
+        for section in AgentGuidance.sections(for: id) where writable.contains(skillPath(for: section)) {
             _ = AgentGuidance.install(section, at: "\(ctx.cwd)/\(skillPath(for: section))")
         }
     }

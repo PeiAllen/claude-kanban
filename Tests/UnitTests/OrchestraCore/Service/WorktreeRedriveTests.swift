@@ -73,4 +73,35 @@ struct WorktreeRedriveTests {
 
         #expect(!env.worktrees.removed.contains(w.path))       // surfaced debt, never force-dropped
     }
+
+    @Test("the re-drive flushes shared files before releasing; a refused flush keeps the tree")
+    func test_redriveFlushesBeforeReleasing() async throws {
+        let env = TestEnv.make()
+        let ok = UUID(), refused = UUID()
+        let wOk = try await env.svc.worktrees.ensure(repo: "app", branch: "ok", cardId: ok)
+        let wNo = try await env.svc.worktrees.ensure(repo: "app", branch: "no", cardId: refused)
+        try await seed(env.svc, id: ok, cwd: wOk.path, origin: .worktree,
+                       phase: .archived(teardownComplete: true), branch: "ok")
+        try await seed(env.svc, id: refused, cwd: wNo.path, origin: .worktree,
+                       phase: .archived(teardownComplete: true), branch: "no")
+        let noPath = wNo.path
+        let flushed = FlushLog()
+        await env.svc._setFlushSharedForTest { card in
+            flushed.add(card.cwd)
+            return card.cwd != noPath
+        }
+
+        await env.svc.redriveArchivedWorktreeReleases()
+
+        #expect(Set(flushed.all) == [wOk.path, wNo.path])          // flushed before each release attempt
+        #expect(env.worktrees.removed.contains(wOk.path))
+        #expect(!env.worktrees.removed.contains(wNo.path))         // refused flush ⇒ never released
+    }
+}
+
+final class FlushLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    func add(_ p: String) { lock.withLock { paths.append(p) } }
+    var all: [String] { lock.withLock { paths } }
 }

@@ -21,7 +21,8 @@ struct RemoteSpawnTests {
         let (_, _) = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let oid = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
-                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state",
+                            sharedStoreRoot: base + "/shared", propagationPath: base + "/propagation.json")
         let wm = WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         let out = try await wm.ensure(repo: repo, branch: "childR", cardId: UUID(), base: "refs/orch/parents/pr/7")
         #expect(out.created)
@@ -37,7 +38,8 @@ struct RemoteSpawnTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
-                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state",
+                            sharedStoreRoot: base + "/shared", propagationPath: base + "/propagation.json")
         let wm = WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         await #expect(throws: (any Error).self) {
             _ = try await wm.ensure(repo: repo, branch: "childX", cardId: UUID(), base: "refs/orch/parents/pr/999")
