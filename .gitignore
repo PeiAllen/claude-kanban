@@ -2,7 +2,6 @@
 .scratch/
 !.claude/
 .claude/*
-!.claude/commands/
 # Obsidian vault config — "Open notes" registers the worktree root as a vault, which creates
 # .obsidian/ here. Both patterns match the vault script's own .gitignore write, so it no-ops
 # instead of dirtying this tracked file at runtime. (.trash/ = Obsidian's optional in-vault
@@ -37,6 +36,10 @@ Package.resolved
 # Orchestra runtime artifacts (live under ~/Library/Application Support/Orchestra)
 *.sock
 
+# Stray log/error output that shouldn't land in the repo (e.g. proxy.err from merge f52e640).
+*.err
+*.log
+
 # Secrets & signing material — never commit (belt-and-suspenders for a public repo).
 # The app keeps its real credentials in the Keychain at runtime; these patterns just make sure
 # an APNs key, provisioning profile, or a signing xcconfig can't be added by accident.
@@ -61,3 +64,5 @@ App/DemoConfig.local.json
 # iOS device signing — your Apple team id stays out of git (see scripts/build-ios-device.sh)
 App-iOS/DeviceSigning.local.xcconfig
 *.local.xcconfig
+/AGENTS.md
+/CLAUDE.md
