@@ -917,7 +917,9 @@ daemon runs git there unsandboxed. Every `attach` therefore also rewrites `confi
 keys, removes `hooks/` and `info/attributes` from the store and the checkout git dir, and sets the store root to
 `0700`. This is fork-free and writes only when the file would change. A card whose sandbox is off, or a borrowed
 card whose cwd covers `~/.orchestra`, can still plant a file between two attaches, so the boundary stays the
-sandbox. The hardening only shortens what a planted file survives.
+sandbox. The hardening only shortens what a planted file survives. `[extensions]` (`objectFormat`, `refStorage`)
+is kept verbatim rather than filtered like `[core]`: no extension name runs a command, and dropping it would make
+a sha256 or reftable store git dir unreadable on the next attach.
 
 **The out-of-set guard compares against `store/main`.** `send` and `resolve` refuse a path outside the declared set
 or inside an exclusion only when it differs from the store's `main`. HEAD carries the files of an item that was later
@@ -970,7 +972,8 @@ nothing is shared, git is confirmed too old, or the send landed. It is false whe
 stand-down, a busy lock, a refused path, an over-5-MiB edit that the commit left out (`.unsent`), an unreadable git
 version, or an error could lose data. An unreadable git version is unknown, not old, and keeps the tree like an
 unanswerable ignore probe. A `git rev-parse` that fails for any reason other than "not a git repository" is also
-unknown: only proven non-repo output grants writes. `reap` finds the git dir by the hash of
+unknown: only proven non-repo output grants writes, and a checkout whose `.git` entry exists (even a dangling
+worktree gitfile with the same wording) is never read as a proven non-repo. `reap` finds the git dir by the hash of
 the checkout, so it works with the worktree gone. `sweep` deletes a git dir whose recorded path is gone, or one
 that no card and no primary references. With an empty referenced set it runs only the first rule, because an
 unknown card set must never look like "nothing is referenced". The caller passes an empty set when the board loaded

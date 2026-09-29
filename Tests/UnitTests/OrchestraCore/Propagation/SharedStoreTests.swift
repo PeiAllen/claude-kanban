@@ -568,6 +568,27 @@ struct SharedStoreHardeningTests {
         #expect(config == "[core]\n\trepositoryformatversion = 0\n\tbare = false\n")
     }
 
+    @Test("[extensions] (sha256/reftable) survives verbatim; a planted [extensions] command-ish key is not filtered like [core]")
+    func extensionsSectionSurvives() throws {
+        let dir = freshRoot() + "/z.git"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try """
+        [core]
+        \trepositoryformatversion = 1
+        \tbare = true
+        \tfsmonitor = /tmp/evil
+        [extensions]
+        \tobjectformat = sha256
+        \trefstorage = reftable
+
+        """.write(toFile: dir + "/config", atomically: true, encoding: .utf8)
+
+        SharedStore.hardenGitDir(dir)
+
+        let config = try String(contentsOfFile: dir + "/config", encoding: .utf8)
+        #expect(config == "[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n\trefstorage = reftable\n")
+    }
+
     @Test("a clean git-init config is left byte-identical, so a normal attach writes nothing")
     func cleanConfigUntouched() throws {
         let dir = freshRoot() + "/y.git"

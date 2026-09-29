@@ -38,6 +38,19 @@ struct IgnoreProbeTests {
         #expect(!proc.calls.contains { $0.argv.starts(with: ["git", "check-ignore"]) })
     }
 
+    @Test("a dangling .git gitfile (same 'not a git repository' wording) is .unknown, never .notARepo")
+    func danglingGitfileIsUnknown() async {
+        let checkout = tmpCheckout()
+        try! "gitdir: /nowhere".write(toFile: checkout + "/.git", atomically: true, encoding: .utf8)
+        let proc = FakeProc()
+        proc.on(["git", "rev-parse", "--is-inside-work-tree"]) { _ in ProcResult(stdout: "", stderr: "fatal: not a git repository: (null)", exitCode: 128) }
+        proc.on(["git", "check-ignore"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+
+        let result = await IgnoreProbe.classify(["CLAUDE.md"], inCheckout: checkout, proc: proc)
+        guard case .unknown = result else { Issue.record("expected .unknown, got \(result)"); return }
+        #expect(!proc.calls.contains { $0.argv.starts(with: ["git", "check-ignore"]) })
+    }
+
     @Test("rev-parse failing for any other reason (bad config, killed) is .unknown, never .notARepo")
     func revParseOtherFailureIsUnknown() async {
         let checkout = tmpCheckout()

@@ -103,25 +103,39 @@ public actor SharedStore {
         "repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks",
     ]
 
-    /// Rewrites `config` down to the allowlisted `[core]` keys, and removes `hooks/` and `info/attributes`.
-    /// Idempotent and fork-free: it writes only when the file would change.
+    /// Rewrites `config` down to the allowlisted `[core]` keys, keeps `[extensions]` VERBATIM, and removes
+    /// `hooks/` and `info/attributes`. Idempotent and fork-free: it writes only when the file would change.
+    ///
+    /// `[extensions]` (`objectFormat`, `refStorage`, …) is not filtered like `[core]` — no extension NAME
+    /// can make git run a command, and dropping the section silently changes what git thinks the repo is:
+    /// `git init --bare` under `GIT_DEFAULT_HASH=sha256` or `GIT_DEFAULT_REF_FORMAT=reftable` writes it, and
+    /// stripping it makes every later call in that dir misread a sha256/reftable repo as sha1/files.
     static func hardenGitDir(_ dir: String) {
         let fm = FileManager.default
         try? fm.removeItem(atPath: dir + "/hooks")
         try? fm.removeItem(atPath: dir + "/info/attributes")
         let configPath = dir + "/config"
         guard let text = try? String(contentsOfFile: configPath, encoding: .utf8) else { return }
-        var kept: [String] = []
-        var inCore = false
+        var core: [String] = []
+        var extensions: [String] = []
+        var section = ""
         for raw in text.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("[") { inCore = line.lowercased() == "[core]"; continue }
-            guard inCore, let eq = line.firstIndex(of: "=") else { continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
-            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if allowedConfigKeys.contains(key) { kept.append("\t\(key) = \(value)") }
+            if line.hasPrefix("[") { section = line.lowercased(); continue }
+            switch section {
+            case "[core]":
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+                let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+                if allowedConfigKeys.contains(key) { core.append("\t\(key) = \(value)") }
+            case "[extensions]":
+                extensions.append("\t" + line)
+            default:
+                break
+            }
         }
-        let clean = "[core]\n" + kept.joined(separator: "\n") + (kept.isEmpty ? "" : "\n")
+        var clean = "[core]\n" + core.joined(separator: "\n") + (core.isEmpty ? "" : "\n")
+        if !extensions.isEmpty { clean += "[extensions]\n" + extensions.joined(separator: "\n") + "\n" }
         if clean != text { try? clean.write(toFile: configPath, atomically: true, encoding: .utf8) }
     }
 

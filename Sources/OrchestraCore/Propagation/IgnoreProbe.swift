@@ -121,7 +121,11 @@ public enum IgnoreProbe {
         if result.exitCode == 0 {
             return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true" ? .yes : .no
         }
-        return result.stderr.contains("not a git repository") ? .no : .throwOrTimeout
+        // A worktree with a dangling `.git` gitfile (its real gitdir was pruned or moved) fails with the SAME
+        // "not a git repository" wording as a plain non-repo directory. That is a broken repo, not a proven
+        // absent one, so `.git` existing at all — file or directory — keeps it `.throwOrTimeout` → `.unknown`.
+        guard result.stderr.contains("not a git repository") else { return .throwOrTimeout }
+        return FileManager.default.fileExists(atPath: checkout + "/.git") ? .throwOrTimeout : .no
     }
 
     /// True when any directory strictly between `checkout` and `path`'s parent is a symlink.
