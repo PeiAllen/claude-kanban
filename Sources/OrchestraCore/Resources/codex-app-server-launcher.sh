@@ -22,6 +22,21 @@ fi
 server_argv=("${@:1:server_count}")
 shift "$server_count"
 client_argv=("$@")
+
+# The socket pathname is stable across an Orchestra handoff, so the old launcher must finish its
+# complete teardown before a replacement can remove or recreate that pathname. Keep the lock file
+# itself after exit: lockf's advisory lock is on the inode, and removing it would let a new launcher
+# create a different inode while the old launcher still owns the original lock.
+mkdir -p "$(dirname "$socket_path")"
+lock_path="${socket_path}.lock"
+exec 9>"$lock_path"
+if /usr/bin/lockf -t 30 9; then
+  :
+else
+  lock_status=$?
+  exit "$lock_status"
+fi
+
 server_pid=
 
 cleanup() {
@@ -30,6 +45,7 @@ cleanup() {
     wait "$server_pid" 2>/dev/null || true
   fi
   rm -f "$socket_path"
+  exec 9>&-
 }
 
 trap cleanup EXIT
@@ -37,7 +53,6 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkdir -p "$(dirname "$socket_path")"
 rm -f "$socket_path"
 : > "$log_path"
 

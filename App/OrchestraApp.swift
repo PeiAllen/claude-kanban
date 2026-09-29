@@ -3,7 +3,10 @@ import OrchestraUI
 import AppKit
 import OrchestraCore
 
+// Native UI checks supply their own main while compiling the same board/window hierarchy.
+#if !ORCHESTRA_DIFF_CHECKS
 @main
+#endif
 struct OrchestraApp: App {
     @StateObject private var model = BoardModel(platform: MacPlatform.ui)
     @StateObject private var boardZoom = BoardZoom()
@@ -1296,12 +1299,22 @@ final class WindowActivityMonitor: ObservableObject {
                 MainActor.assumeIsolated { self?.recompute() }
             })
         }
-        recompute()
+        // NOT called inline. `bind` runs from `viewDidMoveToWindow`, which AppKit invokes DURING the
+        // hosting view's `layout()` — inside a SwiftUI view update. Publishing there is the
+        // "Publishing changes from within view updates" fault, and at launch the value really does
+        // change (the app is not active yet), so an equality guard alone would not cover it. The
+        // notification-driven recomputes below already arrive outside layout.
+        DispatchQueue.main.async { [weak self] in self?.recompute() }
     }
 
+    /// Idempotent on purpose: `active` is `@Published`, and every no-op assignment invalidates each
+    /// view that observes this monitor. Two occlusion notifications that resolve to the same state
+    /// must cost nothing.
     private func recompute() {
         let visible = window?.occlusionState.contains(.visible) ?? true
-        active = visible && NSApplication.shared.isActive
+        let next = visible && NSApplication.shared.isActive
+        guard next != active else { return }
+        active = next
     }
 
     deinit {

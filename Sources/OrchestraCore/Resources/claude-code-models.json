@@ -1,10 +1,59 @@
 [
-  { "id": "claude-opus-5",    "displayName": "Opus 5",    "family": "claude", "contextWindow": 200000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "claude-fable-5",   "displayName": "Fable 5",   "family": "claude", "contextWindow": 200000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "claude-sonnet-5",  "displayName": "Sonnet 5",  "family": "claude", "contextWindow": 200000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
-  { "id": "claude-haiku-4-5", "displayName": "Haiku 4.5", "family": "claude", "contextWindow": 200000,
-    "flags": { "toolCall": true, "reasoning": true, "vision": true } }
+  {
+    "id": "claude-opus-5-5",
+    "displayName": "Opus 5.5",
+    "family": "claude",
+    "launchId": "claude-opus-5-5[1m]",
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "claude-fable-5-1",
+    "displayName": "Fable 5.1",
+    "family": "claude",
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "claude-sonnet-5",
+    "displayName": "Sonnet 5",
+    "family": "claude",
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "claude-haiku-4-5",
+    "displayName": "Haiku 4.5",
+    "family": "claude",
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": true
+  },
+  {
+    "id": "claude-opus-5",
+    "displayName": "Opus 5",
+    "family": "claude",
+    "launchId": "claude-opus-5[1m]",
+    "flags": {
+      "toolCall": true,
+      "reasoning": true,
+      "vision": true
+    },
+    "listed": false
+  }
 ]

@@ -180,8 +180,8 @@ question or changes `wait` semantics.
 
 ### The Claude Code adapter
 
-`ClaudeCodeAdapter` (`id = "claude-code"`, `bin = "claude"`) catalogs the available models — Opus 5,
-Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
+`ClaudeCodeAdapter` (`id = "claude-code"`, `bin = "claude"`) catalogs the available models from the
+vendored `Resources/claude-code-models.json` and assembles the `claude` command line:
 
 - **start**: `claude [--model <id>] [--permission-mode auto for plan] [read-only flags] [--session-id
   <uuid>] --settings <one file> [--name <title>] [<prompt>]`. The session id is
@@ -312,8 +312,8 @@ core handles the difference purely through the descriptor:
   setting. It is **build-probed** via
   `<bin> --help` and cached, so a stock `codex-rs` build (which lacks both the trust gate and the flag)
   still launches; the change is Codex-local — Claude's argv is untouched.
-- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (the `gpt-5.6`
-  family — Sol / Terra / Luna — = 372 000-token window; `gpt-5.5` = 272 000), `.copy`-bundled
+- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-6-astra`
+  = 1 050 000-token window; the `gpt-5.6` family — Sol / Terra / Luna — = 372 000), `.copy`-bundled
   so the app stays fully offline. This
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*
   (tokens ÷ window), because the Codex TUI reports no percentage of its own.

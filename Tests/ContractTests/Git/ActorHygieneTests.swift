@@ -335,7 +335,7 @@ enum ActorHygieneSupport {
         private let gate: SyncGate
         init(gate: SyncGate) { self.gate = gate }
 
-        func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+        func catalog() -> [AgentModel] { [AgentModel(id: "m1")] }
         func newSessionId() -> String? { nil }
         func start(_ ctx: AdapterContext) -> [String] { [bin] }
         func resume(_ ctx: AdapterContext) -> [String]? { nil }

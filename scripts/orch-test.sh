@@ -110,7 +110,7 @@ case "$cmd" in
 import json, os, sys
 tasks, repo, wt, cid = sys.argv[1:5]
 agent = os.environ.get("AGENT", "claude-code")
-model = ({"id": "gpt-5.5", "displayName": "GPT-5.5", "family": "gpt"} if agent == "codex"
+model = ({"id": "gpt-6-astra", "displayName": "GPT-6 Astra", "family": "gpt"} if agent == "codex"
          else {"id": "claude-opus-4-8", "displayName": "Opus 4.8", "family": "claude"})
 card = {"id": cid, "title": "test card", "titleProvisional": False, "desc": "", "repo": repo,
         "branch": "verify", "cwd": wt, "origin": "worktree", "access": "readWrite",

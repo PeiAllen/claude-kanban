@@ -37,7 +37,7 @@ orchestra send <ref> "use a token bucket"
 orchestra inbox <ref>                # list unresolved inbox messages; includeHistory returns handed-off history
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
 orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card with authored context
-orchestra handoff <ref> "summary…" --model claude-fable-5   # …and RE-SEAT it onto a stronger model
+orchestra handoff <ref> "summary…" --model claude-fable-5-1   # …and RE-SEAT it onto a stronger model
 orchestra trust <path>               # grant a human's write-trust for a dir (interactive only)
 orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
@@ -156,9 +156,12 @@ and appends an idempotent PATH block to the user's shell profile. The daemon-lau
 already includes `~/.local/bin`, so cards started by the app see the commands even before a new shell
 loads the profile.
 
-Existing same-name MCP entries, files, or symlinks are left untouched, and disabling the toggle does not
-remove anything it previously installed. Global MCP config uses the resolved bundled `orchestra-mcp`
-path directly, so a conflicting user-local shim cannot change which bridge a configured host launches.
+Existing same-name MCP entries, files, or symlinks are left untouched while the toggle is enabled. When
+the toggle is off, the next card launch removes the canonical `orchestra` entry from the two user MCP
+configs, preserving unrelated settings; it leaves the CLI symlinks and shell PATH block in place. Global
+MCP config uses the resolved bundled `orchestra-mcp` path directly, so a conflicting user-local shim
+cannot change which bridge a configured host launches. A host that already has an open MCP session must
+be restarted or reconnected before it drops a previously discovered server.
 The app and Linux deployment bundle ship `orchestrad`, `orchestra`, and `orchestra-mcp` together, so
 normal card setup does not require a separate CLI or MCP download.
 

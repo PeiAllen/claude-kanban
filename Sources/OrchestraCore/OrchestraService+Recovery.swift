@@ -51,13 +51,12 @@ extension OrchestraService {
     /// `contextWindow` (the `ctxPct` denominator). Cross-adapter ids still fail — a Codex id is not a
     /// variant of any Claude entry. Case-sensitive: fails closed.
     ///
-    /// Known limit: if the bundled catalog resource fails to load, `models()` is a hardcoded fallback list
-    /// (ClaudeCodeAdapter.swift), so a genuinely valid id could be rejected. That fails closed, and the
-    /// error names the ids we actually know about.
+    /// Reads the FULL catalog (`catalog()`, not the picker's filtered `models()`), so a re-seat onto a
+    /// DEMOTED model (still runnable, just no longer offered as a new choice) is accepted.
     func resolveModelOverride(_ requested: String?, for task: Task) throws -> AgentModel? {
         guard let requested else { return nil }   // absent ⇒ no override (every pre-existing caller)
         let want = requested.trimmingCharacters(in: .whitespacesAndNewlines)
-        let catalog = try registry.get(task.agentId).models()
+        let catalog = try registry.get(task.agentId).catalog()
         // EXACT ids win across the WHOLE catalog before any variant matching, so a catalog that ever carried
         // both a floating and a dated id can't have an exact request captured by an earlier entry's variant.
         // An EXPLICIT empty/whitespace model is a mistake, not "no override": silently relaunching on the
@@ -75,22 +74,31 @@ extension OrchestraService {
     /// `claude-haiku-4-5`)? Used both to accept a dated id on the way in and to recognize the agent's own
     /// dated report as a match on the way out — never a raw `==`, which would false-reject and false-warn.
     ///
-    /// The suffix must be all DIGITS. Accepting any suffix would silently downgrade a typo — `--model
-    /// claude-haiku-4-5-oops` would prefix-match and quietly launch on `claude-haiku-4-5` — which is exactly
-    /// the "fails closed" promise this validation makes. A mistyped id must be an error, not a substitution.
+    /// The suffix must be exactly 8 DIGITS — a real YYYYMMDD date, like every dated vendor id actually is.
+    /// Accepting any all-digit suffix would silently downgrade a typo (`--model claude-haiku-4-5-oops` would
+    /// prefix-match and quietly launch on `claude-haiku-4-5`, defeating the "fails closed" promise this
+    /// validation makes) AND would wrongly collapse a genuine VERSION bump onto its predecessor — the
+    /// published catalog can list `claude-opus-5-5` ("Opus 5.5") and `claude-opus-5` ("Opus 5") as two
+    /// distinct, independently-listed models, and an all-digit rule would treat the former as a dated variant
+    /// of the latter. A mistyped id or a new version must be an error / a new row, never a substitution.
     static func isModelVariant(_ id: String, of base: String) -> Bool {
         guard id.hasPrefix(base + "-") else { return false }
         let suffix = id.dropFirst(base.count + 1)
-        return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
+        return suffix.count == 8 && suffix.allSatisfy(\.isNumber)
     }
 
     /// Did the agent actually come up on the model we asked for? Compared through the catalog, never raw
     /// string equality. An id we cannot resolve at all is treated as a MATCH — this check exists to catch a
-    /// vendor that ignores `--model`, and a false accusation is worse than a missed one.
+    /// vendor that ignores `--model`, and a false accusation is worse than a missed one. A reported id that
+    /// echoes a row's `launchId` (e.g. the 1M-tier bracket `claude-opus-5[1m]`) canonicalizes to that row's
+    /// plain id too — the same match `report()`'s reconciliation makes — or a card re-seated AWAY from a
+    /// launchId-bearing model whose vendor ignores `--model` would go undetected: the bracket form is
+    /// neither an exact catalog id nor an all-digit dated variant, so it would fall through to "unknown id".
     func modelHonored(reported: String, requested: String, agentId: String) -> Bool {
         if reported == requested { return true }
-        let ids = ((try? registry.get(agentId))?.models() ?? []).map(\.id)
-        guard let canon = ids.first(where: { reported == $0 || Self.isModelVariant(reported, of: $0) })
+        let catalog = (try? registry.get(agentId))?.catalog() ?? []
+        guard let canon = catalog.first(where: { reported == $0.id || reported == $0.launchId
+                                                  || Self.isModelVariant(reported, of: $0.id) })?.id
         else { return true }   // unknown id — cannot judge, so do not accuse
         return canon == requested
     }

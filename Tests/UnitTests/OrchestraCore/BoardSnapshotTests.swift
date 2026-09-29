@@ -13,7 +13,7 @@ final class NilInfoAdapter: Adapter, @unchecked Sendable {
     let bin = "fake-agent"
     let enabled = true
     let capabilities: AgentCapabilities = .stub
-    func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+    func catalog() -> [AgentModel] { [AgentModel(id: "m1")] }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
     func start(_ ctx: AdapterContext) -> [String] { [bin] }
     func resume(_ ctx: AdapterContext) -> [String]? {

@@ -367,9 +367,12 @@ a quick review doesn't need "View changes → Zed". It has a **baseline toggle**
 `parentBranch`, for stacked cards) — and reloads on card selection and on baseline change. The diff text is
 fetched from the daemon's app-only [`diffText`](05-command-reference.md#server-only-built-in-methods)
 endpoint (difftastic-rendered when `difft` is installed, git's colored diff otherwise), parsed into the
-structured `DiffRows` line model, and rendered **as text** — one `NSTextView` per file (`DiffTextRenderer`),
-not a view per line. The row bands and the line-number gutter are drawn by the text view itself, over only
-the visible line fragments, so cost and memory stay flat as a diff grows; see
+structured `DiffRows` line model, and rendered **as text** inside an AppKit `NSTableView`
+(`DiffFileList`). The table reuses file views as they scroll into view, with one `NSTextView` per visible
+unified file or two in split mode. File heights are measured once per content snapshot and supplied to
+the table, so scrolling does not change the document's estimated height. Row bands and line-number
+gutters are drawn over the visible text fragments; the parsed text and cached measurements still grow
+with the diff, while mounted editors are limited to the visible files and AppKit's reuse pool. See
 [Render the diff as text, not as views](09-design-decisions.md#render-the-diff-as-text-not-as-views).
 Selection is per file and line numbers are drawn rather than inserted, so copying yields clean code. An
 **Open in Zed** button opens the full changes, and a huge diff is capped daemon-side. A non-git (`.scratch`/`.borrowed`) or zero-change card

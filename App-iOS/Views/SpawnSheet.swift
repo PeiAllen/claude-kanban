@@ -79,26 +79,12 @@ struct SpawnSheet: View {
     /// success; a failure keeps it so the next tap reuses it.
     @State private var pendingSpawnId: UUID?
 
-    // MARK: agents / models (sourced from the daemon; falls back to Claude Code when it hasn't answered)
+    // MARK: agents / models (sourced from the daemon)
 
-    /// The Claude Code fallback, built from OrchestraKit types only (iOS doesn't link OrchestraCore, so
-    /// it can't construct `ClaudeCodeAdapter()` like the desktop sheet). Used only until `model.agents`
-    /// arrives — never invents providers the daemon hasn't wired up.
-    ///
-    /// `capabilities: nil` for the same reason: this sheet only needs an agent's name/icon/models to
-    /// draw its pickers, and what the daemon's adapter advertises is not ours to guess. The real profile
-    /// arrives with `model.agents`.
-    private static let claudeFallback = AgentInfo(
-        id: "claude-code", name: "Claude Code", icon: "sparkle",
-        models: [
-            AgentModel(id: "claude-opus-5", displayName: "Opus 5", family: "claude"),
-            AgentModel(id: "claude-fable-5", displayName: "Fable 5", family: "claude"),
-            AgentModel(id: "claude-sonnet-5", displayName: "Sonnet 5", family: "claude"),
-            AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
-        ],
-        capabilities: nil)
-
-    private var agentOptions: [AgentInfo] { model.agents.isEmpty ? [Self.claudeFallback] : model.agents }
+    /// The daemon already sends the real catalog via `model.agents`. Before it arrives (a sub-second
+    /// gap at sheet open), the pickers below draw empty — never a hand-maintained duplicate of the
+    /// vendored model table.
+    private var agentOptions: [AgentInfo] { model.agents }
     private var selectedAgent: AgentInfo? { agentOptions.first { $0.id == agentSel } ?? agentOptions.first }
     private var modelOptions: [AgentModel] { selectedAgent?.models ?? [] }
 
@@ -230,6 +216,9 @@ struct SpawnSheet: View {
             .onChange(of: model.tasks.count) { seedRepoIfNeeded() }
             // Daemon repos can arrive after mount too; seed once they do.
             .onChange(of: model.spawnRepoCandidates.count) { seedRepoIfNeeded() }
+            // The daemon's agent/model catalog can arrive after mount too (SpawnSheet.claudeFallback's
+            // removal means the picker starts genuinely empty, not pre-filled) — seed once it does.
+            .onChange(of: model.agents.count) { seedAgentIfNeeded() }
         }
     }
 
@@ -424,11 +413,18 @@ struct SpawnSheet: View {
         }
         #endif
         seedRepoIfNeeded()
+        seedAgentIfNeeded()
+        startIn = model.spawnDefaultColumn == .plan ? .plan : .impl
+        refreshTrust()
+    }
+
+    /// Picks a default agent + model once `model.agents` is non-empty. Guarded (`isEmpty`/membership
+    /// checks only), so re-running it after the daemon's catalog arrives late never clobbers a
+    /// selection the user already made — same idempotency contract as `seedRepoIfNeeded`.
+    private func seedAgentIfNeeded() {
         if agentSel.isEmpty { agentSel = model.config.defaultAgentId }
         if !agentOptions.contains(where: { $0.id == agentSel }) { agentSel = agentOptions.first?.id ?? "" }
         if modelSel.isEmpty { modelSel = defaultModelForAgent() }
-        startIn = model.spawnDefaultColumn == .plan ? .plan : .impl
-        refreshTrust()
     }
 
     /// Fill the repo field from the first known repo — once, and only while it's still empty, so a

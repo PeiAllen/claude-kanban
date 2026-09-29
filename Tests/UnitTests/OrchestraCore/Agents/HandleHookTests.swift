@@ -217,7 +217,14 @@ import TestSupport
     @Test("a provider SessionStart observed before the live landing survives the readiness handoff")
     func sessionStartBeforeLiveLanding() async throws {
         let adapter = HookSignalTestAdapter(capabilities: .claudeCode)
-        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        // A frozen clock, never advanced: the readiness grace timeout (`OrchestraService+Recovery.swift`)
+        // sleeps on THIS clock, so it never fires — the `report(...)` below always wins the race to
+        // resolve the waiter. Before this, the confirming report raced a REAL 1s grace timer (TestEnv's
+        // default `grace: Int = 1`) against several real actor hops and lost under a loaded machine
+        // (concurrent xcodebuild): the card parked in `.launching` forever and the outer `pollUntil` spun
+        // out its full 120s budget. See docs/08 (§the tiered test suite — real-clock races).
+        let clock = TestClock()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]), clock: clock)
         let card = try await env.svc.spawn(
             SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
                        branch: "hook-pre-live", agentId: adapter.id)
@@ -423,7 +430,10 @@ import TestSupport
     func messageEndpointBuffersUntilLive() async throws {
         let senders = MessageSenderRecorder()
         let adapter = HookSignalTestAdapter(capabilities: .claudeCode, messageSenders: senders)
-        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        // Frozen clock — see `sessionStartBeforeLiveLanding`'s comment: without it, this test's single
+        // confirming `report(...)` races the readiness grace timeout for real, and can lose under load.
+        let clock = TestClock()
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]), clock: clock)
         let card = try await env.svc.spawn(
             SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(env.base),
                        branch: "message-buffer", agentId: adapter.id)
@@ -593,7 +603,7 @@ private struct HookSignalTestAdapter: Adapter {
         self.derivedMessageSocketPath = derivedMessageSocketPath
     }
 
-    func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+    func catalog() -> [AgentModel] { [AgentModel(id: "m1")] }
     func newSessionId() -> String? { "hook-session" }
     func start(_ ctx: AdapterContext) -> [String] { [bin] }
     func resume(_ ctx: AdapterContext) -> [String]? { nil }

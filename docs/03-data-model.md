@@ -321,7 +321,7 @@ default-on-malformed discipline.
 | `worktreeAddTimeout` | `600` | Wall-clock bound (s) on `git worktree add` — generous; worst known checkout ≈9s. |
 | `sessionLaunchTimeout` | `30` | Wall-clock bound (s) on a launch; a card `launching`/`relaunching` past it is classified dead. |
 | `controlTimeout` | `15` | Wall-clock bound (s) on tmux control verbs + fast git queries. |
-| `autoInstallMCPGlobally` | `false` | On the next card launch, add missing `orchestra` MCP entries to Claude and Codex global config, install user-scoped `orchestra` and `orchestra-mcp` shims in `~/.local/bin`, and add an idempotent PATH block to a shell profile. Existing entries and files are left unchanged. |
+| `autoInstallMCPGlobally` | `false` | When enabled, the next card launch adds missing `orchestra` MCP entries to Claude and Codex global config, installs user-scoped `orchestra` and `orchestra-mcp` shims in `~/.local/bin`, and adds an idempotent PATH block to a shell profile. When disabled, the next card launch removes the canonical global `orchestra` entries while preserving launch-local card configuration and user-local CLI shims. |
 | `statusLineMode` | `passthroughGlobal` | How the agent's status line is rendered (see below). |
 | `customStatusLine` | (unset) | The command for `statusLineMode = .custom`. |
 

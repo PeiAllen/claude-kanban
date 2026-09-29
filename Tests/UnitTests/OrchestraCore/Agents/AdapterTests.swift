@@ -47,6 +47,36 @@ struct AdapterTests {
         #expect(argv.last == "Add OAuth login\nwith Google")
     }
 
+    @Test("start(ctx) launches claude-opus-5 on its 1M-context launchId, never the plain 200k id")
+    func startArgvUsesOpusLaunchId() {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-5", sessionId: "id", prompt: "hi")
+        let argv = adapter.start(ctx)
+        #expect(adjacent(argv, "--model", "claude-opus-5[1m]"))
+        #expect(!argv.contains("claude-opus-5"))   // only the bracketed launchId appears in argv
+    }
+
+    @Test("start(ctx) still launches a DEMOTED model on its launchId — modelFlag reads catalog(), not the filtered models()")
+    func startArgvDemotedModelKeepsLaunchId() throws {
+        // A model that left the picker (listed: false) but still carries a launchId from when it was
+        // probed. modelFlag must resolve this through catalog() (every row) — reading models() (the
+        // picker-filtered set) would silently drop the launchId the moment a model is demoted, exactly
+        // the downgrade bug this PR exists to fix, reopened for the demoted case.
+        let demoted = ClaudeCodeAdapter(catalogOverride: [
+            AgentModel(id: "claude-retired-5", displayName: "Retired 5", family: "claude",
+                       launchId: "claude-retired-5[1m]", listed: false),
+        ])
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-retired-5", sessionId: "id", prompt: "hi")
+        #expect(adjacent(demoted.start(ctx), "--model", "claude-retired-5[1m]"))
+        #expect(adjacent(try #require(demoted.resume(ctx)), "--model", "claude-retired-5[1m]"))
+    }
+
+    @Test("start(ctx) with no catalog launchId (e.g. sonnet) passes the plain id unchanged")
+    func startArgvNoLaunchIdPassesPlainId() {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-5", sessionId: "id", prompt: "hi")
+        let argv = adapter.start(ctx)
+        #expect(adjacent(argv, "--model", "claude-sonnet-5"))
+    }
+
     @Test("restart-style start: ctx.name preserved, NO positional prompt")
     func startNameOverride() {
         // restart hands name = preserved title and prompt = nil (blank session).
@@ -73,6 +103,13 @@ struct AdapterTests {
         #expect(adjacent(argv, "--model", "claude-opus-4-8"))
         #expect(!argv.contains("--session-id"))
         #expect(!argv.contains("should be ignored"))
+    }
+
+    @Test("resume(ctx) also launches claude-opus-5 on its 1M-context launchId")
+    func resumeArgvUsesOpusLaunchId() throws {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-5", sessionId: "sess-9")
+        let argv = try #require(adapter.resume(ctx))
+        #expect(adjacent(argv, "--model", "claude-opus-5[1m]"))
     }
 
     @Test("resume returns nil without a session id")
@@ -223,8 +260,8 @@ struct ClaudeDelegationTests {
         }
     }
 
-    @Test("global MCP installation is opt-in and add-only")
-    func globalMCPInstallIsOptIn() throws {
+    @Test("global MCP installation is opt-in and disabling it removes the stale Claude entry")
+    func globalMCPInstallIsOptInAndReconciles() throws {
         let home = tmpCwd()
         let cwd = tmpCwd()
         defer {
@@ -249,6 +286,13 @@ struct ClaudeDelegationTests {
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
         #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
             .contains("Orchestra user-local command path"))
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
+        let removedData = try Data(contentsOf: URL(fileURLWithPath: path))
+        let removedRoot = try #require(JSONSerialization.jsonObject(with: removedData) as? [String: Any])
+        let removedServers = try #require(removedRoot["mcpServers"] as? [String: Any])
+        #expect(removedServers["orchestra"] == nil)
     }
 
     @Test("start(ctx) argv + env are unchanged by the added materialization")
@@ -263,5 +307,48 @@ struct ClaudeDelegationTests {
         // B3: Claude env now carries the resume-modal suppression thresholds (see ResumeModalEnvTests);
         // prepareToLaunch/start are unaffected by them (env is a separate launch-time seam).
         #expect(a.env.keys.sorted() == ["CLAUDE_CODE_RESUME_THRESHOLD_MINUTES", "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD"])
+    }
+}
+
+/// A demoted model must leave the picker (`models()`) while staying resolvable (`catalog()`) — a card
+/// already running it keeps its display label and its `--model` re-seat. Exercised against a minimal
+/// conformer, not the real vendored tables, which carry no demoted rows today.
+@Suite("Adapter protocol — models()/catalog() split on `listed`")
+struct AdapterCatalogSplitTests {
+    private struct DemotingAdapter: Adapter {
+        let id = "demo"
+        let name = "Demo"
+        let icon = "sparkle"
+        let bin = "demo-bin"
+        let enabled = true
+        let capabilities = AgentCapabilities.stub
+        func catalog() -> [AgentModel] {
+            [AgentModel(id: "current", displayName: "Current", family: "other"),
+             AgentModel(id: "retired", displayName: "Retired", family: "other", listed: false)]
+        }
+        func newSessionId() -> String? { nil }
+        func start(_ ctx: AdapterContext) -> [String] { [] }
+        func resume(_ ctx: AdapterContext) -> [String]? { nil }
+        func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }
+        func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? { nil }
+    }
+
+    private let adapter = DemotingAdapter()
+
+    @Test("models() (the picker) excludes a demoted row; catalog() keeps it")
+    func demotedRowLeavesPickerStaysInCatalog() {
+        #expect(adapter.models().map(\.id) == ["current"])
+        #expect(adapter.catalog().map(\.id) == ["current", "retired"])
+    }
+
+    @Test("model(for:) resolves a demoted id through the FULL catalog, with its real metadata")
+    func modelForResolvesDemotedId() {
+        #expect(adapter.model(for: "retired").displayName == "Retired")
+    }
+
+    @Test("adapter(forModel:) still routes a demoted id — a re-seat onto it keeps working")
+    func adapterForModelRoutesDemotedId() {
+        let registry = AgentRegistry(adapters: [adapter])
+        #expect(registry.adapter(forModel: "retired")?.id == "demo")
     }
 }

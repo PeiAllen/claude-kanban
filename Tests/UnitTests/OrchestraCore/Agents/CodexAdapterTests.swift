@@ -132,18 +132,18 @@ struct CodexAdapterArgvTests {
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
-    @Test("models() is non-empty (fallback when no vendored table)")
+    @Test("models() is non-empty")
     func models() { #expect(!adapter.models().isEmpty) }
 
     @Test("start(ctx) for a default card: model, trailing prompt, and NO read-only clamp")
     func startArgv() {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5",
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-6-astra",
                                  prompt: "Add OAuth login\nwith Google")
         let argv = adapter.start(ctx)
         #expect(argv.first == "codex")
         #expect(!argv.contains("read-only"))                   // default = Codex's own permissioning
         #expect(!argv.contains("never"))
-        #expect(adjacent(argv, "-m", "gpt-5.5"))
+        #expect(adjacent(argv, "-m", "gpt-6-astra"))
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
     }
 
@@ -159,7 +159,7 @@ struct CodexAdapterArgvTests {
         let testAdapter = CodexAdapter(binOverride: "codex", hookTrustBypass: false)
         let ctx = AdapterContext(
             cwd: "/wt/with spaces",
-            model: "gpt-5.5",
+            model: "gpt-6-astra",
             prompt: "go",
             orchestraBin: "/abs/orchestra",
             access: .readOnly,
@@ -172,7 +172,7 @@ struct CodexAdapterArgvTests {
             context: ctx,
             agentId: "codex",
             clientArguments: CodexLaunchConfiguration.flags(cwd: ctx.cwd)
-                + ["-s", "read-only", "-a", "never", "-m", "gpt-5.5"],
+                + ["-s", "read-only", "-a", "never", "-m", "gpt-6-astra"],
             positional: ["go"]
         ))
 
@@ -196,7 +196,7 @@ struct CodexAdapterArgvTests {
     @Test("start and resume select the same profile file without shadowing untrusted native project trust")
     func launchScopedConfigIsSharedByStartAndResume() throws {
         let cwd = "/wt/with \"quote\" and \\ slash"
-        let ctx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: "sess-9", prompt: "go",
+        let ctx = AdapterContext(cwd: cwd, model: "gpt-6-astra", sessionId: "sess-9", prompt: "go",
                                  orchestraBin: "/abs/orchestra", trustCwd: false,
                                  orchestraMCPBin: "/abs/orchestra-mcp")
         let start = try profile(ctx)
@@ -288,20 +288,20 @@ struct CodexAdapterArgvTests {
 
     @Test("start with no prompt has no trailing positional")
     func startNoPrompt() {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: nil)
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-6-astra", prompt: nil)
         let argv = adapter.start(ctx)
-        #expect(argv.last == "gpt-5.5")   // last token is the -m value, no prompt
+        #expect(argv.last == "gpt-6-astra")   // last token is the -m value, no prompt
     }
 
     @Test("resume(ctx) is `resume <id>`, model, NO prompt; default card is unclamped")
     func resumeArgv() throws {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", sessionId: "sess-9",
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-6-astra", sessionId: "sess-9",
                                  prompt: "should be ignored")
         let argv = try #require(adapter.resume(ctx))
         #expect(adjacent(argv, "resume", "sess-9"))
         #expect(!argv.contains("read-only"))                   // default = Codex's own permissioning
         #expect(!argv.contains("never"))
-        #expect(adjacent(argv, "-m", "gpt-5.5"))
+        #expect(adjacent(argv, "-m", "gpt-6-astra"))
         #expect(!argv.contains("should be ignored"))
     }
 
@@ -335,7 +335,7 @@ struct CodexAdapterArgvTests {
     @Test("start/resume carry --dangerously-bypass-hook-trust when the build supports it")
     func hookTrustBypassPresentWhenSupported() throws {
         let a = CodexAdapter(binOverride: "codex", hookTrustBypass: true)
-        let start = a.start(AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: "go"))
+        let start = a.start(AdapterContext(cwd: "/wt", model: "gpt-6-astra", prompt: "go"))
         #expect(start.contains("--dangerously-bypass-hook-trust"))
         #expect(start.last == "go")                            // positional prompt still last
         let resume = try #require(a.resume(AdapterContext(cwd: "/wt", sessionId: "sess-9", seed: "drain")))
@@ -500,7 +500,8 @@ struct CodexModelRoutingTests {
     @Test("adapter(forModel:) routes a model id to its owning adapter (catalog-driven)")
     func routesModelToOwningAdapter() {
         let reg = AgentRegistry()                                   // Claude + Codex, both enabled
-        #expect(reg.adapter(forModel: "gpt-5.5")?.id == "codex")
+        #expect(reg.adapter(forModel: "gpt-99-fictional") == nil)
+        #expect(reg.adapter(forModel: "gpt-6-astra")?.id == "codex")
         let claudeModel = try! reg.get("claude-code").models().first!.id
         #expect(reg.adapter(forModel: claudeModel)?.id == "claude-code")
         #expect(reg.adapter(forModel: "no-such-model") == nil)     // unknown → nil (never fabricates)
@@ -510,7 +511,8 @@ struct CodexModelRoutingTests {
     func modelsUnionAllAdapters() async {
         let env = TestEnv.make(registry: AgentRegistry())          // real Claude + Codex
         let ids = await env.svc.models().map(\.id)
-        #expect(ids.contains("gpt-5.5"))                        // Codex now surfaced in the picker
+        #expect(!ids.contains("gpt-5.4"))                       // demoted models stay out of the picker
+        #expect(ids.contains("gpt-6-astra"))                    // Astra is surfaced by Codex
         #expect(ids.contains { $0.contains("claude") })            // Claude still there
         // Default agent (claude-code) lists first, so the picker's default entry stays a Claude model.
         #expect(AgentRegistry().adapter(forModel: ids.first!)?.id == "claude-code")
@@ -534,7 +536,7 @@ struct CodexModelRoutingTests {
         let codex = try! #require(agents.first { $0.id == "codex" })
         #expect(codex.name == "Codex")
         #expect(!codex.icon.isEmpty)
-        #expect(codex.models.contains { $0.id == "gpt-5.5" })  // carries its own catalog
+        #expect(codex.models.first?.id == "gpt-6-astra")        // Astra is the Codex default
     }
 
     @Test("spawn with a Codex model (no agentId) lands on the Codex adapter")
@@ -543,13 +545,66 @@ struct CodexModelRoutingTests {
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
         // Model only — the way the app's flat picker sends it — no agentId.
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.5"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-6-astra"))
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.first == "/bin/bash")                         // launched the app-server/TUI wrapper
         #expect(argv.contains("fake-codex"))                       // whose provider binary is Codex
         #expect(!argv.contains("read-only"))                        // default card = Codex's own permissioning
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("a model-less Codex spawn uses Astra as the adapter default")
+    func modelLessCodexSpawnUsesAstraDefault() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base))
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAwaited(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", agentId: "codex")
+        )
+        #expect(task.agentId == "codex")
+        #expect(task.model.id == "gpt-6-astra")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("a model-less Codex spawn ignores a retired configured default")
+    func modelLessCodexSpawnIgnoresRetiredConfiguredDefault() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base), defaultModel: "gpt-99-fictional")
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAwaited(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", agentId: "codex")
+        )
+        #expect(task.model.id == "gpt-6-astra")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("a model-less Codex spawn ignores a foreign configured default")
+    func modelLessCodexSpawnIgnoresForeignConfiguredDefault() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base), defaultModel: "m1")
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAwaited(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", agentId: "codex")
+        )
+        #expect(task.model.id == "gpt-6-astra")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("a model-less Codex spawn honors a valid configured default")
+    func modelLessCodexSpawnHonorsValidConfiguredDefault() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base), defaultModel: "gpt-5.6-sol")
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAwaited(
+            env.svc,
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", agentId: "codex")
+        )
+        #expect(task.model.id == "gpt-5.6-sol")
         try? FileManager.default.removeItem(atPath: base)
     }
 
@@ -570,7 +625,7 @@ struct CodexModelRoutingTests {
         let repo = TestEnv.repo(env.base)
         // A Codex model BUT an explicit claude-code agentId — the explicit agent must win.
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
-            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.5", agentId: "claude-code"))
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-6-astra", agentId: "claude-code"))
         #expect(t.agentId == "claude-code")
         try? FileManager.default.removeItem(atPath: base)
     }
@@ -646,8 +701,8 @@ struct CodexGuidanceTests {
         #expect(!adapter.start(ctx).contains("-c"))
     }
 
-    @Test("global MCP installation is opt-in and uses the Codex home")
-    func globalMCPInstallIsOptIn() throws {
+    @Test("global MCP installation is opt-in and disabling it removes the stale Codex entry")
+    func globalMCPInstallIsOptInAndReconciles() throws {
         let home = NSTemporaryDirectory() + "codex-mcp-" + UUID().uuidString
         defer { try? FileManager.default.removeItem(atPath: home) }
         let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false, userHome: home)
@@ -667,6 +722,11 @@ struct CodexGuidanceTests {
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
         #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
             .contains("Orchestra user-local command path"))
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
+        let removed = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!removed.contains("[mcp_servers.orchestra]"))
     }
 
     @Test("prepareToLaunch is load-bearing: no profile file → `-p` would resolve nothing")

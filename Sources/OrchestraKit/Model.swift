@@ -268,16 +268,28 @@ public struct ModelFlags: Codable, Sendable, Equatable, Hashable {
 }
 
 public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
-    public let id: String          // launch id, passed to the adapter
+    public let id: String          // STORAGE id: picker label, routing, resolveModelOverride, task.model.id
     public var displayName: String // human label
     public var family: String      // "claude" | "gpt" | "gemini" | "other"
     public var contextWindow: Int? // max context tokens (offline table); nil = unknown → gauge hidden
     public var flags: ModelFlags?  // capability flags (offline table); nil = unknown
+    /// The id to actually pass at launch, when it differs from `id` — e.g. `claude-opus-5[1m]` for the
+    /// 1M-context tier. nil means launch on `id` unchanged. Kept OFF `id` deliberately: `id` is what
+    /// storage, the picker, and re-seat validation compare against, and a bracketed id would trip
+    /// `resolveModelOverride`'s all-digit dated-variant rule. Only the adapter's launch-argv builder
+    /// (`ClaudeCodeAdapter.modelFlag`) reads this.
+    public var launchId: String?
+    /// Whether this row appears in the picker (`Adapter.models()`). nil/true = listed; false = DEMOTED —
+    /// the vendor no longer offers it as a new choice, but it still resolves through `Adapter.catalog()`
+    /// so a card already running it keeps its display label and its `--model` re-seat.
+    public var listed: Bool?
 
     public init(id: String, displayName: String, family: String,
-                contextWindow: Int? = nil, flags: ModelFlags? = nil) {
+                contextWindow: Int? = nil, flags: ModelFlags? = nil, launchId: String? = nil,
+                listed: Bool? = nil) {
         self.id = id; self.displayName = displayName; self.family = family
-        self.contextWindow = contextWindow; self.flags = flags
+        self.contextWindow = contextWindow; self.flags = flags; self.launchId = launchId
+        self.listed = listed
     }
 
     /// Derive a sensible label + family from a bare id (used for un-cataloged ids + legacy data).

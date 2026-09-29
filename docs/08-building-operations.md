@@ -28,6 +28,43 @@ scripts/test.sh --e2e        # + built-binary / slow-repo e2e
 scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE at the merge gate
 ```
 
+The diff inspector also has native AppKit checks, because SwiftPM's unit tests do not mount the app's
+views or enter `NSScroller`'s mouse-tracking loop. Run these on a Mac with a logged-in desktop; scroll,
+benchmark, and inspection modes also require it to be unlocked so the private test window can become active:
+
+```sh
+scripts/test-diff-inspector.sh
+scripts/test-diff-inspector.sh --skip-build --mode scroll --files 500
+scripts/test-diff-inspector.sh --skip-build --mode scroll --split --churn
+scripts/test-diff-inspector.sh --skip-build --mode scroll --gesture wheel
+scripts/test-diff-inspector.sh --skip-build --mode benchmark --files 100
+scripts/test-diff-inspector.sh --skip-build --mode inspect --split
+```
+
+The script compiles current `App/` sources and `Tests/AppTests/` into a private, optimized app under
+`.scratch/diff-inspector-tests`, using the shared build mutex. The default checks cover cached geometry,
+Unicode text height, bounded editor creation, selection through reuse, collapse anchoring, unified
+and split layouts, and nested wheel routing. Scroll mode opens the real board and inspector hierarchy with an in-memory diff
+transport, then drives native scrollbar drags or wheel events. It checks that the main loop responds
+and the unchanged diff keeps a stable document height; knob drags must reach both endpoints. An
+external watchdog samples and terminates only the private test process if it stalls. Logs, source and
+binary hashes, and timing results stay in the scratch directory. The runner neither installs the app
+nor connects to the live daemon.
+
+The full-app fixture uses a fixed 2560×1409 window on the primary display, matching the investigation's
+viewport, and rejects a moved or resized window. The display's usable area must fit that frame.
+Accessory test windows omit the close button so AeroSpace leaves them unmanaged; the runner closes
+the process after the checks. Functional gestures may continue after focus changes, while benchmark
+loading still requires an active, visible window.
+
+Use `--fixture path/to/file.diff` to replay a captured patch. `--swiftterm-products /path/to/Release`
+optionally links an existing matching SwiftTerm build; without it, the surrounding terminal surface
+uses the app's conditional fallback. Benchmark numbers describe the whole private app process, so
+keep that build option and the fixture fixed when comparing changes. `--skip-build` reuses the last
+test binary and is only appropriate while its sources are unchanged.
+Inspection mode holds the private window open for 75 seconds for a visual check, without driving
+scroll gestures. The private test process keeps the display awake while it is running.
+
 > **The suite is tiered into three targets that mirror `Sources/`.** `Tests/UnitTests` (the mirror
 > layout, directory-for-directory with `Sources/`) runs everything over `FakeProc` + `TestClock` in
 > per-test private roots and **forks nothing** — pure, parallel-safe, instant. `Tests/ContractTests`
@@ -53,6 +90,41 @@ scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE a
 > roots via `TestEnv`), and **no real forks** (`FakeProc` is the default seam; `RealProc`/`makeReal`
 > are banned from the unit tier and live in `ContractTests`). New tests go in the mirror position of
 > the source file they cover.
+
+> **`--all` must be deterministic under load, not just when idle.** A test can hand-deliver a
+> readiness signal directly (a `report(sessionSource:)` call that resolves a launch's readiness
+> waiter). That signal then races the production readiness **grace timeout** — a real
+> `Clock.sleep`, on `TestEnv`'s own default clock when a test omits `clock:`. Under normal
+> scheduling the signal always wins by a wide margin. Under a loaded machine (another card's
+> concurrent build) it can lose, and the card then parks in `.launching` forever. `TestEnv.make`
+> already accepts an injected `TestClock` for this: pass one, and never advance it, so the timeout
+> can never fire. Use this pattern whenever a test hand-delivers a readiness signal outside the
+> shared, self-healing `TestEnv.spawnAwaited`/`reconcileToLive` helpers — those helpers already
+> retry past this race and need no injected clock.
+>
+> **Freezing the clock is only safe when something else still bounds the test.** `awaitReadiness`'s
+> continuation has no cancellation handling, so if a test `await`s the production step directly
+> (an `async let`, with no `pollUntil` wrapping it), a frozen clock removes the ONLY way a genuine
+> regression could ever resolve the wait — a red test becomes an indefinite hang of `--all` instead,
+> which is worse than the flake it replaces. Freeze the clock only where an outer `pollUntil` (or
+> equivalent bounded wait) still owns the test's own timeout; otherwise keep the real, generous
+> `grace:` the test already had.
+>
+> **A `ContractTests` deadline test may legitimately race a real clock.** Proving that a real
+> socket write or connect enforces its own deadline is this tier's job, and no injected clock can
+> fake a kernel `poll(2)` timeout. But the assertion's bound must absorb scheduling noise, not race
+> it with a thin margin. Measured under one concurrent build, a socket-write deadline test overshot
+> its 2.5s bound (a 2s deadline plus 500ms of slack) by 210ms. The fix widens the margin — a flat
+> addition (scheduler-noticing latency doesn't scale with the configured deadline), sized by
+> extrapolating that one measurement against this project's own documented worst-case build-
+> contention multiplier rather than picking a round number, and reasoned in the code
+> (`ClaudeMessageSenderTests.deadlineMargin`) — never the deadline itself. A same-file rendezvous
+> helper that hops through a low-QoS (`.utility`)
+> dispatch queue to wait on a real peer thread should use `.userInitiated` instead, so the wait
+> itself does not get deprioritized under load. For pacing an in-flight exchange so a deadline
+> reliably interrupts it mid-stream, use a real per-frame delay (a small `Thread.sleep` between
+> writes), as `CodexAppServerTransportTests`'s notification-flood tests already do. Racing raw read
+> throughput against a fixed frame count instead breaks the other way, on a fast, idle machine.
 
 > **Always build through `scripts/` — never a bare `swift build`.** Builds here are
 > **contention-bound, not CPU-bound**. Measured: one cold `swift build --build-tests` takes
@@ -338,6 +410,7 @@ Three operational consequences of the free tier:
 | `scripts/docs-shots.sh` | Regenerate **every image in `docs/images/`** — the README hero GIF (an orchestrator agent fanning work out over MCP), the keyboard-nav GIF (selection, hints, search, palette, and drilling into a root's subtree), the board/inspector/diff/docs/spawn stills, the post-fan-out board, and the iPhone shot — from a real isolated stack running **real agents** on throwaway repos (`scripts/fixtures/demo-board.json`). The fixture spawns an attached read-only reviewer (`--cwd <another card's worktree> --read-only`, a borrowed reviewer) so the hierarchy/attachment UI has something to render. Isolated by the same `$HOME`-is-the-lever contract as `iso-stack.sh`, with the demo orchestrator's `orchestra` MCP server pinned by `ORCHESTRA_SOCK` to the *isolated* daemon, so its `spawn` calls physically cannot reach your live board. Captures by window id; never foregrounds your screen. **These agents run for real and they bill.** Run it after a UI change: `scripts/docs-shots.sh` (add `--keep` to leave the stack up, then `scripts/docs-shots.sh down`). |
 | `scripts/gifify.swift` | Assemble PNG frames into an animated GIF with macOS **ImageIO** (`CGImageDestination`) — so the doc images need no `ffmpeg`/ImageMagick/`gifski`. Used by `docs-shots.sh`. |
 | `scripts/agent-auth.sh` | `status` — can an agent in an **isolated `$HOME`** actually authenticate? Every isolated harness overrides `$HOME`, which on macOS hides the login **Keychain** where Claude Code keeps its credentials (see [Real agents in isolated harnesses](#real-agents-in-isolated-harnesses)). `scripts/lib/agent-auth.sh` fixes that for all of them; this verifies it. |
+| `scripts/check-model-tables.sh` | Diff (default) or rewrite (`--write`) the two vendored model tables against a live probe of each CLI's own model catalog — see [docs/09](09-design-decisions.md). Read-only mode runs on `--all`; it reports drift but never fails the gate. `scripts/lib/model-table-gen.py` holds the derivation logic and `scripts/lib/model-table-gen-test.sh` pins it against captured fixtures (no network, no `claude`/`codex` fork). |
 | `scripts/orch-rpc.py` | Speak raw JSON-RPC to a socket (debugging the control plane). |
 | `scripts/swift-testing-flags.sh` | The shared `-F`/`-rpath` flags used by `test.sh`. |
 | `scripts/toolchain.sh` | Sourced by `typecheck-app.sh` to pin `DEVELOPER_DIR` to CLT (when present) so the rebuilt `OrchestraCore` module matches the CLT SDK the typecheck targets. Not sourced by `test.sh` — tests need XCTest, which only the Xcode toolchain provides. |
@@ -418,7 +491,9 @@ Settings, or via `setConfig` over RPC). The keys and defaults are in
 - **`autoInstallMCPGlobally`** — when enabled, the next card launch adds missing `orchestra` entries
   to `~/.claude.json` and `~/.codex/config.toml`, creates user-scoped `orchestra` and `orchestra-mcp`
   shims in `~/.local/bin`, and adds an idempotent PATH block to a shell profile. It never replaces an
-  existing same-name config entry or file, and the bridge still requires the separately managed daemon.
+  existing same-name config entry or file. When disabled, the next card launch removes the canonical
+  global `orchestra` entries while leaving launch-local card configuration and user-local CLI shims in
+  place; the bridge still requires the separately managed daemon.
 
 All daemon/app state is keyed off `$HOME`, not the bundle location, so it follows the user. To wipe it,
 use `scripts/reset-state.sh`. (On a Linux daemon the data dir is instead `$XDG_DATA_HOME/orchestra` →

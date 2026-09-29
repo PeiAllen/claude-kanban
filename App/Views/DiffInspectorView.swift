@@ -16,9 +16,13 @@ struct DiffInspectorView: View {
     var preview: String? = nil
 
     @State private var base: DiffBase
-    @State private var layout: DiffLayout = .unified
+    @State private var layout: DiffTextLayout = .unified
     @State private var text = ""
-    @State private var files: [DiffFileSection] = []
+    /// Rows are built HERE, not in `body` — see `DiffPrepared`. Rebuilding them per body pass makes
+    /// every unrelated republish on the observed model cost a full re-parse of the whole diff.
+    @State private var files: [DiffPreparedFile] = []
+    /// Bumped per load so a reload of changed content yields fresh `contentKey`s.
+    @State private var generation = 0
     @State private var loading = true
     @State private var collapsedFiles: Set<String> = []
 
@@ -27,10 +31,13 @@ struct DiffInspectorView: View {
         self.preview = preview
         // Seed synchronously so a headless ImageRenderer snapshot (which never runs `.task`) still
         // shows the diff; production leaves preview nil and loads via the daemon in `.task`.
+        let layout: DiffTextLayout = split ? .split : .unified
         _text = State(initialValue: preview ?? "")
-        _files = State(initialValue: preview.map(DiffFileParser.parse) ?? [])
+        _files = State(initialValue: preview.map {
+            DiffPrepared.make(DiffFileParser.parse($0), layout: layout, generation: 0)
+        } ?? [])
         _loading = State(initialValue: preview == nil)
-        _layout = State(initialValue: split ? .split : .unified)
+        _layout = State(initialValue: layout)
         // BT3: a stacked card opens on Parent (its own work vs its parent), else Branch.
         _base = State(initialValue: task.parentBranch != nil ? .parent : .branch)
     }
@@ -50,6 +57,12 @@ struct DiffInspectorView: View {
         }
         .background(theme.termBg)
         .task(id: reloadKey) { await load() }
+        // A layout switch re-shapes the rows but needs no reload. Rebuilt HERE rather than in `body`
+        // for the same reason `load()` builds them: `body` must not do work that scales with the diff.
+        .onChange(of: layout) { _, new in
+            generation += 1
+            files = DiffPrepared.make(files.map(\.section), layout: new, generation: generation)
+        }
     }
 
     private var baselineBar: some View {
@@ -63,8 +76,8 @@ struct DiffInspectorView: View {
                 .fixedSize()
 
                 Picker("", selection: $layout) {
-                    Text("Unified").tag(DiffLayout.unified)
-                    Text("Split").tag(DiffLayout.split)
+                    Text("Unified").tag(DiffTextLayout.unified)
+                    Text("Split").tag(DiffTextLayout.split)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -120,18 +133,19 @@ struct DiffInspectorView: View {
             // text in a plain container at the top.
             fileStack.frame(maxHeight: .infinity, alignment: .top)
         } else {
-            ScrollView(.vertical) { fileStack }
+            DiffFileList(files: files, collapsedFiles: $collapsedFiles, theme: theme)
         }
     }
 
     private var fileStack: some View {
-        LazyVStack(spacing: 10) {
+        VStack(spacing: 10) {
             ForEach(files) { fileSection($0) }
         }
         .padding(10)
     }
 
-    private func fileSection(_ file: DiffFileSection) -> some View {
+    private func fileSection(_ prepared: DiffPreparedFile) -> some View {
+        let file = prepared.section
         let collapsed = collapsedFiles.contains(file.id)
         return VStack(spacing: 0) {
             Button {
@@ -162,10 +176,9 @@ struct DiffInspectorView: View {
             .buttonStyle(.plain)
             if !collapsed {
                 Rectangle().fill(theme.hair).frame(height: 0.5)
-                if layout == .split {
-                    splitDiff(file)
-                } else {
-                    unifiedDiff(file)
+                switch prepared.body {
+                case .unified(let pane):            unifiedDiff(pane)
+                case .split(let remove, let add):   splitDiff(remove: remove, add: add)
                 }
             }
         }
@@ -175,15 +188,12 @@ struct DiffInspectorView: View {
 
     // MARK: - Unified layout
 
-    private func unifiedDiff(_ file: DiffFileSection) -> some View {
-        let rows = DiffRows.make(file.lines)
-        let numW = numberWidth(digits: maxDigits(rows.map { max($0.oldNum ?? 0, $0.newNum ?? 0) }))
-        return rendered(DiffTextRenderer(rows: rows.map(DiffTextRow.init),
-                                         palette: DiffTextPalette(theme: theme),
-                                         gutterWidth: numW * 2,
-                                         showsBothNumbers: true,
-                                         scrollsHorizontally: preview == nil),
-                        snapshotWidth: 364)
+    private func unifiedDiff(_ pane: DiffTextPane) -> some View {
+        rendered(DiffTextRenderer(pane: pane,
+                                  palette: DiffTextPalette(theme: theme),
+                                  gutterWidth: numberWidth(for: pane) * 2,
+                                  scrollsHorizontally: preview == nil),
+                 snapshotWidth: 364)
     }
 
     /// Live, the renderer is hosted as an AppKit view. The headless snapshot renderer can't lay one
@@ -204,32 +214,21 @@ struct DiffInspectorView: View {
     /// Two text views sharing one divider. Each side clips long lines to its own column, so a line can
     /// never bleed across the divider — unlike unified there is no horizontal scroll here, and "Open in
     /// Zed" / the unified view cover reading full long lines.
-    private func splitDiff(_ file: DiffFileSection) -> some View {
-        let rows = DiffSplitRows.make(file.lines)
-        let numW = numberWidth(digits: maxDigits(rows.flatMap { [$0.oldNum ?? 0, $0.newNum ?? 0] }))
+    private func splitDiff(remove: DiffTextPane, add: DiffTextPane) -> some View {
+        // Both columns share one gutter width so their code starts on the same x.
+        let numW = max(numberWidth(for: remove), numberWidth(for: add))
         let palette = DiffTextPalette(theme: theme)
         return HStack(spacing: 0) {
-            splitSide(rows, numW: numW, palette: palette, side: .remove)
+            splitSide(remove, numW: numW, palette: palette)
             Rectangle().fill(theme.hair).frame(width: splitDividerWidth)
-            splitSide(rows, numW: numW, palette: palette, side: .add)
+            splitSide(add, numW: numW, palette: palette)
         }
     }
 
-    /// One column of the split layout. A `nil` cell on a `change` row means that side has no
-    /// counterpart (a pure add or pure remove), and renders as a blank context line.
-    private func splitSide(_ rows: [DiffSplitRow], numW: CGFloat,
-                           palette: DiffTextPalette, side: DiffRow.Kind) -> some View {
-        let cells = rows.map { row -> DiffTextRow in
-            if row.kind == .hunk { return DiffTextRow(kind: .hunk, oldNum: nil, newNum: nil, text: row.heading) }
-            let text = side == .remove ? row.oldText : row.newText
-            let num = side == .remove ? row.oldNum : row.newNum
-            let kind: DiffRow.Kind = (row.kind == .change && text != nil) ? side : .context
-            return DiffTextRow(kind: kind, oldNum: num, newNum: nil, text: text ?? "",
-                               filler: row.kind == .change && text == nil)
-        }
-        return rendered(DiffTextRenderer(rows: cells, palette: palette, gutterWidth: numW,
-                                         showsBothNumbers: false, scrollsHorizontally: false),
-                        snapshotWidth: 182)
+    private func splitSide(_ pane: DiffTextPane, numW: CGFloat, palette: DiffTextPalette) -> some View {
+        rendered(DiffTextRenderer(pane: pane, palette: palette, gutterWidth: numW,
+                                  scrollsHorizontally: false),
+                 snapshotWidth: 182)
             .frame(maxWidth: .infinity, alignment: .leading)
             .clipped()
     }
@@ -238,8 +237,11 @@ struct DiffInspectorView: View {
     /// can't lay out a `ScrollView` and proposes an unbounded width, so it instead clips the body to a
     /// fixed width, left-aligned — matching the scroll's resting position. The width tracks the 384pt
     /// snapshot frame in `snapshotDiff` minus the file-card insets.
-    private func maxDigits(_ nums: [Int]) -> Int { max(2, String(nums.max() ?? 0).count) }
-    private func numberWidth(digits: Int) -> CGFloat { CGFloat(digits) * 7 + 12 }
+    /// Gutter column width for one pane, from the widest line number it has to fit.
+    private func numberWidth(for pane: DiffTextPane) -> CGFloat {
+        let digits = max(2, String(pane.maxLineNumber).count)
+        return CGFloat(digits) * 7 + 12
+    }
 
     private func statPill(_ s: String, _ c: SemColor) -> some View {
         Text(s)
@@ -251,7 +253,7 @@ struct DiffInspectorView: View {
             .clipShape(Capsule())
     }
 
-    private func layoutLabel(_ l: DiffLayout) -> String {
+    private func layoutLabel(_ l: DiffTextLayout) -> String {
         switch l {
         case .unified: return "Unified"
         case .split:   return "Split"
@@ -261,13 +263,14 @@ struct DiffInspectorView: View {
     private func load() async {
         if let preview {
             text = preview
-            files = DiffFileParser.parse(preview)
+            files = DiffPrepared.make(DiffFileParser.parse(preview), layout: layout, generation: generation)
             loading = false
             return
         }
         loading = true
         text = await model.diffText(task.id, base: base.rawValue)
-        files = DiffFileParser.parse(text)
+        generation += 1
+        files = DiffPrepared.make(DiffFileParser.parse(text), layout: layout, generation: generation)
         loading = false
     }
 
@@ -284,8 +287,4 @@ struct DiffInspectorView: View {
         .background(theme.chip)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
-}
-
-private enum DiffLayout: String {
-    case unified, split
 }
