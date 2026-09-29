@@ -18,7 +18,7 @@ import TestSupport
 /// This drives a real `ControlClient` over a fake `Transport` (answers the `version` probe → `.live`,
 /// errors every other RPC so `refresh()` completes empty, and lets the test push `event` frames), calls
 /// `start()` twice, then pushes a `taskUpserted` — the exact wire shape of card 822ebf's `.mcp` move to
-/// `review` that Allen saw not render — and asserts the board applied it.
+/// `review` that the user saw not render — and asserts the board applied it.
 @MainActor
 final class EventStreamConsumerTests: XCTestCase {
 

@@ -403,8 +403,8 @@ private struct DebugLaunchHook: ViewModifier {
     /// seeds a STALE phone owner to screenshot the Force Retake variant.
     static func showTakeover(model: BoardModel) {
         let mock = Task(title: "Wire desktop unmount + phone-takeover placeholder",
-                        repo: "/Users/allen/code/orchestra", branch: "mobile/d5-desktop-unmount",
-                        cwd: "/Users/allen/code/orchestra/.worktrees/d5",
+                        repo: "/Users/dev/code/orchestra", branch: "mobile/d5-desktop-unmount",
+                        cwd: "/Users/dev/code/orchestra/.worktrees/d5",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), ctxPct: 40, initialPrompt: "demo")
         model.tasks = [mock]
