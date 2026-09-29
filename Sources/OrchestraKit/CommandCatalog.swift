@@ -54,7 +54,9 @@ public enum CommandCatalog {
     // the handler bodies live alongside in OrchestraCore/CommandRegistry.swift, paired by name.
     public static let all: [CommandSchema] = [
         CommandSchema(name: "list", summary: "List cards (optionally by column).",
-                      params: schema(["col": colProp()], required: []),
+                      params: schema(["col": colProp(),
+                                      "includeArchived": boolProp("Also list archived cards (default false).")],
+                                     required: []),
                       kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "spawn",
@@ -428,6 +430,31 @@ public enum CommandCatalog {
                       params: schema(["path": strProp("Directory to trust (the card's cwd / repo root)")],
                                      required: ["path"]),
                       kind: .mutation, phaseGate: gNonArchived),
+
+        CommandSchema(name: "shared",
+                      summary: "Shared agent files (CLAUDE.md, AGENTS.md, .claude/…) across worktrees. "
+                          + "`sync` sends this card's edits and receives others'; `status` shows the "
+                          + "policy table, un-ignored leaves, a standing conflict and the read-only git "
+                          + "command for the store; `resolve` commits your fixed conflict files; `adopt` "
+                          + "untracks the given paths (default: CLAUDE.md, AGENTS.md, .claude/commands/ship.md) "
+                          + "from the project and shares them.",
+                      params: schema([
+                          "ref": refProp(),
+                          "op": strProp("'sync' | 'status' | 'resolve' | 'adopt'"),
+                          "paths": .object(["type": .string("array"),
+                                            "items": .object(["type": .string("string")]),
+                                            "description": .string("adopt only: repo-relative paths to adopt.")]),
+                      ], required: ["ref", "op"]),
+                      kind: .mutation, phaseGate: gAll.subtracting([.archivedPending])),
+
+        CommandSchema(name: "shared-policy",
+                      summary: "Read or set a repo's propagation policy (tracked | shared | ephemeral) per item.",
+                      params: schema([
+                          "repo": strProp("Repository root (allowlisted)"),
+                          "item": strProp("Item name. Omit to list the whole table."),
+                          "policy": strProp("'tracked' | 'shared' | 'ephemeral'. Omit to read the item's row."),
+                      ], required: ["repo"]),
+                      exposure: .appOnly, kind: .mutation, phaseGate: gAll),
     ]
 
     // MARK: - schema builders (moved verbatim from Commands.swift; now public for Kit consumers)

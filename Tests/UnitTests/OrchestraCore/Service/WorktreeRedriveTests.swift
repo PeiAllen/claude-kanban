@@ -73,4 +73,54 @@ struct WorktreeRedriveTests {
 
         #expect(!env.worktrees.removed.contains(w.path))       // surfaced debt, never force-dropped
     }
+
+    @Test("the re-drive flushes shared files before releasing; a refused flush keeps the tree")
+    func test_redriveFlushesBeforeReleasing() async throws {
+        let env = TestEnv.make()
+        let ok = UUID(), refused = UUID()
+        let wOk = try await env.svc.worktrees.ensure(repo: "app", branch: "ok", cardId: ok)
+        let wNo = try await env.svc.worktrees.ensure(repo: "app", branch: "no", cardId: refused)
+        try await seed(env.svc, id: ok, cwd: wOk.path, origin: .worktree,
+                       phase: .archived(teardownComplete: true), branch: "ok")
+        try await seed(env.svc, id: refused, cwd: wNo.path, origin: .worktree,
+                       phase: .archived(teardownComplete: true), branch: "no")
+        let noPath = wNo.path
+        let flushed = FlushLog()
+        await env.svc._setFlushSharedForTest { card in
+            flushed.add(card.cwd)
+            return card.cwd != noPath
+        }
+
+        await env.svc.redriveArchivedWorktreeReleases()
+
+        #expect(Set(flushed.all) == [wOk.path, wNo.path])          // flushed before each release attempt
+        #expect(env.worktrees.removed.contains(wOk.path))
+        #expect(!env.worktrees.removed.contains(wNo.path))         // refused flush ⇒ never released
+    }
+
+    @Test("a reopen that lands while the flush runs keeps the tree: the release is re-fenced after the flush")
+    func test_redriveRefencesAfterFlush() async throws {
+        let env = TestEnv.make()
+        let id = UUID()
+        let w = try await env.svc.worktrees.ensure(repo: "app", branch: "reopen", cardId: id)
+        try await seed(env.svc, id: id, cwd: w.path, origin: .worktree,
+                       phase: .archived(teardownComplete: true), branch: "reopen")
+        let svc = env.svc
+        await svc._setFlushSharedForTest { card in
+            // The reopen lands while git runs: the card leaves archivedComplete before the flush returns.
+            _ = try? await svc.store.update(card.id) { $0.phase = .live(.running) }
+            return true
+        }
+
+        await env.svc.redriveArchivedWorktreeReleases()
+
+        #expect(!env.worktrees.removed.contains(w.path))
+    }
+}
+
+final class FlushLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    func add(_ p: String) { lock.withLock { paths.append(p) } }
+    var all: [String] { lock.withLock { paths } }
 }

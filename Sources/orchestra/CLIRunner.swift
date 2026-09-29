@@ -313,6 +313,51 @@ enum CLIRunner {
                 else if opened < total { print("opened \(opened) of \(total) changed notes in Obsidian") }
                 else { print("opened \(total) changed note\(total == 1 ? "" : "s") in Obsidian") }
 
+            case "shared":
+                // `orchestra shared <sync|status|resolve|adopt> [path...] [--ref <r>]`. The card is `--ref`,
+                // else `ORCHESTRA_TASK_ID`, else the card whose cwd contains the current directory.
+                guard let op = flags.positional(0), ["sync", "status", "resolve", "adopt"].contains(op) else {
+                    die("usage: orchestra shared <sync|status|resolve|adopt> [path...] [--ref <ref>]")
+                }
+                requireValue(flags, "ref")
+                let ref: String
+                if let r = flags.value("ref") ?? ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !r.isEmpty {
+                    ref = r
+                } else {
+                    // includeArchived: an archived card can keep its worktree, and resolve must reach it.
+                    let tasks = try await client.call("list", .object(["includeArchived": .bool(true)])).decode([Task].self)
+                    guard let t = OrchestraService.cardContaining(cwd: FileManager.default.currentDirectoryPath, in: tasks)
+                    else { die("shared: no card owns this directory — pass --ref <ref>") }
+                    ref = t.id.uuidString
+                }
+                var params: [String: JSONValue] = ["ref": .string(ref), "op": .string(op)]
+                if op == "adopt" { params["paths"] = .array(flags.positionalsFrom(1).map { .string($0) }) }
+                let r = try await client.call("shared", .object(params))
+                // The exit code is part of the contract, so it is decided before `--json` prints and returns.
+                let good: Set<String> = ["completed", "nothingShared", "skipped", "gitTooOld", "resolved",
+                                         "nothingToResolve", "adopted", "clean"]
+                let failed = op != "status" && !good.contains(r["outcome"]?.stringValue ?? "")
+                if flags.has("json") { printJSON(r); if failed { exit(1) }; break }
+                print(r["message"]?.stringValue ?? "")
+                if op == "status" {
+                    for item in r["items"]?.arrayValue ?? [] {
+                        let paths = (item["paths"]?.arrayValue ?? []).compactMap(\.stringValue).joined(separator: " ")
+                        print("  \(item["name"]?.stringValue ?? "?")  \(item["policy"]?.stringValue ?? "?")  \(paths)")
+                    }
+                    let un = (r["unignoredLeaves"]?.arrayValue ?? []).compactMap(\.stringValue)
+                    if !un.isEmpty { print("  not ignored here (stood down): \(un.joined(separator: ", "))") }
+                    if let cmd = r["readCommand"]?.stringValue { print("  read the store: \(cmd) log|show|diff") }
+                }
+                if failed { exit(1) }
+
+            case "shared-policy":
+                // `orchestra shared-policy <repo> [item [tracked|shared|ephemeral]]` — read or set a policy row.
+                guard let repo = flags.positional(0) else { die("usage: orchestra shared-policy <repo> [item [tracked|shared|ephemeral]]") }
+                var params: [String: JSONValue] = ["repo": .string(PathResolver.canonical(repo))]
+                if let item = flags.positional(1) { params["item"] = .string(item) }
+                if let pol = flags.positional(2) { params["policy"] = .string(pol) }
+                printJSON(try await client.call("shared-policy", .object(params)))
+
             case "trustState":
                 // Read-only trust query (the SpawnSheet's indicator, from the CLI). Never grants.
                 let path = flags.positional(0) ?? flags.require("path")

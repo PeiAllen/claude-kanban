@@ -22,6 +22,23 @@ do {
 let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath), sessions: terminalSessions,
                                proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
 
+// Shared-file propagation boot. The sinks are pure actor state: install them before anything can sync, or a
+// conflict noticed first is swallowed AND recorded as already noticed. The git-version gate and the checkout
+// git-dir sweep fork git, so they must not hold the control socket closed indefinitely: the semaphore waits
+// at most 15s and then fails open (logged). They must finish before the boot task and tick loop in the normal
+// case, because a sweep that overlapped a first sync could delete the git dir that sync just attached.
+// main.swift has no top-level `await`, so a semaphore orders it. The work MUST be `.detached`: top-level code
+// is @MainActor, so a plain `Task` inherits it and could never run while this thread blocks in `wait()`.
+let propagationBooted = DispatchSemaphore(value: 0)
+_Concurrency.Task.detached {
+    await service.installPropagationSinks()
+    await service.propagationBoot()
+    propagationBooted.signal()
+}
+if propagationBooted.wait(timeout: .now() + 15) == .timedOut {
+    log("warning: shared-file boot sweep still running after 15s; continuing without waiting")
+}
+
 // The daemon renders NO hook files — each adapter renders its own in `prepareToLaunch`, per launch,
 // so new launches always reflect the current binary path + statusLine config (see [[HooksRenderer]]).
 

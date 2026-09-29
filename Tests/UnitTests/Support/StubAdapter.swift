@@ -49,6 +49,21 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         self.launchIds = launchIds
     }
 
+    private let ctxLock = NSLock()
+    private var _launchWrites: [String] = []
+    private var _preparedContexts: [AdapterContext] = []
+    /// What this stub declares as launch writes (drives the launch grant). Empty by default.
+    var launchWrites: [String] {
+        get { ctxLock.withLock { _launchWrites } }
+        set { ctxLock.withLock { _launchWrites = newValue } }
+    }
+    /// Every context `prepareToLaunch` saw, in order — the launch tests read the grant off these.
+    var preparedContexts: [AdapterContext] { ctxLock.withLock { _preparedContexts } }
+    func prepareToLaunch(_ ctx: AdapterContext) throws { ctxLock.withLock { _preparedContexts.append(ctx) } }
+
+    // `models()` is NOT overridden here: the protocol extension's default (`catalog().filter { listed }`)
+    // is correct for a stub too, and a plain override here would silently drop the `listed` filter and
+    // the launchId mapping below.
     func catalog() -> [AgentModel] {
         modelIds.map { id in
             var m = AgentModel(id: id)   // preserves the existing heuristic displayName/family (humanize/detectFamily)

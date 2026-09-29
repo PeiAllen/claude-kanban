@@ -86,6 +86,13 @@ agent's shell) it **refuses** — printing actionable help that names the path a
 directory can only be trusted by a human answering, never by a switch an agent could pass. (See
 [the `trust` command](05-command-reference.md#notes-on-key-commands).)
 
+`orchestra shared <sync|status|resolve|adopt> [path...] [--ref <ref>] [--json]` drives the
+[shared agent files](09-design-decisions.md#the-shared-and-shared-policy-verbs). The card is `--ref`, else
+`$ORCHESTRA_TASK_ID`, else the card whose canonical cwd contains the current directory (the deepest match wins).
+The CLI prints the result's one-line `message`; `status` adds the item table and the read-only git command for the
+store. The exit code is non-zero (also with `--json`) for any outcome except a clean one (`skipped`, `nothingShared` and
+`gitTooOld` count as clean), so a script sees a conflict, a busy lock or a stand-down. `orchestra shared-policy <repo> [item [policy]]` reads or sets a policy row and prints JSON.
+
 ### Daemon lifecycle
 
 `orchestra daemon …` manages the LaunchAgent:

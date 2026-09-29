@@ -62,6 +62,11 @@ public struct ConvergeContext: Sendable {
     /// Actor-bound teardown duties Teardown can't reach from the struct: cancel treeStat/child-fanout
     /// debounces + remote watch + re-nudge timer and child notifications.
     public let teardownActorDuties: @Sendable (_ id: UUID, _ expectedEpoch: Int) async -> Void
+    /// Propagation teardown hooks. `flushShared` is true when releasing the worktree cannot lose shared edits;
+    /// `reapShared` drops the checkout's store git dir after a release returned `.removed`. Required (no
+    /// defaults): an omitted flush would silently fail open.
+    public let flushShared: @Sendable (_ card: Task) async -> Bool
+    public let reapShared: @Sendable (_ card: Task) async -> Void
     /// Emit an activity feed entry (re-materialized / spawn-failed / backoff), closed over the actor.
     public let emitActivity: @Sendable (_ id: UUID, _ kind: ActivityKind, _ text: String) async -> Void
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
@@ -70,12 +75,15 @@ public struct ConvergeContext: Sendable {
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID, Int) async -> Void,
+                flushShared: @escaping @Sendable (Task) async -> Bool,
+                reapShared: @escaping @Sendable (Task) async -> Void,
                 emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
         self.adapters = adapters; self.scratchRoot = scratchRoot
         self.transition = transition
         self.materialize = materialize; self.finishLaunch = finishLaunch
         self.teardownActorDuties = teardownActorDuties; self.emitActivity = emitActivity
+        self.flushShared = flushShared; self.reapShared = reapShared
     }
 }
 
@@ -293,6 +301,16 @@ public struct TeardownStepper: PhaseStepper {
             // The SINGLE removal policy: keeps a shared tree or unsaved work, never force-drops
             // (`force: false`). The outcome is consumed, not `try?`-swallowed — a silent keep is how
             // 19 orphaned worktrees accumulated unnoticed until the sandbox profile overflowed.
+            // Flush shared edits FIRST: the release deletes the tree, and a false flush (conflict, partial,
+            // busy, stand-down…) means an unsent edit would go with it. Skip the release then — the card
+            // still ends archivedComplete, the boot re-drive retries, and `shared resolve` stays open.
+            guard await ctx.flushShared(card) else {
+                await ctx.emitActivity(card.id, .warning,
+                                       "worktree kept — shared files not yet sent from \(card.cwd); run `orchestra shared resolve` from that directory")
+                break
+            }
+            // Re-fence AFTER the flush's suspension: the release is irreversible, a reopen may have landed.
+            guard await stillArchiving(card, ctx) else { return }
             let outcome = (try? await ctx.worktrees.release(
                 cardId: card.id, cards: await ctx.store.all(), force: false)) ?? .removalFailed(detail: "release threw")
             switch outcome {
@@ -302,7 +320,9 @@ public struct TeardownStepper: PhaseStepper {
             case .removalFailed(let detail):
                 await ctx.emitActivity(card.id, .warning,
                                        "worktree removal failed (the boot re-drive will retry): \(detail)")
-            case .removed, .keptReferenced, .noop:
+            case .removed:
+                await ctx.reapShared(card)
+            case .keptReferenced, .noop:
                 break
             }
         case .scratch:

@@ -115,18 +115,24 @@ public struct AdapterContext: Sendable {
     public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
                                     // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
     public let observationEndpoint: AgentObservationEndpoint?
+    /// Which of this adapter's launchWrites are allowed, computed per launch from the resolved
+    /// propagation policy table. nil until PR6 computes one — the fail-safe direction: with no
+    /// grant, nothing propagation-related writes. Not Codable; never persisted (see PropagationGrant).
+    public let propagation: PropagationGrant?
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
                 orchestraBin: String = siblingBinary("orchestra"), access: CardAccess = .readWrite,
                 trustCwd: Bool = false, seed: String? = nil,
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
                 autoInstallMCPGlobally: Bool = false,
-                observationEndpoint: AgentObservationEndpoint? = nil) {
+                observationEndpoint: AgentObservationEndpoint? = nil,
+                propagation: PropagationGrant? = nil) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.orchestraBin = orchestraBin
         self.orchestraMCPBin = orchestraMCPBin; self.access = access; self.trustCwd = trustCwd
         self.autoInstallMCPGlobally = autoInstallMCPGlobally; self.seed = seed
         self.observationEndpoint = observationEndpoint
+        self.propagation = propagation
     }
 }
 
@@ -206,6 +212,14 @@ public protocol Adapter: Sendable {
     /// DEFAULT nil (additive): an adapter that writes no such file opts out for free.
     var cardFile: CardFileSpec? { get }
     var env: [String: String] { get }
+    /// Paths this adapter's project treats as propagation-eligible, named per adapter (one item
+    /// today: `"claude"` / `"codex"`). Dormant until PR6's PropagationService reads it. DEFAULT []
+    /// (fail-safe): an adapter that declares nothing shares nothing, breaks nothing.
+    var projectFiles: [PropagationItem] { get }
+    /// The concrete paths (relative to `ctx.cwd`) this adapter's `prepareToLaunch` would write this
+    /// launch, so PropagationService can intersect them against a grant. Dormant until PR6. DEFAULT
+    /// [] (fail-safe).
+    var launchWrites: [String] { get }
     /// Context-dependent launch environment. The default preserves the original static `env` seam; an
     /// adapter uses this only when its prepared observation endpoint must be handed to the provider.
     func launchEnvironment(_ context: AdapterContext) -> [String: String]
@@ -214,6 +228,8 @@ public protocol Adapter: Sendable {
 public extension Adapter {
     var env: [String: String] { [:] }
     var cardFile: CardFileSpec? { nil }
+    var projectFiles: [PropagationItem] { [] }
+    var launchWrites: [String] { [] }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func agentSignals(from raw: RawTelemetry, context: AgentSignalContext) -> [AgentSignal] { [] }

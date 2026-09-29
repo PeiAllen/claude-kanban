@@ -57,6 +57,15 @@ enum CLIHelp {
                                                  Publish a temporary PNG/JPEG reference in this card's transcript
                                                  (caption: letters/digits/dashes, alphanumeric ends, 80 max —
                                                   it becomes the filename the human saves)
+      shared <sync|status|resolve|adopt> [path...] [--ref <r>] [--json]
+                                                 Shared agent files across worktrees. sync sends your edits and
+                                                 receives others'; status shows policy, un-ignored leaves, a standing
+                                                 conflict and the read-only git command for the store; resolve commits
+                                                 a fixed conflict; adopt [path...] untracks paths from the project
+                                                 and shares them (default: CLAUDE.md AGENTS.md .claude/commands/ship.md).
+                                                 The card defaults to $ORCHESTRA_TASK_ID, else the card owning the cwd
+      shared-policy <repo> [item [tracked|shared|ephemeral]]
+                                                 Read or set a repo's per-item propagation policy (JSON)
       batch-spawn --repo <r> --branch <b>        Spawn many (stdin: JSON array or one prompt/line)
       daemon [install|start|stop|status|uninstall]
       ping | version

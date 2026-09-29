@@ -15,6 +15,13 @@ public struct CodexAdapter: Adapter {
     /// context usage.
     public var capabilities: AgentCapabilities { .codex }
 
+    /// This adapter's one propagation item — see ClaudeCodeAdapter.projectFiles for the shared
+    /// rationale. Codex has no per-worktree write analogous to Claude's `.claude/skills` today, so
+    /// no exclusions are needed.
+    public var projectFiles: [PropagationItem] {
+        [PropagationItem(name: "codex", paths: ["AGENTS.md"], exclusions: [])]
+    }
+
     /// Test injection for a fake binary and an isolated rollout directory. The home override is never
     /// exported to a production Codex process; it only keeps rollout metadata fixtures hermetic.
     let binOverride: String?
@@ -433,7 +440,8 @@ public struct CodexAdapter: Adapter {
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
                                        name: ctx.name, access: ctx.access,
-                                       orchestraMCPBin: ctx.orchestraMCPBin)
+                                       orchestraMCPBin: ctx.orchestraMCPBin,
+                                       propagation: ctx.propagation)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,

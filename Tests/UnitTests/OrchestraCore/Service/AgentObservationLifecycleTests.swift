@@ -77,6 +77,37 @@ struct AgentObservationLifecycleTests {
         #expect(!(await env.svc.agentObservationActive(card.id)))
     }
 
+    @Test("idle edge: running → waiting schedules exactly one full sync; a waiting → waiting change schedules none")
+    func idleEdgeSchedulesOneSync() async throws {
+        let feed = ObservationTestFeed()
+        let adapter = ObservationTestAdapter(feed: feed)
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [adapter]))
+        let seen = IntentLog()
+        await env.svc._setSyncSharedObserverForTest { _, intent in seen.add(intent) }
+        let repo = TestEnv.repo(env.base)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "idle", agentId: adapter.id))
+        let launchSyncs = seen.all.count   // the launch receive-only sync is not the edge under test
+        try await pollUntil("source started") { feed.source(at: 0)?.isStarted == true }
+        let source = try #require(feed.source(at: 0))
+
+        // A fresh launch lands `.unavailable`; its first report going idle must not double the launch sync.
+        #expect(await state(env.svc, card.id)?.turnStatus == .unavailable)
+        source.emit(.rpcNotification(method: "test/turn-started", params: .object(["turn_id": .string("t1")])))
+        try await pollUntil("running") { await state(env.svc, card.id)?.turnStatus == .running }
+        #expect(seen.all.count == launchSyncs)   // running is not idle
+
+        source.emit(.rpcNotification(method: "test/turn-completed", params: .object(["turn_id": .string("t1")])))
+        try await pollUntil("waiting") { await state(env.svc, card.id)?.turnStatus == .waiting() }
+        try await pollUntil("the idle sync to start") { seen.all.count == launchSyncs + 1 }
+        #expect(seen.all.last == .full)
+
+        // waiting → waiting with an activity change is a level, not an edge.
+        source.emit(.rpcNotification(method: "test/waiting-needs-permission", params: .object(["turn_id": .string("t1")])))
+        try await pollUntil("human need") { await state(env.svc, card.id)?.humanNeed == .permission }
+        #expect(seen.all.count == launchSyncs + 1)
+    }
+
     @Test("a session rollover replaces the subscription and resets the dark snapshot")
     func sessionRollover() async throws {
         let feed = ObservationTestFeed()
@@ -362,6 +393,9 @@ private struct ObservationTestAdapter: Adapter {
             return [.init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: .turnStarted)]
         case "test/turn-completed":
             return [.init(sessionEpoch: context.sessionEpoch, turnID: turnID, kind: .turnCompleted())]
+        case "test/waiting-needs-permission":
+            return [.init(sessionEpoch: context.sessionEpoch, turnID: turnID,
+                          kind: .turnReconciled(.waiting(), humanNeed: .permission))]
         default:
             return []
         }

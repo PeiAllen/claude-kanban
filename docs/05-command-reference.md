@@ -42,6 +42,8 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `trust` | `path` (required) | Grant a **human's** write-trust for a directory (record it in the [trust ledger](03-data-model.md#the-trust-ledger-t1)) so agents may run there with write access. A human must approve — the MCP tool elicits a decision from the agent's own client; the CLI verb gates on an interactive terminal. An agent can only *trigger* it, **never self-grant** (`.agent`/`.daemon` sources are denied → `trustDenied`). |
 | `publish-image` | `ref` (required), `path` (required: absolute PNG/JPEG), `caption?` (a **slug**) | Copy an image the agent generated or derived into temporary daemon-owned media and print an **opaque reference** into the card's agent transcript, so a human can open it from the Mac app or the phone. **CLI and MCP** (`exposure: .all`): publishing is a deliberate agent action, never an app button — Orchestra does not scan terminal output for paths. The daemon re-reads and re-validates the bytes itself (magic-number sniff, regular files only, ≤ 4 MB per image and ≤ 50 MB per session), so the *agent's* path is consumed at publish time and never crosses back to a client. The reference is scoped to the card's current [session epoch](04-cards-worktrees-sessions.md#recovery-resume-and-restart) and dies with it. **`caption` is constrained at this boundary** — letters, digits and dashes, alphanumeric ends, 80 bytes max (`TranscriptImageCaption`) — and a malformed one is **rejected, not cleaned up**: the caption becomes the filename every client stages, so validating it here is what lets the daemon and both apps use it verbatim with no sanitizing of their own (see [chapter 9](09-design-decisions.md#transcript-images-are-published-opaque-and-session-scoped)). The same rule is advertised as `pattern`/`maxLength` on the MCP tool schema, so a client rejects a bad caption before the call. |
 | `trustState` | `path` (required) | **Read-only** query (PR D3): returns `{trusted}` for a directory — a pure [trust ledger](03-data-model.md#the-trust-ledger-t1) lookup (`OrchestraService.isPathTrusted`) that **records nothing**. The app [`SpawnSheet`](07-app-ui.md#the-spawn-sheet) uses it to warn and force read-only on an untrusted freeform dir; granting stays the human-only `trust` above. |
+| `shared` | `ref` (required), `op` (required: `sync` \| `status` \| `resolve` \| `adopt`), `paths?` (adopt only) | Shared agent files across worktrees ([design](09-design-decisions.md#the-shared-and-shared-policy-verbs)). `sync` sends this card's edits and receives others'. `status` returns the items with their policy, the un-ignored leaves, a standing conflict, and `readCommand` — the read-only `GIT_OPTIONAL_LOCKS=0 git --git-dir=<dir>` prefix a card runs itself with `log`/`show`/`diff`. `resolve` commits the fixed conflict files; it refuses while markers remain and names the path. `adopt` untracks `paths` (default `CLAUDE.md`, `AGENTS.md`, `.claude/commands/ship.md`) and shares them; it stages and never commits. Every op returns `{op, outcome, paths, message}`. Gate: every phase except `archivedPending`, so an archived card that kept its worktree can still `resolve`. |
+| `shared-policy` | `repo` (required), `item?`, `policy?` (`tracked` \| `shared` \| `ephemeral`) | **App-only** (not advertised over MCP). No `item`: the repo's table. `item` alone: that row. `item` + `policy`: set the override and return the row. A corrupt `propagation.json` is refused, never overwritten. No target card, so it skips the gate. |
 
 ### Verb kinds and the phase gate
 
@@ -55,7 +57,7 @@ required on every schema, so a new verb must classify itself before it can ship:
 - **Mutation** — completes inline and returns its result; may hop off-actor (a shell command, a tmux
   attach) but never changes `phase`. `move`, `inbox-edit`/`-remove`/`-reorder`, `wait`, `shell`,
   `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-title`, `set-note`, `needs-input`, `set-planned`,
-  `set-parent`, `synced`, `shipped`, `merge-request`, `borrow`, `release`.
+  `set-parent`, `synced`, `shipped`, `merge-request`, `borrow`, `release`, `shared`, `shared-policy`.
 - **Convergence** — the synchronous half persists durable intent and returns immediately. Most instances
   use one `transition()` call, then the phase-keyed
   [`PhaseStepper`s](02-architecture.md#the-convergence-model) drive the card the rest of the way. `send`
@@ -68,7 +70,7 @@ required on every schema, so a new verb must classify itself before it can ship:
 non-query verb that names a target `ref`, the card's *current* `Phase.Kind` is checked against the
 allow-set **before** the handler runs — a gated-out call throws `phaseGated` and never reaches its handler.
 A `Phase.Kind` absent from a verb's set is denied by default, so a future kind is denied until a schema is
-updated to admit it (the fail-safe direction). `spawn`/`batch-spawn`/`trust`/`trustState`/`wait`/`list` name
+updated to admit it (the fail-safe direction). `spawn`/`batch-spawn`/`trust`/`trustState`/`wait`/`list`/`shared-policy` name
 no single pre-existing target card, so they skip the gate.
 
 The seven lifecycle Convergence verbs and what each persists:

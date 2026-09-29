@@ -59,6 +59,21 @@ struct CodexAdapterArgvTests {
         #expect(CodexAdapter().newSessionId() == nil)
     }
 
+    @Test("projectFiles declares exactly one 'codex' item with no exclusions")
+    func projectFilesDeclaration() throws {
+        let items = adapter.projectFiles
+        #expect(items.count == 1)
+        let item = try #require(items.first)
+        #expect(item.name == "codex")
+        #expect(item.paths == ["AGENTS.md"])
+        #expect(item.exclusions.isEmpty)
+    }
+
+    @Test("launchWrites is empty — Codex writes nothing per-launch that needs gating")
+    func launchWritesEmpty() {
+        #expect(adapter.launchWrites.isEmpty)
+    }
+
     @Test("rendered Codex hooks omit the retired Stop callback")
     func omitsStopHook() throws {
         let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")

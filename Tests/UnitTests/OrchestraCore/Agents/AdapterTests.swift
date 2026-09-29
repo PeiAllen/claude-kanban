@@ -153,6 +153,42 @@ struct AdapterTests {
         #expect(info?.sessionId == nil)
     }
 
+    @Test("AdapterContext.propagation defaults to nil")
+    func propagationDefaultsNil() {
+        let ctx = AdapterContext(cwd: "/wt")
+        #expect(ctx.propagation == nil)
+    }
+
+    @Test("projectFiles declares exactly one 'claude' item with the four exclusions")
+    func projectFilesDeclaration() throws {
+        let items = adapter.projectFiles
+        #expect(items.count == 1)
+        let item = try #require(items.first)
+        #expect(item.name == "claude")
+        #expect(item.paths == ["CLAUDE.md", ".claude"])
+        #expect(Set(item.exclusions) == Set([
+            ".claude/skills", ".claude/.cc-writes", ".claude/sandbox-blocked.jsonl", ".claude/worktrees",
+        ]))
+    }
+
+    @Test("launchWrites is the exact set of skill paths the guidance loop installs today")
+    func launchWritesMirrorsSkillsLoop() {
+        // Literal, independent of the property's own derivation — so a change to the install
+        // loop's path template (or to which sections are bundled) is caught here rather than
+        // silently matched by a test that re-derives its expectation the same way.
+        #expect(adapter.launchWrites == [
+            ".claude/skills/orchestra-delegation/SKILL.md",
+            ".claude/skills/orchestra-tree/SKILL.md",
+            ".claude/skills/orchestra-image-publishing/SKILL.md",
+        ])
+    }
+
+    @Test("every adapter's declared project-file item names are unique across the registry")
+    func projectFileNamesUniqueAcrossAdapters() {
+        let names = AgentRegistry().list().flatMap { $0.projectFiles.map(\.name) }
+        #expect(names.count == Set(names).count)
+    }
+
     // True iff `flag` is immediately followed by `value` in argv.
     private func adjacent(_ argv: [String], _ flag: String, _ value: String) -> Bool {
         guard let i = argv.firstIndex(of: flag), i + 1 < argv.count else { return false }
@@ -171,10 +207,13 @@ struct ClaudeDelegationTests {
         "\(cwd)/.claude/skills/orchestra-\(section)/SKILL.md"
     }
 
-    @Test("prepareToLaunch writes every shared Claude guidance section under .claude/skills")
+    /// The grant a launch computes when the project ignores every launch write.
+    private var fullGrant: PropagationGrant { PropagationGrant(writablePaths: Set(ClaudeCodeAdapter().launchWrites)) }
+
+    @Test("prepareToLaunch writes every granted Claude guidance section under .claude/skills")
     func materializesSkills() throws {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
-        try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd))
+        try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd, propagation: fullGrant))
         let sections = AgentGuidance.sections(for: "claude-code")
         #expect(sections.map(\.name) == ["delegation", "tree", "image-publishing"])
         for section in sections {
@@ -183,12 +222,31 @@ struct ClaudeDelegationTests {
         }
     }
 
+    @Test("no grant (nil) writes no skill — the fail-safe direction (G6)")
+    func nilGrantWritesNothing() throws {
+        let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
+        try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd))
+        for section in AgentGuidance.sections(for: "claude-code") {
+            #expect(!FileManager.default.fileExists(atPath: skillPath(cwd, section: section.name)))
+        }
+    }
+
+    @Test("a partial grant writes only the granted skill paths")
+    func partialGrant() throws {
+        let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
+        let grant = PropagationGrant(writablePaths: [".claude/skills/orchestra-tree/SKILL.md"])
+        try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd, propagation: grant))
+        #expect(FileManager.default.fileExists(atPath: skillPath(cwd, section: "tree")))
+        #expect(!FileManager.default.fileExists(atPath: skillPath(cwd, section: "delegation")))
+        #expect(!FileManager.default.fileExists(atPath: skillPath(cwd, section: "image-publishing")))
+    }
+
     @Test("shared skill materialization is idempotent across launches")
     func idempotent() throws {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
         let a = ClaudeCodeAdapter()
-        try a.prepareToLaunch(AdapterContext(cwd: cwd))
-        try a.prepareToLaunch(AdapterContext(cwd: cwd))
+        try a.prepareToLaunch(AdapterContext(cwd: cwd, propagation: fullGrant))
+        try a.prepareToLaunch(AdapterContext(cwd: cwd, propagation: fullGrant))
         for section in AgentGuidance.sections(for: "claude-code") {
             #expect(try String(contentsOfFile: skillPath(cwd, section: section.name), encoding: .utf8)
                     == section.content)

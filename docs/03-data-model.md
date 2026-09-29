@@ -245,6 +245,65 @@ The ledger + resolver landed as **PR T1**; the human-grant surfaces that fill a 
 query — lets a client (the app [`SpawnSheet`](07-app-ui.md#the-spawn-sheet)) *check* trust without
 recording anything; granting still only happens through the human `trust` surfaces.
 
+## The propagation policy store
+
+A fourth durable store — `PropagationStore` (`Propagation/PropagationStore.swift`) — holds the
+**propagation policy** for files that must reach every card's worktree without living in git (see
+[Worktree propagation policy](09-design-decisions.md#worktree-propagation-policy)). It is a plain JSON
+file at `~/Library/Application Support/Orchestra/propagation.json`, not an actor: `PropagationStore.load`
+and `.save` are a static pair, like `ConfigStore`, so a caller controls exactly when the file is read or
+written.
+
+The file holds a `[String: PropagationRepoPolicy]` table keyed by **canonical repo path**, canonicalized
+by `save` so a lookup by any alias of the same path (`/tmp/x` vs. `/private/tmp/x` on macOS) always finds
+the row a writer stored. Each `PropagationRepoPolicy` carries two maps, both keyed by item name:
+
+- `overrides` — a `PropagationPolicy` (`tracked` / `shared` / `ephemeral`) that beats the single default
+  (`shared`) for that item,
+- `userItems` — a user-declared `PropagationItem` (name, paths, exclusions) that beats an adapter item
+  of the same name.
+
+A repo absent from the table gets every item at the single default. `load` distinguishes three outcomes:
+the file is **absent** (an empty table, not an error — the default applies everywhere), **decodes**
+(trusted as-is), or is **corrupt** (`loadFailed == true`, an empty table). A corrupt file is left exactly
+where it is, so a corrupt table keeps reporting `loadFailed` on every later `load` — a daemon restart or
+the next sync does not "heal" it into a healthy-looking empty table — until a human or a legitimate
+`save` repairs it. `save` is the one place content can be lost, so it is the one place that protects
+against it: if the file on disk currently holds bytes that fail to decode, `save` preserves them as
+`propagation.json.bak` before writing its own table over them. A corrupt table stands every item down;
+nothing is written on the strength of policy Orchestra could not read.
+
+**The table is a sidecar file, not a `Config` field**, because `setConfig` (`ControlServer.swift:129`)
+replaces `Config` wholesale from the client — a policy field there would be wiped by any client that
+round-trips an older `Config`.
+
+## The shared-store layout
+
+`SharedStore` (`Propagation/SharedStore.swift`) holds the git mechanics for a `shared` item: one bare
+store per repo, plus one shadow git dir per checkout, all under a daemon-owned root the agent sandbox
+never sees:
+
+```
+<sharedStoreRoot>/<repoKey>/store.git                    bare, branch main
+<sharedStoreRoot>/<repoKey>/checkouts/<checkoutKey>.git  core.bare=false, info/exclude = /*
+    orchestra-checkout                                   the work-tree path, read only by the sweep
+    orchestra-unignored                                  the leaves un-ignored at the last sync
+```
+
+Both `repoKey` and `checkoutKey` come from `CardFileSpec.cwdHash` — the single home of that hash,
+already used for the launch-config filenames. `info/exclude = /*` makes every file ignored from the
+shadow checkout's own point of view, which is what lets git overwrite a declared, ignored leaf
+without its usual "would overwrite an untracked file" guard. `orchestra-checkout` records the real
+work-tree path so the boot sweep can tell a live checkout's shadow git dir from an orphaned one.
+`orchestra-unignored` records which declared leaves were un-ignored (still tracked by the project) at
+the last sync — the "flip test" reads it to catch a leaf that stood down, then became eligible again,
+with a stale local copy still on disk.
+
+Like `sharedStoreRoot`, this root is an **instance field on `Config`** (`sharedStoreRoot`,
+`propagationPath`), not a static — the `scratchRoot`/`runtimeStateDir` precedent, excluded from
+`CodingKeys` and never persisted, so a test that forgets to override it cannot write into the live
+`~/.orchestra/shared`.
+
 ## Configuration and paths
 
 `Config` (`Config.swift`) is loaded/saved by `ConfigStore` at `config.json` with the same atomic-write,
@@ -276,6 +335,8 @@ Derived paths (all keyed off `$HOME`, so state follows the user, not the bundle)
 | Tasks | `…/tasks.json` |
 | Inbox | `…/inbox.json` |
 | Trust ledger | `…/trust-ledger.json` |
+| Propagation policy | `…/propagation.json` |
+| Shared store root | `~/.orchestra/shared/` (not user-configurable) |
 | Log | `…/orchestrad.log` |
 | Rendered hooks | `…/claude-hooks.json` |
 | Worktrees | `~/.orchestra/worktrees/<repo>/<branch>` |

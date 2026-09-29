@@ -16,7 +16,8 @@ struct StepperConvergeRemoteContractTests {
     private func seedRealCreating(_ svc: OrchestraService, base: String, branch: String, spawnBase: String?) async throws -> Task {
         let repo = base + "/repos/app"
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
-                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state",
+                            sharedStoreRoot: base + "/shared", propagationPath: base + "/propagation.json")
         let cwd = WorktreeRegistry(config: config, borrowsPath: base + "/b.json", markersDir: base + "/m")
             .path(repo: repo, branch: branch)
         let t = Task(title: branch, awaitingFirstPrompt: true, repo: repo, branch: branch, cwd: cwd,

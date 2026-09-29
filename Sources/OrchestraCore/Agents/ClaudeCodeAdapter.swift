@@ -21,6 +21,30 @@ public struct ClaudeCodeAdapter: Adapter {
          "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD": "1000000"]
     }
 
+    /// This adapter's one propagation item: the project files an agent working from a worktree may
+    /// share back to the primary checkout. Exclusions carve out paths that are per-worktree by
+    /// design (installed skills, the debug-write log, the sandbox denial log, and worktree state
+    /// itself) — sharing them would leak one worktree's local state into every other checkout.
+    public var projectFiles: [PropagationItem] {
+        [PropagationItem(name: "claude", paths: ["CLAUDE.md", ".claude"],
+                          exclusions: [".claude/skills", ".claude/.cc-writes",
+                                       ".claude/sandbox-blocked.jsonl", ".claude/worktrees"])]
+    }
+
+    /// The concrete skill paths `prepareToLaunch`'s guidance loop (below) would install this
+    /// launch. Both this and the loop call `skillPath(for:)`, so the path template lives in
+    /// exactly one place — a change to it cannot make this drift from what the loop writes.
+    /// Dormant: nothing reads this until PR6 wires a grant.
+    public var launchWrites: [String] {
+        AgentGuidance.sections(for: id).map(skillPath(for:))
+    }
+
+    /// Where one guidance section's skill file lives, relative to the worktree. The one
+    /// definition of the `.claude/skills/orchestra-<section>/SKILL.md` layout.
+    private func skillPath(for section: AgentGuidanceSection) -> String {
+        ".claude/skills/orchestra-\(section.name)/SKILL.md"
+    }
+
     public func observationEndpoint(_ setup: AgentObservationSetup) -> AgentObservationEndpoint? {
         .pushed
     }
@@ -299,9 +323,11 @@ public struct ClaudeCodeAdapter: Adapter {
         // The provider-neutral bundle owns which Orchestra sections exist and their ordering. Claude's
         // adapter owns only this packaging: two project skills, one directory each, leaving Codex free to
         // project the identical content into its own launch-scoped config instead of a filesystem write.
-        for section in AgentGuidance.sections(for: id) {
-            _ = AgentGuidance.install(section,
-                                      at: "\(ctx.cwd)/.claude/skills/orchestra-\(section.name)/SKILL.md")
+        // Only paths the launch grant allows: an Orchestra write to a path the project does not ignore would
+        // dirty the repo. A nil grant (any non-launch context) writes nothing — the fail-safe direction.
+        let writable = ctx.propagation?.writablePaths ?? []
+        for section in AgentGuidance.sections(for: id) where writable.contains(skillPath(for: section)) {
+            _ = AgentGuidance.install(section, at: "\(ctx.cwd)/\(skillPath(for: section))")
         }
     }
 
@@ -411,7 +437,8 @@ public struct ClaudeCodeAdapter: Adapter {
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
                                        name: ctx.name, access: ctx.access,
-                                       orchestraMCPBin: ctx.orchestraMCPBin)
+                                       orchestraMCPBin: ctx.orchestraMCPBin,
+                                       propagation: ctx.propagation)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,

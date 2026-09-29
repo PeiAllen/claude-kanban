@@ -44,6 +44,15 @@ final class CommandRegistryCatalogTests: XCTestCase {
         XCTAssertTrue(CommandCatalog.mcpExposed.map(\.name).contains("publish-image"))
     }
 
+    // `shared` is advertised to agents over MCP; `shared-policy` is not. `.appOnly` only withholds it from the
+    // MCP bridge — the daemon and the CLI still dispatch it, so this is not an access control.
+    func testSharedIsAllAndSharedPolicyIsAppOnly() throws {
+        let mcpNames = Set(CommandCatalog.mcpExposed.map(\.name))
+        XCTAssertTrue(mcpNames.contains("shared"))
+        XCTAssertFalse(mcpNames.contains("shared-policy"))
+        XCTAssertEqual(try XCTUnwrap(CommandRegistry().command("shared-policy")).schema.exposure, .appOnly)
+    }
+
     func testSendSummaryDoesNotDescribeTheRemovedTurnEndDrain() throws {
         let send = try XCTUnwrap(CommandCatalog.all.first { $0.name == "send" })
         XCTAssertFalse(send.summary.contains("next turn-end"))
@@ -56,7 +65,7 @@ final class CommandRegistryCatalogTests: XCTestCase {
             "inbox-remove", "inbox-retry", "inbox-reorder", "wait", "handoff", "status", "archive", "reopen", "restart",
             "resume", "shell", "inspect", "closeShell", "exec", "sessions", "capture", "send-keys",
             "trustState", "batch-spawn", "trust", "set-parent", "tree", "synced", "shipped",
-            "borrow", "release", "merge-request", "publish-image",
+            "borrow", "release", "merge-request", "publish-image", "shared", "shared-policy",
         ])
     }
 }

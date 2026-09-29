@@ -56,5 +56,5 @@ for a in ${PASS[@]+"${PASS[@]}"}; do
 done
 
 scripts/lib/with-lock.sh build -- \
-  swift build --build-tests "${SWIFT_TESTING_FLAGS[@]}" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
-exec swift test --skip-build "${SWIFT_TESTING_FLAGS[@]}" ${TIER_ARGS[@]+"${TIER_ARGS[@]}"} ${PASS[@]+"${PASS[@]}"}
+  swift build --build-tests ${SWIFT_TESTING_FLAGS[@]+"${SWIFT_TESTING_FLAGS[@]}"} ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
+exec swift test --skip-build ${SWIFT_TESTING_FLAGS[@]+"${SWIFT_TESTING_FLAGS[@]}"} ${TIER_ARGS[@]+"${TIER_ARGS[@]}"} ${PASS[@]+"${PASS[@]}"}

@@ -726,6 +726,362 @@ The separate `wait` primitive remains a subscription to a lifecycle conclusion. 
 provider evidence for a delivered/read UI, periodic reminders, the root stalled watchdog, and a possible
 deprecation of `wait`.
 
+## Worktree propagation policy
+
+A card's worktree is a fresh `git worktree`, which contains only tracked files. Files such as
+`CLAUDE.md`, `AGENTS.md`, and `.claude/commands/` are development instructions and memories, not
+product artifacts — they need no commit history or merge behavior, but they must still reach every
+card. The mechanism is an explicit **policy per path**: `tracked` (git already does it), `shared` (one
+instance, visible to every card), or `ephemeral` (dies with the worktree). This section states the
+policy's Kit types and its sidecar store; the propagation mechanism that acts on them is described here
+as it lands.
+
+### The policy table is a sidecar file, not a `Config` field
+
+`ControlServer.setConfig` (`ControlServer.swift:129`) decodes a full `Config` from the client and
+replaces the daemon's in-memory copy wholesale. A policy table living as a `Config` field would be
+silently wiped by any client that round-trips an older or partial `Config` through that RPC. A
+standalone file — `PropagationStore` at `Config.defaultPropagationPath` — is never touched by
+`setConfig`, the same reason `borrows.json` and `trust-ledger.json` are sidecar files rather than
+`Config` fields.
+
+### Policy is per repo, per item
+
+The table is keyed by **canonical repo path**, so `/tmp/x` and `/private/tmp/x` resolve to the same
+row regardless of how a caller spells it — the same discipline `TrustLedger` applies to its own keys.
+`save` canonicalizes every key it writes, so a writer that spells a repo path differently from a later
+reader can never silently create a row nothing finds. Each repo's row holds two independent overrides,
+both keyed by item name: a `PropagationPolicy` override that beats the single default (`shared`), and a
+user-declared `PropagationItem` that beats an adapter item of the same name. An absent row, or an
+absent key within a row, falls back to the default — an empty policy table is a working default, not a
+broken one.
+
+### Corrupt never decays into defaults
+
+`load` never mutates the file. A `propagation.json` that fails to decode is reported as `loadFailed`
+and left exactly where it is, so a corrupt table keeps reporting `loadFailed` on every later `load` —
+not just the one that first noticed the corruption. Moving the corrupt file aside on `load` (mirroring
+`TrustLedger`'s malformed-file handling literally) was tried and rejected: for the ledger, an empty
+table on corruption is fail-safe (nothing trusted), but this table's empty state is fail-**open**
+(the single default is `shared`), so moving the file away made the very next `load` report a
+healthy-looking empty table and silently resume propagating everything. `save` is the one place
+content can be lost, so it is the one place that protects against it: if the file on disk currently
+holds bytes that fail to decode, `save` preserves them as `propagation.json.bak` before writing its
+own table over them.
+
+### Two guard queries, never one, and one tree-ish per `ls-tree` call
+
+Finding whether a candidate path lies outside a repo's declared shared set, or inside one of its
+excluded holes, needs two separate git queries, not one combined pathspec. `ls-tree` rejects a
+`:(exclude)` pathspec magic outright (exit 128), so it cannot express "the declared paths, minus
+their exclusions" in one call. `diff`, which does accept `:(exclude)`, has the opposite problem: an
+exclude pathspec cancels every positive path it's paired with, so a single query combining "outside
+the declared set" with "inside an exclusion" would silently drop the excluded holes from the result
+instead of reporting them. The two queries — an outside-query (`:(top)` plus one exclude per declared
+path) and a holes-query (the exclusions as plain paths) — are run separately and their results
+unioned by the caller.
+
+The same one-tree-ish rule applies to every `ls-tree` call built from these queries: `ls-tree` accepts
+exactly one tree-ish argument, and a second one is silently read as a path rather than as a second
+tree to compare against. A query spanning two trees (for example, the merge result and HEAD) is
+always two separate calls, never one call given both tree-ish arguments.
+
+### A batch classification failure must never look like "safe to write"
+
+`IgnoreProbe.classify` reports whether a checkout's `.gitignore` rules actually ignore a set of
+declared paths, and every Orchestra writer treats its answer as an authorization: write on `.repo`
+for an ignored path, write on `.notARepo` (nothing to ignore, so nothing can leak), and write on
+**nothing else**. `.unknown` exists as a third, fail-closed outcome for exactly the case a two-value
+classification can't express: the probe ran and failed, or never completed at all, so its answer
+is unknown rather than negative. Two failure shapes both collapse to `.unknown`, and neither is
+treated as `.notARepo`: a `check-ignore` call that exits with a fatal status, and a probe that never
+completed (a spawn failure or a timeout). A bare repository is a related, narrower case — `git
+rev-parse --is-inside-work-tree` answers `false` with exit code 0 there, so a caller that checks only
+the exit code cannot tell "not inside a work tree" apart from "genuinely inside one"; the probe must
+also check that the reported value is literally `true`.
+
+### `SharedStore` — git mechanics, no policy
+
+`SharedStore` (`Propagation/SharedStore.swift`) runs the git mechanics for one `shared` item: attach,
+commitLocal, receive, send, resolve. It holds only a store root and a `ProcRunning` seam — no policy,
+no notify/warn sinks. Every "warn" the design calls for comes back as data on an outcome enum
+(`CommitOutcome`'s `warnings`, for example) instead of a direct call, because a later component
+(`PropagationService`) owns policy and reporting; `SharedStore` stays a pure mechanics layer other
+callers, including tests, can drive directly.
+
+### HEAD never moves while a written leaf is dirty
+
+`receive` and `resolve` both merge in the object store, then write out only the leaves a checkout
+declares and ignores. If a write-out call reaches a leaf whose on-disk content has changed since the
+last sync — an edit landing during the write-out window — moving HEAD to the merge result anyway
+would make the *next* sync read that edit as something to undo: `commitLocal` would compare it
+against the new HEAD, see the store's already-applied change reflected there as a local edit, and
+push a silent revert with no conflict ever raised. Proven during design: the store ended holding only
+the last writer's content, discarding the other side's change. Leaving HEAD at the old value instead
+lets the next `commitLocal` commit the written leaves as identical to the merge, and `merge-tree` then
+genuinely combines both sides.
+
+A narrower residual window sits between the two calls that make the move real: `read-tree` runs
+first, `update-ref HEAD` second — files before HEAD, one level deeper than the write-out-before-HEAD
+rule above. A crash between them leaves the index at the merge result with HEAD still at the old
+value, matching what write-out already put on disk. The next `commitLocal` then correctly commits
+the merge's content on top of the old HEAD, and a later `merge-tree` combines it cleanly. The reverse
+order was tried and rejected: it risks the next `commitLocal` reading a stale index (any leaf
+write-out didn't touch) against an already-moved HEAD, committing the stale content and reverting
+this sync's change to those leaves.
+
+### A leaf materialized by ADOPT's `reset --mixed` still needs a real write-out
+
+`attach`'s first-time ADOPT path runs `git reset --mixed store/main`, which repoints HEAD and the
+index to the store's commit but never touches the working tree — `--mixed` is defined that way. A
+`receive` call immediately afterward therefore finds HEAD already "up to date" with the store by
+history, and a check that stops there would never materialize the leaf onto disk at all — a checkout
+would ADOPT the store and then, on its very first sync, never actually see any of its declared files.
+`receive` instead always computes a target tree and runs the write-out step, treating "up to date" as
+an outcome the write-out establishes (nothing written, deleted, or newly needing HEAD to move), not a
+shortcut that skips it.
+
+This forced a second, related fix: `writeOut`'s "dirty" check (a leaf whose disk content differs from
+the last-known-synced tree, meaning a real local edit to preserve) cannot be answered by `git diff
+<tree> -- <path>` alone, because `diff` collapses two different situations into the same output in
+two separate blind spots. First: when the compared tree already holds the leaf, `diff` reports the
+same "different" verdict whether the working file holds a genuine edit or is simply absent — absent
+must never count as dirty, since it is exactly the leaf ADOPT's `reset --mixed` needs written out,
+not preserved. Second: when a leaf is present on disk but absent from *both* the compared tree and
+the checkout's last-synced tree, `diff` reports nothing at all — a genuinely local, never-synced
+file would otherwise be silently overwritten by the merge with no signal it ever existed. `writeOut`
+closes both: it requires the leaf to actually exist on disk before treating a reported difference as
+a local edit worth protecting, and it separately checks for a leaf that's present on disk but missing
+from the last-synced tree, folding that into the same dirty set.
+
+### A store-side deletion keeps the index honest, even before HEAD moves
+
+When the merged tree drops a leaf a checkout still has on disk, `receive`'s write-out deletes the
+file and also runs `git update-index --force-remove` on it — not `git rm --cached`, and not leaving
+the index alone. Without the index update, a `.partial` return (some other leaf is dirty, so HEAD and
+the index stay at the old tree) leaves the index believing the deleted leaf still exists; the next
+`commitLocal` would then see it as an existing declared positive, stage its "reappearance" via
+`add -f`, and — obeying the rule that a background sync never infers a deletion — restore and
+re-materialize the very file this sync just removed. `update-index --force-remove` is deliberately
+plumbing, not porcelain: `git rm --cached` carries safety checks that can refuse a path with local
+modifications, a state this write-out may legitimately be in, and it prints a line to stdout that
+serves no purpose here.
+
+### Unstaging a path is not one git command — it depends on whether HEAD already has it
+
+`commitLocal` unstages a stray, oversized, or gitlink path in one of two ways, and using the wrong
+one for a given path is a correctness bug, not a style choice. For a path HEAD already has, `git
+restore --staged` resets its index entry back to HEAD's version — a true no-op unstage. `git
+update-index --force-remove` instead drops the index entry outright, which against a HEAD that still
+has the path stages a **deletion** — `commitLocal` would then commit that deletion, exactly the
+"background sync infers a deletion" behavior the design rules out, reached through the unstage path
+instead of the no-inferred-deletion guard. For a path HEAD does *not* have (an unborn HEAD, or a
+gitlink just staged and never committed), the reverse holds: `restore --staged` has nothing to
+restore to and fails, and `git rm --cached` refuses with "has local modifications". `unstage` queries
+`git ls-tree HEAD` for each path's membership and picks per path: `restore --staged` when HEAD has
+it, `update-index --force-remove` when it doesn't, and force-remove for everything when HEAD is
+unborn. Both directions were confirmed against real git before landing.
+
+### `resolve` excludes its own conflicted paths from the dirty check
+
+Every path `resolve` is asked to resolve is, by construction, dirty against HEAD: HEAD holds the
+checkout's last-synced version, and the conflicted path's current content is the agent's own
+uncommitted reconciliation edit — that mismatch is *why* the merge conflicted in the first place.
+Left unguarded, the same dirty check `receive` uses would therefore mark every resolved path as
+still dirty and return a fresh `.partial` on every single call, so a conflict could never actually be
+resolved. The paths under active resolution are passed through as a `knownClean` exclusion instead:
+the temp-index commit `resolve` builds already captured each one's exact current disk content via
+`add -f`, so writing it back out is a verified no-op, never a clobber.
+
+`resolve` reads a conflicted file's content as data, never as instructions to git. Refusal to proceed
+while a `<<<<<<< ` or `>>>>>>> ` marker line remains is checked by scanning raw bytes — never a
+UTF-8-decoding string read, so a binary conflicted file cannot crash the sync — and a path is
+`lstat`'d first: a symlink's own bytes are irrelevant to the marker check, and it is left for `add -f`
+to store as a link (mode `120000`, the link text as its content), never dereferenced and never able
+to pull another file's real content into the store.
+
+### Two scope departures, both traced to the approved spec or explicit sign-off
+
+`Config`'s two propagation-only instance fields (`sharedStoreRoot`, `propagationPath`) and the
+`LC_ALL`/`LANG` locale pin in `StoreGit`'s hermetic environment both touch files outside this PR's
+originally-stated scope. The `Config` fields are supported directly by the Layer 3 implementation
+doc's own "Layout on disk" section, which names the `scratchRoot`/`runtimeStateDir` precedent
+explicitly. The locale pin was a plan-review finding — `send`/`receive` classify git's result by
+matching English stderr substrings, which a gettext-enabled git under a non-C locale (reachable on
+this project's Linux daemon cross-build, never on macOS) would silently misroute — landed after
+explicit owner sign-off rather than as a fast-follow, since the caller whose correctness depends on
+it is the right one to fix it.
+
+**Store git-dir hardening.** Rule 3 (only the daemon writes a store git dir) rests on the agent sandbox, and the
+daemon runs git there unsandboxed. Every `attach` therefore also rewrites `config` down to the allowlisted `[core]`
+keys, removes `hooks/` and `info/attributes` from the store and the checkout git dir, and sets the store root to
+`0700`. This is fork-free and writes only when the file would change. A card whose sandbox is off, or a borrowed
+card whose cwd covers `~/.orchestra`, can still plant a file between two attaches, so the boundary stays the
+sandbox. The hardening only shortens what a planted file survives. `[extensions]` (`objectFormat`, `refStorage`)
+is kept verbatim rather than filtered like `[core]`: no extension name runs a command, and dropping it would make
+a sha256 or reftable store git dir unreadable on the next attach.
+
+**The out-of-set guard compares against `store/main`.** `send` and `resolve` refuse a path outside the declared set
+or inside an exclusion only when it differs from the store's `main`. HEAD carries the files of an item that was later
+turned off, and a newer adapter release may add an exclusion, so refusing every such path would wedge `send` for the
+whole repo. New or changed out-of-set content is still refused. With no `store/main` yet, every out-of-set path counts.
+
+**First attach and flip handling never write a project-tracked leaf.** The adopt loop lists modified files with the
+full staging pathspec (positives plus exclusions), so an un-ignored tracked leaf inside a declared directory is never
+checked out. The flip test (a leaf that became ignored) only considers leaves under a current shared path, so a leaf
+whose item left the policy is a project file and is never overwritten.
+
+### `PropagationService` — policy, two chains, and the lock rule
+
+`SharedStore` holds the git mechanics. `PropagationService` (an actor) holds the decisions: eligibility, the
+policy table, leaf classification, stand-downs, notices, teardown, and the boot sweep. Its `init` does no
+filesystem or git work, and `OrchestraService` installs the `notify` and `warn` sinks after its own init.
+
+**Two chains, and no cycle.** A per-checkout chain serializes everything that touches one checkout git dir.
+A per-repo store chain serializes everything that can write `store.git`: the seed push in `attach`, `send`,
+and the push inside `resolve`. Two checkouts of one repo push to the same bare repo and would race on
+`refs/heads/main.lock`, so the checkout chain alone is not enough. A checkout operation may take the store
+key. A store operation takes nothing, and `SharedStore`'s own seed lock never takes a service key. The chain
+generation is monotonic and never resets, so a stale link cannot clear a newer entry.
+
+**Only public entry points take a chain key.** `prepare` (version gate, repo, policy, classification) and
+`syncOne` take none. `sync`, `flush`, `resolve`, `status`, `locate`, `adopt` and `reap` compose them. The chain
+awaits its predecessor unconditionally, so a nested call on the same key would deadlock.
+
+**The lock rule needs a fetch that can fail.** A store method that fails on `Unable to create '<x>.lock':
+File exists` is checked with `LockProbe`. A live holder, or a probe that did not complete, is `.busy`. With no
+holder, the daemon removes the lock once (only a `.lock` file inside the store root), warns, and re-runs the
+whole store method once. Every store method is re-runnable, because files go first and HEAD goes last.
+`SharedStore` used to discard the fetch exit code, so a crash-left `refs/remotes/store/main.lock` read as "store
+main absent" and every sync returned `.upToDate` while `flush` released the worktree. Now only
+`couldn't find remote ref` means an absent store main. Any other fetch failure throws. A contract row pins the
+matcher against real git stderr, because the wording is not a git API.
+
+**Items are the union across all adapters.** A checkout's HEAD receives the other agent's files by merge, and
+`send` refuses new out-of-set content. A per-adapter set would refuse every push.
+
+**`paths:` is never empty.** `receive`, `send` and `resolve` take the declared paths of every shared item that
+survived stand-down. With an empty list, `writeOut` writes nothing but `receive` still moves HEAD, which would
+revert another checkout's change. So when no shared item survives, the service makes no store call.
+
+**Only leaves are classified.** A declared directory is never a candidate, so it can never enter the un-ignored
+set and exclude its whole subtree. Its un-ignored children stand down one by one.
+
+**Teardown and the boot sweep.** `flush` is true when the cwd is gone (no git call), the card is ineligible,
+nothing is shared, git is confirmed too old, or the send landed. It is false when a conflict, a partial write, a
+stand-down, a busy lock, a refused path, an over-5-MiB edit that the commit left out (`.unsent`), an unreadable git
+version, or an error could lose data. An unreadable git version is unknown, not old, and keeps the tree like an
+unanswerable ignore probe. A `git rev-parse` that fails for any reason other than "not a git repository" is also
+unknown: only proven non-repo output grants writes, and a checkout whose `.git` entry exists (even a dangling
+worktree gitfile with the same wording) is never read as a proven non-repo. `reap` finds the git dir by the hash of
+the checkout, so it works with the worktree gone. `sweep` deletes a git dir whose recorded path is gone, or one
+that no card and no primary references. With an empty referenced set it runs only the first rule, because an
+unknown card set must never look like "nothing is referenced". The caller passes an empty set when the board loaded
+incompletely. The sweep also skips a git dir created after it started (a card that attached after the caller's
+snapshot) and a recorded path whose `.git` is a directory (a primary repo root, whose git dir holds the merge base). The caller must include an archived card that
+kept its worktree, because `resolve` still needs its git dir. Both sides of the comparison are canonicalized.
+
+**`adopt` stages and never commits.** It sends the primary's copies first, appends a root-anchored pattern for
+a path no pattern matches, re-probes with `check-ignore --no-index`, and untracks with `git rm --cached` on an
+explicit file list that `ls-files` reported as tracked and that is not under an item's exclusions. A negation
+that still re-includes a leaf stops it before the index is touched.
+
+### Lifecycle wiring — where the service is called
+
+`PropagationService` is called from six places. Each one is a fence or an edge, not a timer.
+
+**Launch (`finishLaunch`).** Before the agent starts, `sync(.receiveOnly)` writes the shared files in and sends
+nothing. The receive has its own 10 s budget: the card's `.launching` deadline runs from `phaseChangedAt` and a
+sync spends it, so an unbounded sync could kill a healthy launch with the wrong cause. The anchor is never
+re-stamped to give the time back, because every re-step would move it and a card whose readiness keeps timing out
+would relaunch forever. A sync that outruns the budget is abandoned with a warning and keeps running on its chain.
+The idle sync repeats it, and a late write-out reports a leaf the agent already edited as `.partial`, never
+overwriting it. After the sync the step re-reads the card and returns `.superseded` if the phase or epoch moved.
+Both launch `AdapterContext`s carry a `PropagationGrant`.
+
+**The grant is the ignored launch writes.** `writablePaths` is the adapter's `launchWrites` that the project's
+ignore rules cover, so an Orchestra write never dirties a repo (G6). A non-repo checkout takes every write. An
+unanswerable probe grants nothing. The Claude adapter installs a skill only when its path is granted, so a
+`nil` grant writes nothing. A project that does not ignore `.claude/skills` no longer receives Orchestra skills.
+The Obsidian guard is the same rule for `.obsidian` and `.trash`. It probes a child path of each directory,
+because git cannot match a `dir/` pattern against a directory that does not exist yet, and it probes
+`.obsidian/workspace.json`, the file the tab seeding really overwrites. A skipped launch write gets one activity line.
+
+**Idle edge.** When the agent goes from running to waiting, a detached `sync(.full)` starts. It is an edge:
+an in-waiting change does not repeat it. `unavailable → waiting` is skipped, because a fresh launch starts
+`unavailable` and its first report would double the launch sync. The task re-checks that the card is still
+live at the same epoch, and `sync` returns at once for a checkout that is gone.
+
+**Teardown and re-drive.** The worktree release is behind `flushShared`. A false flush skips the release, warns,
+and leaves the card `archivedComplete` with its tree, so `orchestra shared resolve` still works from that
+directory. The step re-fences with `stillArchiving` after the flush, releases, and calls `reapShared` only when
+the outcome is `.removed`. The boot re-drive runs the same sequence, including the re-fence: a reopen that lands while the flush runs leaves the
+card out of `archivedComplete`, and nothing is released. `shared resolve` on an `archivedComplete` worktree card
+retries the release once the conflict is settled. A borrowed card is not flushed at teardown,
+because nothing is destroyed. The two spawn-rollback releases are not flushed, because nothing was ever synced.
+
+**Boot order.** `orchestrad` installs the sinks, checks the git version and sweeps checkout git dirs before the
+control server, the boot task and the tick loop start. A sweep that overlapped a first sync could delete the git
+dir that sync just attached, and a conflict noticed before the sinks exist is never re-sent. `main.swift` has no
+top-level `await`, so a semaphore orders it, and the work runs `.detached` because top-level code is main-actor
+isolated. The wait fails open after 15 s (logged), so a slow git cannot hold the control socket closed. The sweep's primaries include a borrowed card's primary, located the way `sync` locates it.
+
+### The `shared` and `shared-policy` verbs
+
+`shared` (`.all`, mutation) has four ops that each call one `PropagationService` entry point: `sync` (`.full`),
+`status`, `resolve`, `adopt`. `shared-policy` (`.appOnly`, mutation) reads and writes `propagation.json`. The
+handlers live in `OrchestraService+Shared.swift` and only translate: outcomes become `{op, outcome, paths, message}`
+and a `PropagationServiceError` becomes an `OrchestraError`.
+
+- **The verb takes a `ref`, and the CLI resolves a missing one.** The daemon cannot see the caller's environment or
+  cwd. The CLI uses `$ORCHESTRA_TASK_ID`, then a `list` call plus `OrchestraService.cardContaining`. Keeping `ref`
+  required means the ordinary phase gate applies with no special case.
+- **The gate is every phase except `archivedPending`.** An archived card can keep its worktree after a conflict, and
+  `resolve` must still reach it. `archivedPending` is teardown in flight, so the verb waits.
+- **Reading the store needs no verb.** A card runs `GIT_OPTIONAL_LOCKS=0 git --git-dir=<dir> log|show|diff` in its
+  own process. `status` returns that command string. A write from a card fails at its own sandbox, so the daemon stays
+  the only writer.
+- **`adopt` defaults to the three migration files.** `CLAUDE.md`, `AGENTS.md` and `.claude/commands/ship.md` are the
+  set the migration untracks. Naming other paths adopts those instead. Each path becomes a user item that is `shared`.
+- **`shared-policy` refuses to write over a corrupt `propagation.json`.** A load failure is fail-open (the default is
+  `shared`), so a write from an empty table would erase the user's rows. The user repairs or removes the file.
+- **`adopt` validates its input and refuses a read-only card.** Paths must be repo-relative with no `.`, `..` or
+  empty component, at most 32. An unchecked `.` would make the daemon walk and probe the whole checkout inside the
+  service actor. Adopt edits the project's `.gitignore` and index, so the daemon refuses when the TARGET card is
+  read-only. It does not check the caller: `shared` takes any `ref`, and the daemon cannot see the caller's card, so
+  any card can run `adopt` for another card, as any card can archive another. Adopt from the primary's own cwd returns
+  `notParticipating`, so the migration runs `adopt --ref <any worktree card>`; step 1 still syncs the primary. Each adopted path inherits the exclusions of any overlapping adapter item, so
+  adopting `.claude` never untracks `.claude/skills`.
+- **An adopted path is its own item, next to the adapter item.** Reverting an adopt therefore needs both rows set
+  (`claude` and `CLAUDE.md`). The app's policy editor shows both.
+- **Exit codes follow `flush`'s success predicate.** `skipped`, `nothingShared` and a git older than 2.40
+  (`gitTooOld`) exit 0, because nothing can be lost. A conflict, busy lock, stand-down, refusal or partial exits 1,
+  with or without `--json`. `resolve` reports `refusedOutOfSet` and `partial` as not resolved (they return before any
+  commit). A card that takes no part gets the same `skipped` result from `status` and `resolve` as from `sync`.
+- **Known limit: `propagation.json` has two writers.** `shared-policy` (on `OrchestraService`) and `adopt` (on
+  `PropagationService`) each load, change, and save with no shared lock. A policy edit during an in-flight adopt can
+  drop the adopted row. Adopt is owner-attended, so this stays open until `PropagationStore.save` gets a
+  compare-and-swap.
+- **Known limits, not fixed.**
+  - A card whose sandbox is off, or a borrowed card with `$HOME` as its cwd, can write `~/.orchestra/shared`. The
+    daemon hardens the git dirs on every attach, but a file planted between two attaches can run once. A `denyWrite`
+    on the store root in both adapters would close it.
+  - A read-only card's `flush` is true without a send. If a co-located read-write card kept its worktree after a
+    failed flush, and both are `archivedComplete` at the next boot, the read-only card's release can remove the tree.
+  - `resolve` stages the conflicted file once. An edit to that file by another writer during the call is overwritten
+    by the resolved content. A modify-versus-delete conflict that the user resolves by keeping the file stays
+    `partial`, because the resolved leaf is absent from HEAD. The tree is kept in both cases.
+  - `~/.claude/open-obsidian-vault.sh` appends `.obsidian/` and `.trash/` to `.gitignore` unless those exact lines exist,
+    even when an equivalent anchored pattern ignores them. The guard cannot suppress a side effect of that script.
+  - `IgnoreProbe.classify` forks one `git check-ignore` per candidate. On a busy machine a cold launch receive can
+    outrun its 10 s budget. The idle sync repeats it. One `--stdin -z` call needs a stdin seam on `ProcRunning`.
+  - `reap` canonicalizes a path that no longer exists, so a symlinked worktree path would hash differently from the
+    live one. Worktrees under `~/.orchestra/worktrees` are not symlinked.
+- **Ownership note.** The plan gave the `OrchestraService.propagation` stored property to PR4, and PR4's seed told it
+  not to edit `OrchestraService.swift`, so it was skipped. PR7 adds the property and its construction, because its
+  handlers are the first callers. It builds from `Config.sharedStoreRoot`, `Config.propagationPath`, and the union of
+  every enabled adapter's `projectFiles`.
+
 ## Superseded pre-native delivery protocol — historical only
 
 The material below records the retired Stop-drain, wake, lease, and receipt design so older commits and

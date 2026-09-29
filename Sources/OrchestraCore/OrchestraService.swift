@@ -22,6 +22,15 @@ public actor OrchestraService {
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
+    /// Shared agent files across worktrees (worktree-propagation-policy). Built in `init` from
+    /// `Config.sharedStoreRoot` / `Config.propagationPath`; the adapter items are the union across
+    /// every enabled adapter.
+    let propagation: PropagationService
+    /// Test seam: replaces `propagation.flush` so a stepper/re-drive test can make the flush refuse without
+    /// scripting the whole git chain (which `PropagationServiceTests` already covers). `nil` in production.
+    var flushSharedOverride: (@Sendable (Task) async -> Bool)?
+    /// Test seam: sees every lifecycle-triggered sync (card id + intent) before it runs. `nil` in production.
+    var syncSharedObserver: (@Sendable (UUID, SyncIntent) async -> Void)?
     /// Absolute path of the `orchestra` binary the agents' hooks call. Injected once (defaulted to the
     /// daemon's sibling binary) and threaded into every launch `AdapterContext`.
     let orchestraBin: String
@@ -242,6 +251,10 @@ public actor OrchestraService {
         self.worktrees = worktrees ?? WorktreeRegistry(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
         self.launcher = launcher ?? Launcher(resolver: r)
+        self.propagation = PropagationService(
+            store: SharedStore(root: config.sharedStoreRoot, proc: proc), proc: proc, resolver: r,
+            root: config.sharedStoreRoot, policyPath: config.propagationPath,
+            adapterItems: { registry.list().flatMap(\.projectFiles) })
         // Seed the lastRev mirror synchronously (nonisolated peek — no await), BEFORE server.start()
         // can accept any RPC or PushNotifier.run() can subscribe, so an early ephemeral emit (e.g. a
         // borrow/trust/set-parent RPC racing daemon boot ahead of `recoverSessions`) never stamps a
@@ -689,7 +702,12 @@ public actor OrchestraService {
         let targets = cards.filter { $0.origin == .worktree && $0.phase.kind == .archivedComplete }
         guard !targets.isEmpty else { return }
         for t in targets {
-            let outcome = (try? await worktrees.release(cardId: t.id, cards: cards, force: false)) ?? .noop
+            // Flush shared edits first; a refusal keeps the tree (the next boot retries), like unsaved work.
+            guard let outcome = await releaseWorktreeFlushingShared(t, cards: cards) else {
+                emitActivity(.warning, t, .daemon,
+                             "archived card's worktree kept — shared files not yet sent from \(t.cwd); run `orchestra shared resolve` from that directory, or retry next boot")
+                continue
+            }
             switch outcome {
             case .removed:
                 emitActivity(.recovered, t, .daemon,
@@ -1136,6 +1154,7 @@ public actor OrchestraService {
     public func openInObsidian(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
         let tabs = try await obsidianTabs(id)
+        try await guardObsidianWrites(cwd: t.cwd)   // G6: never write .obsidian/.trash into un-ignored paths
         let l = launcher, cwd = t.cwd
         return try await offActor { try l.openInObsidian(cwd, tabs: tabs) }
     }
@@ -1279,6 +1298,8 @@ public actor OrchestraService {
                 await finishLaunch(id, flavor: flavor, expecting: expecting, epoch: epoch)
             },
             teardownActorDuties: { [self] id, epoch in await teardownActorDuties(id, expectedEpoch: epoch) },
+            flushShared: { [self] card in await flushShared(card) },
+            reapShared: { [self] card in await propagation.reap(card) },
             emitActivity: { [self] id, kind, text in
                 let task = await store.get(id)
                 await emitActivity(kind, task, .daemon, text)

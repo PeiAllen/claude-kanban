@@ -52,7 +52,9 @@ actor E2EFixture {
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
                             allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
                             scratchRoot: PathResolver.canonical(base) + "/scratch",
-                            runtimeStateDir: PathResolver.canonical(base) + "/state")
+                            runtimeStateDir: PathResolver.canonical(base) + "/state",
+                            sharedStoreRoot: PathResolver.canonical(base) + "/shared",
+                            propagationPath: PathResolver.canonical(base) + "/propagation.json")
         let sessions = SessionManager(socket: tmuxSock, confPath: SessionManager.bundledConf, sockEnvPath: ctlSock)
         let adapter = ClaudeCodeAdapter(binOverride: IntegrationSupport.fakeAgentPath)
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
@@ -204,6 +206,38 @@ struct E2EBinaryTests {
         _ = try cli(["needs-input", ref, "ship", "to", "main", "or", "hold?"], ctlSock: fx.ctlSock)
         let status = try cli(["status", ref], ctlSock: fx.ctlSock)
         #expect(status.stdout.contains("ship to main or hold?"))   // positionals joined, field broadcast
+    }
+
+    /// worktree-propagation-policy PR7. The CLI switch routes `shared`, resolves the card from the cwd when no
+    /// ref is given, and the daemon answers `status` end to end (real git for the ignore probe).
+    @Test("CLI: `shared status` reaches the daemon by --ref and by cwd containment")
+    func cliSharedStatus() async throws {
+        let fx = try await E2EFixture.shared.get()
+        let bare = try cli(["shared"], ctlSock: fx.ctlSock)
+        #expect(bare.exitCode != 0)
+        #expect(!bare.stderr.contains("unknown command"))
+
+        let spawned = try cli(["spawn", "--prompt", "q", "--repo", fx.repo, "--branch", "sharedstatus"],
+                              ctlSock: fx.ctlSock)
+        let shortId = String(spawned.stdout.components(separatedBy: "orchestra://task/").last?
+            .prefix { !$0.isWhitespace && $0 != "-" } ?? "")
+        #expect(!shortId.isEmpty)
+        try await pollUntil("card \(shortId) reaches .live", timeout: .seconds(60)) {
+            let out = (try? cli(["list"], ctlSock: fx.ctlSock))?.stdout ?? ""
+            return out.split(whereSeparator: \.isNewline).contains { $0.contains(shortId) && $0.lowercased().contains("unavailable") }
+        }
+        let byRef = try cli(["shared", "status", "--ref", shortId], ctlSock: fx.ctlSock)
+        #expect(byRef.exitCode == 0)
+        #expect(byRef.stdout.contains("claude"))                 // the adapter item is listed with its policy
+        #expect(byRef.stdout.contains("GIT_OPTIONAL_LOCKS=0 git --git-dir=") || byRef.stdout.contains("No conflict"))
+
+        // No ref, no ORCHESTRA_TASK_ID: the card whose worktree contains the cwd.
+        let cwd = try #require(try cli(["exec", shortId, "pwd"], ctlSock: fx.ctlSock).stdout
+            .split(whereSeparator: \.isNewline).last.map(String.init))
+        let byCwd = try Proc.run([binary("orchestra"), "shared", "status"], cwd: cwd,
+                                 env: ["ORCHESTRA_SOCK": fx.ctlSock, "ORCHESTRA_TASK_ID": ""])
+        #expect(byCwd.exitCode == 0)
+        #expect(byCwd.stdout.contains("claude"))
     }
 
     @Test("CLI: `orchestra trust <path>` with a non-tty stdin fails closed with actionable text")
