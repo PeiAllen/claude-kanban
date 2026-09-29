@@ -123,7 +123,7 @@ app search field over the same. The explicit non-goal keeps it honest: this is a
 
 ### Axis 5 — Automated PR-review phase
 
-Today the Review column means *Allen* reviews, but much of that work is mechanical — address an inline
+Today the Review column means *the owner* reviews, but much of that work is mechanical — address an inline
 comment, fix a failing check, rebase. This axis adds a **column-entry automation policy**: `ColumnDef`
 gains an `onEnter: ColumnAction` (first action `.prReview`), built on axis 1's `semantic`, and when `move`
 lands a card in that column the daemon starts a review loop for it. PR awareness comes through a

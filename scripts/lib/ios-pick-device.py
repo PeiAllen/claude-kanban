@@ -70,8 +70,8 @@ class Device(object):
         """An override may name the device by identifier, hardware udid, or (part of) its name.
 
         Names are the only thing a human reliably remembers, but they carry a typographic
-        apostrophe ("Allen’s iPhone") that is a nuisance to type and impossible to guess, so a
-        case-insensitive substring is enough — `--device allen` works.
+        apostrophe ("Test’s iPhone") that is a nuisance to type and impossible to guess, so a
+        case-insensitive substring is enough — `--device test` works.
         """
         sel = selector.casefold()
         return (

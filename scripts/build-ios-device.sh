@@ -15,7 +15,7 @@
 # Usage:
 #   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh            # build a signed RELEASE .app
 #   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to the paired iPhone
-#   scripts/build-ios-device.sh --install --device 'Allen'             # pick one of several iPhones
+#   scripts/build-ios-device.sh --install --device 'Test'              # pick one of several iPhones
 #                                                                        # (or export ORCH_IOS_DEVICE)
 #   scripts/build-ios-device.sh --install --debug                      # unoptimized build (debugger/symbols)
 #   ORCH_IOS_BUNDLE_ID=com.you.orchestra scripts/build-ios-device.sh   # override bundle id (free teams
@@ -142,7 +142,7 @@ if [[ "$INSTALL" == 1 ]]; then
   trap 'rm -f "$DEVICES_JSON"' EXIT
   xcrun devicectl list devices --json-output "$DEVICES_JSON" >/dev/null \
     || { echo "error: 'xcrun devicectl list devices' failed (see above)" >&2; exit 1; }
-  # An array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Allen's iPhone"), and
+  # An array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Test's iPhone"), and
   # an unquoted conditional expansion would word-split it into two arguments. And the ATTACHED form
   # (--device=x, not --device x) because a selector starting with a dash would otherwise arrive as its
   # own argv token and argparse would read it as an option; attached values are never reparsed.

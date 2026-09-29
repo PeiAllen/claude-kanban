@@ -30,11 +30,11 @@ contains() { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1 (missing '$3' i
 # broke the old `/connected/` filter.
 device_json() {  # $1=transportType $2=pairingState
   cat <<EOF
-{"identifier":"E915E0BC-E055-5521-9F0D-18AF93DFDDA9",
- "deviceProperties":{"name":"Allen’s iPhone","developerModeStatus":"enabled"},
+{"identifier":"DEADBEEF-0000-0000-0000-000000000001",
+ "deviceProperties":{"name":"Test’s iPhone","developerModeStatus":"enabled"},
  "connectionProperties":{"transportType":"$1","pairingState":"$2","tunnelState":"disconnected"},
  "hardwareProperties":{"platform":"iOS","reality":"physical","deviceType":"iPhone",
-   "marketingName":"iPhone 16 Pro Max","productType":"iPhone17,2","udid":"00008140-000958683A88801C"}}
+   "marketingName":"iPhone 16 Pro Max","productType":"iPhone17,2","udid":"00008140-0000000000000001"}}
 EOF
 }
 # A second, distinct iPhone — same shape, different identity — for the ambiguity cases.
@@ -45,14 +45,14 @@ second_iphone='{"identifier":"11111111-2222-3333-4444-555555555555",
    "marketingName":"iPhone 13","productType":"iPhone14,5","udid":"00008110-001122334455AABB"}}'
 # An iPad: physical and platform iOS, so only deviceType keeps it out of an iPhone-family install.
 ipad='{"identifier":"99999999-8888-7777-6666-555555555555",
- "deviceProperties":{"name":"Allen’s iPad"},
+ "deviceProperties":{"name":"Test’s iPad"},
  "connectionProperties":{"transportType":"localNetwork","pairingState":"paired"},
  "hardwareProperties":{"platform":"iOS","reality":"physical","deviceType":"iPad",
    "marketingName":"iPad Pro","productType":"iPad16,6","udid":"00008132-000A1B2C3D4E5F60"}}'
 
 payload() { printf '{"info":{"outcome":"success"},"result":{"devices":[%s]}}' "$(IFS=,; echo "$*")"; }
 
-IPHONE_ID="E915E0BC-E055-5521-9F0D-18AF93DFDDA9"
+IPHONE_ID="DEADBEEF-0000-0000-0000-000000000001"
 
 echo "1. network-paired iPhone (the regression) — table state is 'available (paired)', not 'connected'"
 out="$(payload "$(device_json localNetwork paired)" | $PICK 2>/dev/null)"
@@ -74,7 +74,7 @@ err="$(payload | $PICK 2>&1 >/dev/null)"
 contains "no devices: mentions the unlock gotcha" "$err" "UNLOCKED"
 err="$(payload "$ipad" | $PICK 2>&1 >/dev/null)"
 contains "iPad only: rejected as not an iPhone" "$err" "no physical iPhone"
-contains "iPad only: still lists what it did see" "$err" "Allen’s iPad"
+contains "iPad only: still lists what it did see" "$err" "Test’s iPad"
 
 # Each of the three identity predicates gets a row that trips ONLY that one. Without this, deleting
 # `reality == physical` or `platform == iOS` from the picker leaves every other assertion green — the
@@ -113,7 +113,7 @@ contains "ambiguous: shows how to disambiguate" "$err" "--device"
 echo "5. --device override"
 both="$(payload "$(device_json localNetwork paired)" "$second_iphone")"
 check "by identifier"     "$(echo "$both" | $PICK --device "$IPHONE_ID" 2>/dev/null)" "$IPHONE_ID"
-check "by udid"           "$(echo "$both" | $PICK --device 00008140-000958683A88801C 2>/dev/null)" "$IPHONE_ID"
+check "by udid"           "$(echo "$both" | $PICK --device 00008140-0000000000000001 2>/dev/null)" "$IPHONE_ID"
 check "by name substring" "$(echo "$both" | $PICK --device spare 2>/dev/null)" "11111111-2222-3333-4444-555555555555"
 check "case-insensitive"  "$(echo "$both" | $PICK --device SPARE 2>/dev/null)" "11111111-2222-3333-4444-555555555555"
 # The override is matched against every device, not just iPhones: naming a device is explicit intent.
@@ -175,7 +175,7 @@ trap 'rm -rf "$SCRATCH"' EXIT
 TMP="$SCRATCH/devices.json"
 payload "$(device_json localNetwork paired)" > "$TMP"
 check "reads a file" "$($PICK --json "$TMP" 2>/dev/null)" "$IPHONE_ID"
-check "file + attached --device=" "$($PICK --json "$TMP" --device=allen 2>/dev/null)" "$IPHONE_ID"
+check "file + attached --device=" "$($PICK --json "$TMP" --device=test 2>/dev/null)" "$IPHONE_ID"
 # The caller passes the selector attached precisely so a leading-dash name cannot be read as a flag.
 printf '{"result":{"devices":[{"identifier":"D1","deviceProperties":{"name":"-phone"},
  "hardwareProperties":{"platform":"iOS","reality":"physical","deviceType":"iPhone"}}]}}' > "$TMP"

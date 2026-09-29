@@ -56,8 +56,8 @@ accepts "no flags"
 accepts "--install"                         --install
 accepts "--debug"                           --debug
 accepts "--release"                         --release
-accepts "name with a space"                 --install --device "Allen’s iPhone"
-accepts "attached selector"                 --install --device=allen
+accepts "name with a space"                 --install --device "Test’s iPhone"
+accepts "attached selector"                 --install --device=test
 # The attached form is the documented escape hatch for a selector that looks like an option.
 accepts "attached dash-leading selector"    --install --device=--weird-name
 
