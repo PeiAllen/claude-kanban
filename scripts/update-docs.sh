@@ -118,6 +118,9 @@ Do this:
    architecture/lifecycle diagrams. If a change makes an image or a diagram WRONG, keep it, fix the
    mermaid source if the fix is textual, and note in your commit-visible edit that
    scripts/docs-shots.sh should be re-run — do not silently drop it.
+6. The repo root has a LICENSE file (MIT). If README.md does not already mention it, add a short
+   "License: MIT, see [LICENSE](LICENSE)" line near the end (the "## Status" section is a good
+   place). Do not remove or reword this line once it exists.
 
 Only edit README.md and files under docs/ (never the binaries under docs/images/). Do not modify
 source code, scripts, or anything else.
